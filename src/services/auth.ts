@@ -37,7 +37,11 @@ export function authError(msg: string, interactive: boolean): AppError {
     return new AppError('auth', 'Chrome 当前没有登录 Google 账号，无法授权', '先在 Chrome 右上角登录你的 Google 账号，再点"连接 YouTube"');
   }
   if (/did not approve|canceled|cancelled|user closed/i.test(msg)) {
-    return new AppError('auth', '授权被取消了', '需要授权"查看你的 YouTube 账号"（只读）才能同步订阅和找片');
+    return new AppError(
+      'auth',
+      '授权没有完成',
+      '如果授权页显示"Access blocked"或"Error 403: access_denied"：到 Google Cloud → Google Auth Platform →「目标对象 / Audience」→ 测试用户，添加你登录 Chrome 的这个 Gmail，几分钟后再点"连接 YouTube"。如果是你自己关掉了授权页：需要允许"查看你的 YouTube 账号"（只读）才能同步订阅和找片',
+    );
   }
   if (/bad client id|invalid.*client/i.test(msg)) {
     return new AppError('oauth_config', 'OAuth Client ID 无效或与扩展 ID 不匹配', '核对 Google Cloud 里 OAuth 客户端的"商品 ID"是否等于设置页显示的扩展 ID');
