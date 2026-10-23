@@ -304,3 +304,15 @@ export const ANTHROPIC_FALLBACK = {
 } as const;
 
 export const GOOGLE_OAUTH_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+
+/** YouTube 授权：launchWebAuthFlow + Google 隐式授权（访问令牌约 1 小时有效，没有刷新令牌）。 */
+export const GOOGLE_OAUTH = {
+  /** 提前这么久视为过期，避免请求途中失效 */
+  expiryMarginMs: 2 * 60_000,
+  /** 回跳里没带 expires_in 时按此估算（Google 惯例 3599 秒） */
+  defaultExpiresInSec: 3599,
+  /** 静默续期失败后，这段时间内不再静默重试（直接请用户重新授权） */
+  silentRetryAfterMs: 15 * 60_000,
+  /** 静默续期（prompt=none）最长等待 */
+  silentTimeoutMs: 10_000,
+} as const;

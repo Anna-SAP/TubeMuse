@@ -27,7 +27,7 @@ export async function exportAll(ctx: AppContext): Promise<ExportFile> {
   };
 }
 
-/** 清空全部本地数据，并让 Chrome 忘掉本扩展的 YouTube 授权。 */
+/** 清空全部本地数据（含 YouTube 访问令牌；令牌仍有效时先向 Google 吊销）。 */
 export async function clearAll(ctx: AppContext): Promise<void> {
   await ctx.auth.disconnect().catch(() => undefined);
   await ctx.kv.clear();

@@ -13,5 +13,8 @@ export const ENDPOINTS: Endpoints = {
 
 export type { Endpoints };
 
+/** e2e：mock 授权页直接 302 回跳 https://<扩展ID>.chromiumapp.org/#access_token=… */
+export const GOOGLE_OAUTH_AUTHORIZE_URL = `${MOCK}/oauth/authorize`;
+
 /** e2e：在本机 mock 的"播放页"上注入观看追踪脚本 */
 export const TRACKED_SITES = ['https://www.youtube.com', MOCK] as const;

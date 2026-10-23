@@ -15,13 +15,15 @@ export interface AppContext {
 }
 
 export function createBrowserContext(): AppContext {
+  const kv = chromeKV();
+  const locker = webLocker();
   return {
-    kv: chromeKV(),
-    locker: webLocker(),
+    kv,
+    locker,
     // 包一层，避免把未绑定的 window.fetch 交给 SDK 导致 "Illegal invocation"
     http: (input, init) => fetch(input, init),
     now: () => Date.now(),
-    auth: chromeAuth(),
+    auth: chromeAuth(kv, locker),
     endpoints: ENDPOINTS,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
   };

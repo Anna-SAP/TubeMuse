@@ -18,6 +18,7 @@ import type { AppContext } from './context';
 import { AppError, toAppError } from './errors';
 import { getLlm } from './llm-factory';
 import { checkReminder } from './reminder-service';
+import { isLinked } from './auth';
 import { currentWeekKey, discoveryDue, runDiscovery } from './discovery-service';
 import { stores } from './repo';
 import { currentWindowStats, dayEntries, enrichMetadata } from './watch-service';
@@ -158,7 +159,7 @@ export async function runScheduledJobs(ctx: AppContext): Promise<JobsResult> {
     // 新博主发现：每周一次（只花 YouTube 配额，不花钱）；没连接 YouTube 或没有兴趣簇时跳过
     if (settings.discovery.enabled) {
       const [disc, clusters] = await Promise.all([stores.discovery.read(ctx.kv), stores.clusters.read(ctx.kv)]);
-      if (clusters.clusters.length && (await discoveryDue(ctx, disc, settings.weekly.weekday)) && (await ctx.auth.status()) === 'connected') {
+      if (clusters.clusters.length && (await discoveryDue(ctx, disc, settings.weekly.weekday)) && isLinked(await ctx.auth.status())) {
         const key = `discovery:${currentWeekKey(ctx, settings.weekly.weekday)}`;
         try {
           await runDiscovery(ctx);

@@ -1,7 +1,7 @@
 // @ts-check
 // 构建可直接"加载已解压的扩展程序"的目录。
-//   npm run build      → dist/       （正式版：真实 API 地址，manifest 含固定 key 与 OAuth Client ID）
-//   npm run build:e2e  → dist-e2e/   （测试版：所有外部服务指向本机 mock，授权换成假令牌）
+//   npm run build      → dist/       （正式版：真实 API 地址，manifest 含固定 key，代码里注入 OAuth Client ID）
+//   npm run build:e2e  → dist-e2e/   （测试版：所有外部服务与 Google 授权页都指向本机 mock）
 // manifest 的 host_permissions 与 CSP connect-src 都由 src/config/endpoints*.ts 生成，保证网络出口只有一个来源。
 import * as esbuild from 'esbuild';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -13,7 +13,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const e2e = process.argv.includes('--e2e');
 const outdir = join(root, e2e ? 'dist-e2e' : 'dist');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-const OAUTH_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
 
 /** @param {string} msg @returns {never} */
 function fail(msg) {
@@ -26,7 +25,8 @@ const keyPath = join(root, 'local', 'manifest-key.txt');
 if (!existsSync(keyPath)) fail('缺少 local/manifest-key.txt。先运行 npm run setup 生成扩展密钥（用于固定扩展 ID）。');
 const manifestKey = readFileSync(keyPath, 'utf8').trim();
 const extensionId = extensionIdFromPublicKey(manifestKey);
-let oauthClientId = '';
+// OAuth Client ID（Google Cloud 里"Web 应用"类型的客户端）不是密钥，构建时注入代码；e2e 用假 ID
+let oauthClientId = e2e ? 'e2e-test-client.apps.googleusercontent.com' : '';
 const configPath = join(root, 'local', 'config.json');
 if (!e2e && existsSync(configPath)) {
   oauthClientId = String(JSON.parse(readFileSync(configPath, 'utf8')).oauthClientId ?? '').trim();
@@ -47,14 +47,14 @@ const imgOrigins = ['https://i.ytimg.com', ...(e2e ? origins.filter((o) => o.sta
 rmSync(outdir, { recursive: true, force: true });
 mkdirSync(outdir, { recursive: true });
 
-/** e2e 构建时整体替换两个模块；正式构建不含任何测试代码 */
+/** e2e 构建时整体替换网络出口模块；正式构建不含任何测试代码 */
 const swapPlugin = {
   name: 'tubemuse-e2e-swap',
   /** @param {import('esbuild').PluginBuild} build */
   setup(build) {
     if (!e2e) return;
-    const swaps = { [join(root, 'src', 'config', 'endpoints.ts')]: 'endpoints.e2e.ts', [join(root, 'src', 'services', 'auth.ts')]: 'auth.e2e.ts' };
-    build.onResolve({ filter: /\/(endpoints|auth)$/ }, (args) => {
+    const swaps = { [join(root, 'src', 'config', 'endpoints.ts')]: 'endpoints.e2e.ts' };
+    build.onResolve({ filter: /\/endpoints$/ }, (args) => {
       const resolved = join(args.resolveDir, args.path + '.ts');
       const swap = swaps[resolved];
       return swap ? { path: join(dirname(resolved), swap) } : undefined;
@@ -82,7 +82,7 @@ await esbuild.build({
   minify: false,
   legalComments: 'linked',
   chunkNames: 'chunks/[name]-[hash]',
-  define: { 'process.env.NODE_ENV': '"production"' },
+  define: { 'process.env.NODE_ENV': '"production"', __OAUTH_CLIENT_ID__: JSON.stringify(oauthClientId) },
   plugins: [swapPlugin],
   logLevel: 'warning',
 });
@@ -139,7 +139,6 @@ const manifest = {
   icons,
   content_security_policy: { extension_pages: csp },
 };
-if (oauthClientId) manifest.oauth2 = { client_id: oauthClientId, scopes: [OAUTH_SCOPE] };
 writeFileSync(join(outdir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
 // ── 产物自检：不得含密钥、令牌；正式版不得含测试地址或测试代码 ──
@@ -178,10 +177,11 @@ for (const file of walk(outdir)) {
 console.log(`✔ 已构建 ${relative(root, outdir)}/`);
 console.log(`  网络出口：${origins.join(', ')}`);
 if (!e2e) {
-  console.log(`  扩展 ID：${extensionId}（在 Google Cloud 创建 OAuth 客户端时填这个）`);
+  console.log(`  扩展 ID：${extensionId}`);
+  console.log(`  授权回跳地址：https://${extensionId}.chromiumapp.org/（填到 Google Cloud"Web 应用"客户端的"已获授权的重定向 URI"）`);
   console.log(
     oauthClientId
       ? `  OAuth Client ID：${oauthClientId}`
-      : '  ⚠ 还没有配置 OAuth Client ID：YouTube 授权暂不可用。按 README「Google Cloud 配置」创建客户端后写进 local/config.json，再运行 npm run build。',
+      : '  ⚠ 还没有配置 OAuth Client ID：YouTube 授权暂不可用。按 README「Google Cloud 配置」创建"Web 应用"类型的客户端后写进 local/config.json，再运行 npm run build。',
   );
 }

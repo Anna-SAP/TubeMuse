@@ -5,7 +5,7 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE } from '../../config/defaults';
 import { ENDPOINTS } from '../../config/endpoints';
-import { oauthClientId, type AuthStatus } from '../../services/auth';
+import { oauthClientId, oauthRedirectUrl, type AuthStatus } from '../../services/auth';
 import { clearAll, exportAll } from '../../services/data-service';
 import type { AppError } from '../../services/errors';
 import { isAnthropicWorkspaceId } from '../../services/llm';
@@ -128,6 +128,7 @@ function App() {
   const settings = useStore(stores.settings);
   const secrets = useStore(stores.secrets);
   const reminder = useStore(stores.reminderState);
+  const ytAuth = useStore(stores.youtubeAuth);
   const quota = useQuota();
   const [auth, setAuth] = useState<AuthStatus>();
   const [error, setError] = useState<AppError>();
@@ -137,7 +138,7 @@ function App() {
   const [clearText, setClearText] = useState('');
 
   const refreshAuth = () => void ctx.auth.status().then(setAuth);
-  useEffect(refreshAuth, []);
+  useEffect(refreshAuth, [ytAuth]);
 
   if (!settings || !secrets) return null;
 
@@ -170,6 +171,18 @@ function App() {
 
   const extId = chrome.runtime.id;
   const clientId = oauthClientId();
+  const redirectUrl = oauthRedirectUrl();
+  const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const authText =
+    auth === 'not_configured'
+      ? '未配置 OAuth 客户端'
+      : auth === 'expired'
+        ? '授权已过期，自动续期没有成功，请重新授权'
+        : auth === 'connected'
+          ? ytAuth?.expiresAt && ytAuth.expiresAt > Date.now()
+            ? `已连接（访问令牌有效至 ${hhmm(ytAuth.expiresAt)}，过期后自动续期）`
+            : '已连接（访问令牌已过期，下次使用时自动续期）'
+          : '未连接';
   const provider = settings.llm.provider;
 
   return (
@@ -230,6 +243,10 @@ function App() {
           <dd>
             <code data-testid="extension-id">{extId}</code>
           </dd>
+          <dt>授权回跳地址</dt>
+          <dd>
+            <code data-testid="redirect-url">{redirectUrl}</code>
+          </dd>
           <dt>OAuth Client ID</dt>
           <dd>{clientId ? <code>{clientId}</code> : <span class="warn-text">未配置（见 README「Google Cloud 配置」）</span>}</dd>
           <dt>申请的权限</dt>
@@ -237,15 +254,25 @@ function App() {
             <code>{GOOGLE_OAUTH_SCOPE}</code>（只读：订阅、喜欢的视频、搜索）
           </dd>
           <dt>状态</dt>
-          <dd data-testid="auth-status">{auth === 'connected' ? '已连接' : auth === 'not_configured' ? '未配置 OAuth 客户端' : '未连接'}</dd>
+          <dd data-testid="auth-status">{authText}</dd>
         </dl>
-        <p class="muted small">在 Google Cloud 创建"Chrome 扩展"类型的 OAuth 客户端时，"商品 ID"填上面的扩展 ID。授权使用你登录 Chrome 的 Google 账号。</p>
+        <p class="muted small">
+          在 Google Cloud 创建"Web 应用"类型的 OAuth 客户端，"已获授权的重定向 URI"填上面的回跳地址（整段复制，含结尾的 /）。点"连接 YouTube"会弹出 Google 登录窗口，在窗口里登录你加进测试用户的 Google 账号即可，不需要登录浏览器本身。
+        </p>
         <div class="row">
           <button class="btn primary" disabled={busy || auth === 'not_configured'} onClick={() => act(async () => (await ctx.auth.getToken(true), 'YouTube 已连接'))}>
-            连接 YouTube
+            {auth === 'expired' ? '重新授权' : '连接 YouTube'}
           </button>
-          {auth === 'connected' && (
-            <button class="btn" disabled={busy} onClick={() => act(async () => (await ctx.auth.disconnect(), '已断开并吊销授权'))}>
+          {(auth === 'connected' || auth === 'expired') && (
+            <button
+              class="btn"
+              disabled={busy}
+              onClick={() =>
+                act(async () =>
+                  (await ctx.auth.disconnect()).revoked ? '已断开，并已向 Google 吊销访问令牌' : '已断开（本地令牌已删除）。如需彻底撤销，到 Google 账号「第三方应用和服务」里移除 TubeMuse',
+                )
+              }
+            >
               断开
             </button>
           )}
@@ -520,7 +547,7 @@ function App() {
         {clearStep === 1 && (
           <div class="danger-zone">
             <p>
-              这会删除本机上 TubeMuse 的全部数据（API Key、画像、兴趣簇、评分、改进记录、缓存、配额计数），并让 Chrome 忘掉本扩展的 YouTube 授权。<strong>无法恢复。</strong>建议先导出。
+              这会删除本机上 TubeMuse 的全部数据（API Key、画像、兴趣簇、评分、改进记录、缓存、配额计数），并删除 YouTube 访问令牌（令牌仍有效时先向 Google 吊销）。<strong>无法恢复。</strong>建议先导出。
             </p>
             <label class="field">
               <span>请输入"清空"二字确认</span>
@@ -574,7 +601,7 @@ function App() {
             <code>https://i.ytimg.com</code>（结果卡缩略图，图片地址来自 API 返回）
           </li>
         </ul>
-        <p class="muted small">Google 授权窗口由 Chrome 自己打开；云端语音识别由浏览器自己连接 Google 语音服务（侧边栏会明示）。</p>
+        <p class="muted small">Google 登录 / 授权窗口（accounts.google.com）由浏览器自己打开，授权结果回跳到 chromiumapp.org 由浏览器直接截获；云端语音识别由浏览器自己连接 Google 语音服务（侧边栏会明示）。</p>
         <p class="muted small">注入 youtube.com 的观看追踪脚本只读取本地播放器状态（进度、时长、暂停、倍速、是否广告、标签页是否可见），不读取页面内容、不改动页面、不发任何网络请求。</p>
       </Section>
     </div>

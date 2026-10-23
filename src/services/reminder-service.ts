@@ -6,6 +6,7 @@ import { OperationBudget } from '../core/quota';
 import type { ReminderState, ReminderStep } from '../core/types';
 import type { AppContext } from './context';
 import { makeCharger, makeExhaustedMarker } from './quota-service';
+import { isLinked } from './auth';
 import { newId, stores } from './repo';
 import { currentWindowStats } from './watch-service';
 import { createYouTube } from './youtube';
@@ -30,7 +31,7 @@ export async function findReminderStep(ctx: AppContext): Promise<ReminderStep | 
     ),
   ];
   const watched = new Set(Object.values(log).flatMap((d) => Object.keys(d)));
-  if (candidates.length && (await ctx.auth.status()) === 'connected') {
+  if (candidates.length && isLinked(await ctx.auth.status())) {
     try {
       const budget = new OperationBudget({ searchCalls: 0, generalUnits: 4 }, '寻找提醒里的推荐视频');
       const yt = createYouTube({

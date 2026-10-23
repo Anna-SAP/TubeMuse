@@ -118,7 +118,20 @@ export const stores = {
   xLedger: new Store<XLedger>('xLedger', () => ({ days: {} })),
   hotspots: new Store<HotspotState | null>('hotspots', () => null),
   discovery: new Store<DiscoveryState>('discovery', () => ({ weeks: {}, dismissed: {} })),
+  /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
+  youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
 };
+
+export interface YouTubeAuthState {
+  accessToken?: string;
+  expiresAt?: number;
+  scope?: string;
+  /** 首次交互授权的时间；有这条记录就算"已连接过"，断开时删除整条 */
+  connectedAt: number;
+  /** 最近一次静默续期失败的时间与原因（成功或重新授权后清除） */
+  renewFailedAt?: number;
+  renewError?: string;
+}
 
 /** 后台任务状态：首次运行的日期（补算不早于它）、最近一次检查、失败记录（展示给用户，不静默） */
 export interface JobState {
@@ -129,7 +142,7 @@ export interface JobState {
 }
 
 /** 导出时排除的键：API Key 与授权相关信息不进入导出文件。 */
-export const EXPORT_EXCLUDED_KEYS = new Set<string>([stores.secrets.key]);
+export const EXPORT_EXCLUDED_KEYS = new Set<string>([stores.secrets.key, stores.youtubeAuth.key]);
 
 export function newId(prefix: string): string {
   const rand = crypto.getRandomValues(new Uint32Array(2));

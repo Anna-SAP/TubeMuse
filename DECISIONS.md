@@ -15,7 +15,7 @@
 | X 帖子 $0.005/条、Trends $0.010/条、当天去重 | 帖子一致（按 UTC 日去重）；**Trends 是 $0.010/次请求**，不是每条；按量付费月上限 300 万条帖子读取 | Phase 3 才用，届时按此实现 |
 | Web Speech 本地识别实验特性 | `SpeechRecognition.available()` / `install()` / `processLocally`（Chrome 139+）| 检测后使用，见 §5 |
 | 侧边栏拿麦克风无直通路径 | 确认：侧边栏不显示权限框，直接 `Permission dismissed` | 单独的授权页（标签页）授权一次 |
-| chrome.identity 需固定扩展 ID | 一致；且 Google 已不推荐直接用隐式授权流，`launchWebAuthFlow` 官方定位为"非 Google 身份提供方" | 用户确认使用 `getAuthToken`，见 §3 |
+| chrome.identity 需固定扩展 ID | 一致；且 Google 已不推荐直接用隐式授权流，`launchWebAuthFlow` 官方定位为"非 Google 身份提供方" | 用户确认使用 `getAuthToken`，见 §3；后因 Comet 等非 Chrome 浏览器无法使用，改为 `launchWebAuthFlow`，见 §25 |
 
 ## 1. 工程与工具链
 
@@ -44,6 +44,8 @@
 **配置集中：数值在 `src/config/defaults.ts`，网络出口在 `src/config/endpoints.ts`。** manifest 的 `host_permissions` 与 CSP `connect-src` 由构建脚本从 endpoints 生成，出口只有一个来源。
 
 ## 3. YouTube 授权
+
+> **已被 §25 取代**（2026-10-24）：改为 `launchWebAuthFlow` + "Web 应用"类型客户端。下面保留原始决策供对照；"固定扩展 ID"与"只申请 `youtube.readonly`、不设 YouTube API Key"两条仍然有效。
 
 **`chrome.identity.getAuthToken` + "Chrome 扩展"类型 OAuth 客户端 + manifest `key` 固定扩展 ID。**（用户 2026-10-24 确认）
 - 为什么：Chrome/Google 官方路径；Chrome 管理令牌缓存与刷新；不需要 client secret；只申请 `youtube.readonly`。
@@ -213,3 +215,33 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 - 存放在 `secrets`（与 Key 同处）而不是 `settings`：它是账号标识，跟 Key 绑定使用；这样不进导出文件，"清空"时一并删除。它不是密钥，所以设置页照常显示已保存的值。
 - 报错：识别官方的三种工作区错误（未带头 400、格式不对 400、工作区不存在或无权 404），分别给出人话原因和解法；404 不再被误报成"模型不存在"。其余 400 改为显示服务方返回的原因文本（不再截断成 JSON 片段），提示语不再默认指向模型名。
 - 放弃的方案：自动调用 List Workspaces 帮用户选工作区——那是组织管理接口（Admin API），会让扩展碰到组织级数据、扩大访问面，超出规格。
+
+## 25. YouTube 授权改版：launchWebAuthFlow + "Web 应用"客户端（取代 §3）
+
+- **起因**：用户日常使用 Comet（Chromium 内核，非 Google Chrome）。`getAuthToken` 依赖浏览器级 Google 登录（Chrome 的"允许登录 Chrome"/ 账号体系），Comet 没有对应设置，这条路走不通。用户指定改为 `launchWebAuthFlow` + "Web 应用"类型客户端、回跳 URL 中直接取 `access_token`（隐式授权）。
+- **外部事实核实**（2026-10-24）：
+  - Google 文档仍提供隐式授权（`response_type=token`），但标注"仅为兼容旧系统与排障保留，因安全隐患强烈不推荐"，推荐授权码 + PKCE；没有给出停用日期。
+  - 那些安全隐患针对网页单页应用（令牌出现在地址栏、浏览历史、Referer，以及回跳页被注入脚本）。扩展里的回跳地址 `https://<扩展ID>.chromiumapp.org/` 由浏览器直接截获、从不作为网页加载，这几类风险基本不适用。剩下的 CSRF 用随机 `state` 校验防住：不匹配就整个丢弃，连回跳里的错误信息也不采信。
+  - 隐式授权没有刷新令牌，访问令牌约 1 小时有效（`expires_in`）；支持 `prompt=none` 静默获取。
+  - 没有找到 Comet 对 `chrome.identity` 的任何说明，需要用户实测。
+- **做法**：
+  - 授权地址只带 `client_id / redirect_uri / response_type=token / scope=youtube.readonly / state / prompt`。不带 `include_granted_scopes`，避免顺带拿到以前授过的其他范围。回跳后校验 `state`，并确认范围里包含 `youtube.readonly`。
+  - 交互授权用 `prompt=select_account`：浏览器里登录了多个 Google 账号时，让用户挑测试账号。
+  - 令牌和过期时间存在 `chrome.storage.local`（`youtubeAuth`），不进导出，"清空"时一并删除。令牌提前 2 分钟视为过期。
+  - **过期处理（不静默失败）**：
+    1. 后台或页面需要令牌时，先用 `prompt=none` 做一次静默续期，不弹窗，最多等 10 秒。这需要浏览器里网页版 Google 账号仍在登录。
+    2. 静默续期失败：明确报"授权已过期，自动续期没有成功"，状态变为 `expired`，侧边栏顶部出现"重新授权"按钮，设置页也会显示。
+    3. 失败后 15 分钟内不再静默重试，避免反复开隐藏窗口。
+    4. 后台任务（补元数据、提醒里的推荐视频、新博主）在 `expired` 状态下仍会尝试；失败会记入"记录"页的失败原因，不会跳过而不说。
+  - **规格之外的补充**：用户原话是"过期后重新弹窗授权"，我加了一层 `prompt=none` 静默续期。原因是每小时弹一次窗不现实，而且 23:00 的总结等后台任务无法弹窗。静默失败时仍按用户要求，请用户重新弹窗授权。
+  - 断开：令牌仍有效时向 `oauth2.googleapis.com/revoke` 吊销（令牌放在请求体里），然后删除本地记录。令牌已过期时不发请求，界面如实说明没有吊销，并给出去 Google 账号「第三方应用和服务」里移除的路径。
+  - Client ID 仍由 `local/config.json` 在构建时注入，改为 esbuild `define` 注入代码，不再写 manifest `oauth2`，因为那一项只给 `getAuthToken` 用。授权页地址 `accounts.google.com` 由浏览器授权窗口打开、扩展不对它 fetch，所以不进 CSP / `host_permissions`。
+  - 删除了只适用于 Chrome 的报错指引（"允许登录 Chrome"、"Chrome 没有登录"），改为按 Google 授权窗口里的实际错误分别指引：403 access_denied → 测试用户；redirect_uri_mismatch → 回跳地址；invalid_client → 客户端类型或 ID。设置页和 `npm run setup` / `npm run build` 都会显示回跳地址。
+- **测试**：
+  - 纯逻辑（拼地址、解析回跳、有效期）与授权服务（弹窗、复用、静默续期、并发只续一次、续期失败冷却、401 作废、断开吊销）全部用注入的假 `launchWebAuthFlow` 做单测。
+  - e2e 不再替换授权模块，而是真实调用 `launchWebAuthFlow`：mock 授权页 302 回跳到 chromiumapp.org，测试断言授权请求只申请 `youtube.readonly`、带随机 `state`，拿到的令牌只发往 YouTube。
+- **放弃**：
+  - 授权码 + PKCE。Google 的"Web 应用"客户端换令牌必须带 client secret，要么把 secret 放进扩展，要么让用户填。而且要自己管理刷新令牌，测试状态下刷新令牌 7 天就过期，相比隐式授权得不偿失。
+  - 继续用 `getAuthToken`：Comet 上不可用。
+- **以后怎么换**：若 Google 停用隐式授权，在 `services/auth.ts` 的 `webAuthFlowAuth` 里把 `runFlow` 换成授权码流程即可，`AuthProvider` 接口与调用方不用动。
+

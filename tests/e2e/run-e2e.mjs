@@ -49,6 +49,8 @@ const blocked = [];
 await context.route('**/*', (route) => {
   const url = route.request().url();
   if (url.startsWith('chrome-extension://') || url.startsWith(MOCK) || url.startsWith('data:') || url.startsWith('blob:')) return route.continue();
+  // 授权回跳地址由浏览器截获；万一真的发起加载，也在本地应答，绝不出网
+  if (/^https:\/\/[a-p]{32}\.chromiumapp\.org\//.test(url)) return route.fulfill({ status: 200, body: '' });
   blocked.push(url);
   return route.abort();
 });
@@ -81,8 +83,15 @@ try {
   const keyInput = await options.getByTestId('anthropic-key').getAttribute('placeholder');
   check(keyInput === '已保存（出于安全不回显）', '保存 Anthropic Key 后输入框不回显 Key');
   await options.getByRole('button', { name: '连接 YouTube' }).click();
-  await options.getByTestId('auth-status').filter({ hasText: '已连接' }).waitFor();
-  check(true, 'YouTube 已连接（e2e 版使用假令牌）');
+  await options.getByTestId('auth-status').filter({ hasText: '已连接' }).waitFor({ timeout: 15000 });
+  const authReq = requests.filter((r) => r.path === '/oauth/authorize');
+  check(authReq.length === 1, 'YouTube 已连接（launchWebAuthFlow → mock 授权页 → 回跳）');
+  const aq = authReq[0]?.query ?? {};
+  check(
+    aq.response_type === 'token' && aq.scope === 'https://www.googleapis.com/auth/youtube.readonly' && aq.redirect_uri === `https://${extId}.chromiumapp.org/` && aq.prompt === 'select_account' && /^[0-9a-f]{32}$/.test(aq.state ?? '') && !('include_granted_scopes' in aq),
+    '授权请求只申请 youtube.readonly，回跳到 chromiumapp.org，带随机 state',
+  );
+  check((await options.getByTestId('redirect-url').textContent()) === `https://${extId}.chromiumapp.org/`, '设置页显示授权回跳地址');
   await options.screenshot({ path: join(shots, '01-options.png'), fullPage: true });
 
   // ── 侧边栏（以标签页方式打开同一页面）──

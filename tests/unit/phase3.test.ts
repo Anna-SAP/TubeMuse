@@ -135,7 +135,7 @@ function setup(opts: { xToken?: boolean; budget?: number; xStatus?: number } = {
       return { posts: Array.from({ length: 30 }, (_, i) => ({ id: `${xCalls.length}${String(i).padStart(4, '0')}`, text: `post ${i} about ${query.slice(0, 20)}`, likes: 100 - i, reposts: 10, hoursAgo: 2 })) };
     },
   });
-  const auth: AuthProvider = { configured: () => true, getToken: async () => 'ya29.fake-token-for-tests-1234567', invalidate: async () => {}, status: async () => 'connected', disconnect: async () => {} };
+  const auth: AuthProvider = { configured: () => true, getToken: async () => 'ya29.fake-token-for-tests-1234567', invalidate: async () => {}, status: async () => 'connected', disconnect: async () => ({ revoked: false }) };
   const kv = memoryKV({
     secrets: { anthropicApiKey: KEY, ...(opts.xToken === false ? {} : { xBearerToken: XTOKEN }) },
     settings: { x: { dailyBudgetUsd: opts.budget ?? 0.5 } },

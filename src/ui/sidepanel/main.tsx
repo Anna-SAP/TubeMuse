@@ -2,8 +2,9 @@ import { render } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import type { AuthStatus } from '../../services/auth';
 import { stores } from '../../services/repo';
-import { appCtx, useQuota, useStore, useXSpend } from '../shared/app';
-import { Notice, QuotaMeter, QuotaWarning } from '../shared/components';
+import type { AppError } from '../../services/errors';
+import { appCtx, asAppError, useQuota, useStore, useXSpend } from '../shared/app';
+import { ErrorBox, Notice, QuotaMeter, QuotaWarning } from '../shared/components';
 import { ChangesView } from './ChangesView';
 import { FindView } from './FindView';
 import { ProfileView } from './ProfileView';
@@ -18,11 +19,39 @@ function SetupBanner() {
   const ctx = appCtx();
   const settings = useStore(stores.settings);
   const secrets = useStore(stores.secrets);
+  const ytAuth = useStore(stores.youtubeAuth);
   const [auth, setAuth] = useState<AuthStatus>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<AppError>();
   useEffect(() => {
     void ctx.auth.status().then(setAuth);
-  }, [secrets]);
+  }, [secrets, ytAuth]);
   if (!settings || !secrets || !auth) return null;
+  if (auth === 'expired') {
+    // 静默续期失败：就地重新授权（弹出 Google 登录窗口），不用跳去设置页
+    const reauth = async () => {
+      setBusy(true);
+      setError(undefined);
+      try {
+        await ctx.auth.getToken(true);
+      } catch (e) {
+        setError(await asAppError(e));
+      } finally {
+        setBusy(false);
+      }
+    };
+    return (
+      <>
+        <Notice kind="warn">
+          YouTube 授权已过期，自动续期没有成功。
+          <button class="btn link small" disabled={busy} onClick={() => void reauth()}>
+            重新授权
+          </button>
+        </Notice>
+        {error && <ErrorBox error={error} onClose={() => setError(undefined)} />}
+      </>
+    );
+  }
   const provider = settings.llm.provider;
   const hasKey = provider === 'anthropic' ? !!secrets.anthropicApiKey : !!secrets.openaiApiKey;
   const items: string[] = [];

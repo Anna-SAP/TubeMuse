@@ -27,7 +27,7 @@ function fakeAuth(): AuthProvider {
     getToken: async () => TOKEN,
     invalidate: async () => {},
     status: async () => 'connected',
-    disconnect: async () => {},
+    disconnect: async () => ({ revoked: false }),
   };
 }
 

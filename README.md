@@ -52,7 +52,7 @@
 
 | 需要什么 | 用来做什么 | 备注 |
 |---|---|---|
-| 电脑上的 **Google Chrome** | 运行扩展 | **必须登录你的 Google 账号**（点右上角头像登录 Chrome，不是只在网页里登录 Gmail；不必开启同步）。如果头像菜单里没有登录入口，先到 `chrome://settings/syncSetup` 打开"允许登录 Chrome"。TubeMuse 用这个账号读取你的 YouTube 订阅 |
+| **Chrome 或其他 Chromium 内核浏览器**（如 Comet） | 运行扩展 | **不需要登录浏览器本身**。连接 YouTube 时会弹出 Google 登录窗口，在窗口里登录你看 YouTube 用的 Google 账号即可，TubeMuse 用这个账号只读访问你的订阅 |
 | **Node.js 20 或更新版本** | 构建扩展 | 在终端运行 `node -v` 确认 |
 | **Git** | 下载代码 | 也可以在 GitHub 页面点 Code → Download ZIP |
 | **Anthropic 或 OpenAI 的 API Key**（二选一） | 理解你的口令、归纳兴趣、写总结 | 按调用量付费，见 [💰 费用与配额](#cost) |
@@ -81,7 +81,7 @@ npm install
 npm run setup
 ```
 
-`npm run setup` 会打印一行 **扩展 ID**（32 个 a–p 之间的小写字母）。**复制下来**，下一步要用。
+`npm run setup` 会打印 **扩展 ID**（32 个 a–p 之间的小写字母）和 **授权回跳地址**（形如 `https://<扩展ID>.chromiumapp.org/`）。**把回跳地址复制下来**，下一步要用。
 
 > ⚠️ `setup` 会在 `local/` 文件夹里生成你自己的扩展密钥，用来让扩展 ID 固定不变。这个文件夹只在你的电脑上，不会被提交到 Git。**不要删除 `local/manifest-key.txt`**，删了扩展 ID 会变，下一步建好的 OAuth 客户端就失效了。
 
@@ -93,13 +93,15 @@ npm run setup
    - **应用信息**：应用名称填 `TubeMuse`，用户支持邮箱选你自己。
    - **受众群体**：选 **外部（External）**。
    - **联系信息**：填你自己的邮箱 → 同意条款 → **创建**。
-4. ⚠️ **把自己加为测试用户**（**最容易漏的一步**）：Google Auth Platform → **目标对象 / 受众群体（Audience）** → **测试用户** → **添加用户**，填你**登录 Chrome 的那个 Gmail** → 保存。发布状态保持 **测试中（Testing）**，不需要提交验证。
+4. ⚠️ **把自己加为测试用户**（**最容易漏的一步**）：Google Auth Platform → **目标对象 / 受众群体（Audience）** → **测试用户** → **添加用户**，填你**打算用来连接 YouTube 的那个 Gmail**（就是你看 YouTube 用的账号）→ 保存。发布状态保持 **测试中（Testing）**，不需要提交验证。
 5. **添加权限范围**：Google Auth Platform → **数据访问（Data Access）** → **添加或移除范围**，搜索并勾选 `.../auth/youtube.readonly`（"查看您的 YouTube 账号"）→ 更新 → **保存**。
 6. **创建客户端**：Google Auth Platform → **客户端（Clients）** → **创建客户端**：
-   - 应用类型：**Chrome 扩展程序（Chrome extension）**
+   - 应用类型：**Web 应用（Web application）**
    - 名称：随意
-   - **商品 ID（Item ID）**：粘贴第 1.1 步的扩展 ID
-   - 点 **创建**，然后复制生成的 **客户端 ID**（形如 `123456-abcdef.apps.googleusercontent.com`）。
+   - **已获授权的 JavaScript 来源**：留空
+   - **已获授权的重定向 URI** → **添加 URI**：粘贴第 1.1 步的授权回跳地址 `https://<扩展ID>.chromiumapp.org/`（整段复制，**结尾的 `/` 不能少**）
+   - 点 **创建**，然后复制生成的 **客户端 ID**（形如 `123456-abcdef.apps.googleusercontent.com`）。不需要客户端密钥（Client secret）。
+   - 以前按旧版说明建过"Chrome 扩展程序"类型的客户端？它在新版里用不了，按上面另建一个"Web 应用"类型的，并把新的 Client ID 换进下一步。
 
 #### 1.3 填入 Client ID 并构建
 
@@ -115,11 +117,11 @@ npm run setup
 npm run build
 ```
 
-终端最后几行应显示 `✔ 已构建 dist/`、扩展 ID，以及你的 OAuth Client ID。如果提示"还没有配置 OAuth Client ID"，说明上一步没保存成功。
+终端最后几行应显示 `✔ 已构建 dist/`、扩展 ID、授权回跳地址，以及你的 OAuth Client ID。如果提示"还没有配置 OAuth Client ID"，说明上一步没保存成功。
 
-#### 1.4 加载到 Chrome
+#### 1.4 加载到浏览器
 
-1. 在 Chrome 地址栏打开 `chrome://extensions`。
+1. 打开浏览器的扩展管理页：Chrome 在地址栏输入 `chrome://extensions`；Comet 等其他 Chromium 浏览器在菜单里找"扩展程序 → 管理扩展程序"。
 2. 打开右上角的 **开发者模式**。
 3. 点 **加载已解压的扩展程序** → 选择项目里的 **`dist`** 文件夹（注意不是 `dist-e2e`）。
 4. 核对 TubeMuse 卡片上显示的 ID 与第 1.1 步一致。
@@ -144,11 +146,14 @@ npm run build
 
 **② 连接 YouTube（必填）** —— 设置页 **2. YouTube 账号（只读授权）**
 
-1. 确认"OAuth Client ID"一栏显示了你的客户端 ID（不是"未配置"）。
-2. 点 **连接 YouTube**，会弹出 Google 授权窗口：
+1. 确认"OAuth Client ID"一栏显示了你的客户端 ID（不是"未配置"），"授权回跳地址"与你填进 Google Cloud 的一致。
+2. 点 **连接 YouTube**，会弹出 Google 登录 / 授权窗口：
+   - 登录（或选择）你加进测试用户的那个 Google 账号。
    - 出现"Google 尚未验证此应用"时，点 **继续**（这是你自己的测试应用）。
    - 授权内容应该只有"查看您的 YouTube 账号"，点允许。
-3. 状态变为 **已连接** 即完成。
+3. 状态变为 **已连接（访问令牌有效至 …，过期后自动续期）** 即完成。
+
+> 💡 Google 给这种授权的访问令牌约 **1 小时**有效，而且不提供刷新令牌。TubeMuse 会在需要时自动静默续期（前提是这个浏览器里网页版 Google 账号仍处于登录状态）；续期不成功时，侧边栏顶部会出现 **重新授权** 按钮，点一下、在弹窗里确认即可。
 
 **③ 近期学习目标（推荐）** —— 设置页 **7. 每日总结与每周自省** → **近期学习目标**
 
@@ -349,6 +354,7 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
   - `https://api.anthropic.com` 或 `https://api.openai.com`（你选定的大模型）
   - `https://api.x.com`（X 官方 API v2，只读；填了 Token 才会连接，只发 GET，从不发帖、点赞、关注）
   - `https://i.ytimg.com`（结果卡缩略图）
+- **Google 登录窗口**：点"连接 YouTube"或自动续期时，浏览器会打开 Google 官方的登录 / 授权页（`accounts.google.com`，只申请 `youtube.readonly`）。授权结果回跳到 `https://<扩展ID>.chromiumapp.org/`，这个地址由浏览器直接截获，不会真的访问网络。访问令牌只存在本机、记录过期时间，不进导出文件。
 - **注入 YouTube 页面的脚本**（只匹配 `https://www.youtube.com/*`）只读取播放器状态：播放进度、时长、暂停、倍速、是否广告、标签页是否在前台。它不读取页面文字、不改动页面、不发任何网络请求，构建时会自动检查。
 - **语音**：本地识别时音频不离开电脑；云端识别时音频由 Chrome 发到 Google 的语音服务，界面会一直标明。
 - **导出**：设置页 **11. 数据** → **导出全部数据（JSON）**。包含全部数据，但不含 API Key、X Token 和授权令牌。
@@ -380,11 +386,13 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 
 | 你看到的提示 / 现象 | 原因 | 怎么办 |
 |---|---|---|
-| "还没有配置 Google OAuth 客户端" | `local/config.json` 没填 Client ID，或填了之后没重新构建、没刷新扩展 | 填好 → `npm run build` → `chrome://extensions` 刷新 TubeMuse |
-| "OAuth Client ID 无效或与扩展 ID 不匹配" | Google Cloud 里"商品 ID"填的不是当前的扩展 ID | 到设置页 **2.** 查看扩展 ID，回 Google Cloud 改客户端的商品 ID |
-| 授权窗口显示 "Error 403: access_denied" 或"未完成验证" | 你的 Gmail 不在测试用户列表里 | 回到 [1.2](#install) 的第 4 小步，添加测试用户 |
-| "Chrome 当前没有登录 Google 账号，无法授权" | Chrome 没有登录 | Chrome 右上角头像 → 登录 → 再点 **连接 YouTube** |
-| "Chrome 关闭了"允许登录 Chrome"…"（英文原文 *The user turned off browser signin*） | Chrome 设置里"允许登录 Chrome"被关掉了，扩展没法弹出 Google 登录 | 地址栏打开 `chrome://settings/syncSetup` →「其他 Google 服务」→ 打开 **允许登录 Chrome** → 右上角头像用测试用户的 Gmail 登录（不必开启同步）→ 再点 **连接 YouTube**。开关是灰色（由组织管理）的话，这台电脑的 Chrome 用不了这种授权方式 |
+| "还没有配置 Google OAuth 客户端" | `local/config.json` 没填 Client ID，或填了之后没重新构建、没刷新扩展 | 填好"Web 应用"客户端的 ID → `npm run build` → 扩展管理页刷新 TubeMuse |
+| 授权窗口显示 "Error 403: access_denied" / "Access blocked" | 你登录的 Gmail 不在测试用户列表里（或加在了别的 Google Cloud 项目里） | 回到 [1.2](#install) 的第 4 小步添加测试用户；核对项目编号与 Client ID 开头的数字一致 |
+| 授权窗口显示 "Error 400: redirect_uri_mismatch" | 客户端的"已获授权的重定向 URI"与扩展的回跳地址不一致 | 复制设置页 **2.** 的"授权回跳地址"（含结尾 `/`）到 Google Cloud 客户端 → 保存 → 等几分钟再试 |
+| 授权窗口显示 "Error 401: invalid_client" / "OAuth client was not found" | Client ID 填错，或用的是旧的"Chrome 扩展程序"类型客户端 | 按 [1.2](#install) 第 6 小步新建"Web 应用"客户端，换进 `local/config.json` → `npm run build` → 刷新扩展 |
+| "授权没有完成" | 你关掉了授权窗口，或 Google 在窗口里显示了上面某个错误 | 按窗口里的错误对照上面几行；没有错误就再点一次 **连接 YouTube** |
+| "打不开 Google 授权页" | 网络无法访问 `accounts.google.com` | 检查网络 / 代理后重试 |
+| "YouTube 授权已过期，自动续期没有成功" | 访问令牌约 1 小时有效；自动续期需要这个浏览器里网页版 Google 账号仍在登录 | 点侧边栏顶部或设置页 **2.** 的 **重新授权** |
 | "你的 Google Cloud 项目还没有启用 YouTube Data API v3" | 漏了 [1.2](#install) 的第 2 小步 | 启用后重试 |
 | "YouTube 授权已失效" / "尚未连接 YouTube 账号" | 授权过期或被撤销 | 设置页 → **连接 YouTube** |
 | "还没有填写 Anthropic（或 OpenAI）API Key" / "API Key 无效" | Key 没填或填错 | 设置页 **1.** 重新填写并保存 |
@@ -424,10 +432,11 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 **安装与配置**
 
 - [ ] `npm run setup` → 期望：打印出 32 个 a–p 小写字母组成的扩展 ID
-- [ ] `npm run build` → 期望：显示 `✔ 已构建 dist/` 和你的 OAuth Client ID
+- [ ] `npm run build` → 期望：显示 `✔ 已构建 dist/`、授权回跳地址和你的 OAuth Client ID
 - [ ] 加载 `dist` → 期望：卡片上的 ID 与 setup 打印的一致，并自动打开设置页
 - [ ] 保存大模型 Key → 期望：输入框显示"已保存（出于安全不回显）"；**测试连接**显示"连接正常"
-- [ ] **连接 YouTube** → 期望：授权窗口只请求只读权限；状态变为"已连接"；点 **断开** 后再连接仍正常
+- [ ] **连接 YouTube** → 期望：弹出 Google 登录窗口，授权页只请求"查看您的 YouTube 账号"；状态变为"已连接（访问令牌有效至 …）"；点 **断开** 后提示已吊销，再连接仍正常
+- [ ] 连接 1 小时以上后再找片 → 期望：自动续期、不弹窗，状态里的有效期更新；若续期失败，侧边栏顶部出现 **重新授权**，点后恢复
 
 **找片与打分**
 
@@ -480,7 +489,7 @@ npm run verify      # 以上全部
 ```
 
 - **测试不出网**：单测把全局 `fetch` 换成直接报错的函数，所有外部服务都用注入的假实现；e2e 把所有外部服务指向本机 mock（127.0.0.1:47321），其他任何请求都会被拦截并判失败。
-- `dist-e2e/` 是测试专用构建（假授权、本机地址），**不要**在日常 Chrome 里加载它。正式构建 `dist/` 的构建脚本会自检：产物里出现疑似 Key、令牌或测试地址就构建失败。
+- `dist-e2e/` 是测试专用构建（Google 授权页与所有接口都指向本机 mock），**不要**在日常浏览器里加载它。e2e 会真实调用 `launchWebAuthFlow`，走完"弹窗 → mock 授权页 → 回跳 → 取令牌"的整条链路。正式构建 `dist/` 的构建脚本会自检：产物里出现疑似 Key、令牌或测试地址就构建失败。
 - 技术栈：TypeScript（strict）· esbuild · Preact · Vitest · Playwright；大模型用 Anthropic / OpenAI 官方 SDK。
 - 关键设计与取舍（为什么这样选、放弃了什么、以后怎么替换）见 [DECISIONS.md](DECISIONS.md)；产品规格见 [CLAUDE.md](CLAUDE.md)。
 
@@ -504,7 +513,9 @@ tests/e2e/         mock 服务（含可播放的 mock 播放页）、e2e 主流�
 ## ⚠️ 已知限制
 
 - 画像只来自订阅、喜欢的视频、本扩展记录的观看，以及可选导入的 Takeout 历史（YouTube API 不提供观看历史）。
-- 授权必须使用登录 Chrome 的 Google 账号（`chrome.identity.getAuthToken` 的限制）。
+- YouTube 访问令牌约 1 小时有效，Google 的隐式授权不提供刷新令牌：自动续期依赖浏览器里网页版 Google 账号的登录状态；不满足时要手动点"重新授权"。后台定时任务（如 23:00 的总结补元数据）在续期失败时会记录原因并提示，不会静默跳过。
+- Google 把隐式授权标注为"仅为兼容保留、不推荐"，但仍可用；若日后停用，需要改成授权码 + PKCE（见 [DECISIONS.md](DECISIONS.md) §25）。
+- 自动化测试只在 Playwright 自带的 Chromium 里跑过；Comet 等其他 Chromium 浏览器没有自动化验证（`launchWebAuthFlow` 是标准扩展 API，按理可用，以你的实测为准）。
 - "形式""质量"无法从 API 元数据可靠判断，只能按标题/简介关键词、播放量与点赞率近似——回显里会如实标注"近似落实"。
 - 语言判断优先用视频的音频/默认语言元数据；缺失时按标题文字推断（会标"按标题推断"）。拉丁语系之间无法靠文字区分。
 - 广告识别依赖 YouTube 播放器当前的页面结构（`ad-showing` 标记）；YouTube 改版后可能识别不到，届时广告时间会被算进有效观看（完成率不受影响）。

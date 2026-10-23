@@ -1,5 +1,5 @@
 // @ts-check
-// e2e 用的本机 mock 服务：模拟 YouTube Data API v3、Anthropic、OpenAI。
+// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI、X。
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
 import { createServer } from 'node:http';
 
@@ -318,6 +318,15 @@ export function startMockServer() {
         return send(200, { data, meta: { result_count: data.length } });
       }
       if (p === '/oauth/revoke') return send(200, {});
+      // 模拟 Google 授权页：校验后直接 302 回跳 https://<扩展ID>.chromiumapp.org/#access_token=…（隐式授权）
+      if (p === '/oauth/authorize') {
+        const q = url.searchParams;
+        const redirect = q.get('redirect_uri') ?? '';
+        if (!/^https:\/\/[a-p]{32}\.chromiumapp\.org\/$/.test(redirect) || q.get('response_type') !== 'token') return send(400, { error: 'invalid_request' });
+        const frag = new URLSearchParams({ access_token: 'e2e-fake-token', token_type: 'Bearer', expires_in: '3599', scope: q.get('scope') ?? '', state: q.get('state') ?? '' });
+        res.writeHead(302, { location: `${redirect}#${frag.toString()}` });
+        return res.end();
+      }
       send(404, { error: { code: 404, message: `mock: no route ${p}` } });
     });
   });

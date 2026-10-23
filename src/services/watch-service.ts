@@ -9,6 +9,7 @@ import type { Nature, NatureVerdict, WatchRecord, WatchSession, WindowStats } fr
 import { aggregateRecord, classifyWatch } from '../core/watch';
 import type { AppContext } from './context';
 import { AppError } from './errors';
+import { isLinked } from './auth';
 import { makeCharger, makeExhaustedMarker } from './quota-service';
 import { stores } from './repo';
 import { createYouTube } from './youtube';
@@ -94,7 +95,7 @@ export async function enrichMetadata(ctx: AppContext): Promise<{ fetched: number
     for (const id of Object.keys(recs)) if (!metas[id]) need.add(id);
   }
   if (!need.size) return { fetched: 0 };
-  if ((await ctx.auth.status()) !== 'connected') return { fetched: 0, skipped: '尚未连接 YouTube，暂时取不到视频标题与分类' };
+  if (!isLinked(await ctx.auth.status())) return { fetched: 0, skipped: '尚未连接 YouTube，暂时取不到视频标题与分类' };
   const budget = new OperationBudget({ searchCalls: 0, generalUnits: WATCH.metadataUnitBudget }, '补全观看记录的元数据');
   const yt = createYouTube({
     http: ctx.http,

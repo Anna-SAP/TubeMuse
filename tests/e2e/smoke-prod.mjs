@@ -42,6 +42,8 @@ try {
   const matches = (manifest.content_scripts ?? []).flatMap((/** @type {any} */ c) => c.matches);
   check(JSON.stringify(matches) === JSON.stringify(['https://www.youtube.com/*']), `观看追踪脚本只注入 www.youtube.com（${matches.join(', ')}）`);
   check(manifest.permissions.includes('alarms') && !manifest.permissions.includes('tabs') && !manifest.permissions.includes('scripting'), `权限最小化：${manifest.permissions.join(', ')}`);
+  // 授权走 launchWebAuthFlow：不再需要 manifest 的 oauth2（那是 getAuthToken 专用，依赖浏览器级 Google 登录）
+  check(!manifest.oauth2 && manifest.permissions.includes('identity'), 'manifest 不含 oauth2，授权走 launchWebAuthFlow');
   const connect = /connect-src ([^;]+)/.exec(manifest.content_security_policy.extension_pages)?.[1]?.trim().split(/\s+/) ?? [];
   const expected = ['https://www.googleapis.com', 'https://oauth2.googleapis.com', 'https://api.anthropic.com', 'https://api.openai.com', 'https://api.x.com'];
   check(JSON.stringify([...connect].sort()) === JSON.stringify([...expected].sort()), `网络出口白名单只有官方 API：${connect.join(' ')}`);

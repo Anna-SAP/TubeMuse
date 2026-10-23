@@ -64,7 +64,7 @@ function setup(opts: { key?: boolean; connected?: boolean } = {}) {
     getToken: async () => 'ya29.fake-token-for-tests-1234567',
     invalidate: async () => {},
     status: async () => (opts.connected === false ? 'disconnected' : 'connected'),
-    disconnect: async () => {},
+    disconnect: async () => ({ revoked: false }),
   };
   const ctx: AppContext = {
     kv: memoryKV(opts.key === false ? {} : { secrets: { anthropicApiKey: KEY } }),
