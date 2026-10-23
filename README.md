@@ -52,7 +52,7 @@
 
 | 需要什么 | 用来做什么 | 备注 |
 |---|---|---|
-| 电脑上的 **Google Chrome** | 运行扩展 | **必须登录你的 Google 账号**（点右上角头像登录 Chrome，不是只在网页里登录 Gmail）。TubeMuse 用这个账号读取你的 YouTube 订阅 |
+| 电脑上的 **Google Chrome** | 运行扩展 | **必须登录你的 Google 账号**（点右上角头像登录 Chrome，不是只在网页里登录 Gmail；不必开启同步）。如果头像菜单里没有登录入口，先到 `chrome://settings/syncSetup` 打开"允许登录 Chrome"。TubeMuse 用这个账号读取你的 YouTube 订阅 |
 | **Node.js 20 或更新版本** | 构建扩展 | 在终端运行 `node -v` 确认 |
 | **Git** | 下载代码 | 也可以在 GitHub 页面点 Code → Download ZIP |
 | **Anthropic 或 OpenAI 的 API Key**（二选一） | 理解你的口令、归纳兴趣、写总结 | 按调用量付费，见 [💰 费用与配额](#cost) |
@@ -384,6 +384,7 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 | "OAuth Client ID 无效或与扩展 ID 不匹配" | Google Cloud 里"商品 ID"填的不是当前的扩展 ID | 到设置页 **2.** 查看扩展 ID，回 Google Cloud 改客户端的商品 ID |
 | 授权窗口显示 "Error 403: access_denied" 或"未完成验证" | 你的 Gmail 不在测试用户列表里 | 回到 [1.2](#install) 的第 4 小步，添加测试用户 |
 | "Chrome 当前没有登录 Google 账号，无法授权" | Chrome 没有登录 | Chrome 右上角头像 → 登录 → 再点 **连接 YouTube** |
+| "Chrome 关闭了"允许登录 Chrome"…"（英文原文 *The user turned off browser signin*） | Chrome 设置里"允许登录 Chrome"被关掉了，扩展没法弹出 Google 登录 | 地址栏打开 `chrome://settings/syncSetup` →「其他 Google 服务」→ 打开 **允许登录 Chrome** → 右上角头像用测试用户的 Gmail 登录（不必开启同步）→ 再点 **连接 YouTube**。开关是灰色（由组织管理）的话，这台电脑的 Chrome 用不了这种授权方式 |
 | "你的 Google Cloud 项目还没有启用 YouTube Data API v3" | 漏了 [1.2](#install) 的第 2 小步 | 启用后重试 |
 | "YouTube 授权已失效" / "尚未连接 YouTube 账号" | 授权过期或被撤销 | 设置页 → **连接 YouTube** |
 | "还没有填写 Anthropic（或 OpenAI）API Key" / "API Key 无效" | Key 没填或填错 | 设置页 **1.** 重新填写并保存 |

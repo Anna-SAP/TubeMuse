@@ -23,6 +23,29 @@ export function oauthClientId(): string | undefined {
   return id && id.trim() ? id : undefined;
 }
 
+/** 把 chrome.identity 的英文报错翻译成人话（报错文本取自 Chromium identity API 源码）。 */
+export function authError(msg: string, interactive: boolean): AppError {
+  // Chrome 设置里关掉了"允许登录 Chrome"（prefs::kSigninAllowed），或被组织策略禁止
+  if (/turned off browser sign-?in/i.test(msg)) {
+    return new AppError(
+      'auth',
+      'Chrome 关闭了"允许登录 Chrome"，扩展无法用你的 Google 账号授权',
+      '地址栏打开 chrome://settings/syncSetup →「其他 Google 服务」里打开"允许登录 Chrome"→ 点右上角头像，用你加进测试用户的 Google 账号登录（不必开启同步）→ 回来再点"连接 YouTube"。如果这个开关是灰色的（由组织管理），这台电脑的 Chrome 不能用这种授权方式',
+    );
+  }
+  if (/not signed in|sign in/i.test(msg)) {
+    return new AppError('auth', 'Chrome 当前没有登录 Google 账号，无法授权', '先在 Chrome 右上角登录你的 Google 账号，再点"连接 YouTube"');
+  }
+  if (/did not approve|canceled|cancelled|user closed/i.test(msg)) {
+    return new AppError('auth', '授权被取消了', '需要授权"查看你的 YouTube 账号"（只读）才能同步订阅和找片');
+  }
+  if (/bad client id|invalid.*client/i.test(msg)) {
+    return new AppError('oauth_config', 'OAuth Client ID 无效或与扩展 ID 不匹配', '核对 Google Cloud 里 OAuth 客户端的"商品 ID"是否等于设置页显示的扩展 ID');
+  }
+  if (!interactive) return new AppError('auth', '尚未连接 YouTube 账号，或授权已失效', '在设置页点"连接 YouTube"');
+  return new AppError('auth', `YouTube 授权失败：${msg.slice(0, 200)}`);
+}
+
 export function chromeAuth(): AuthProvider {
   const configured = () => !!oauthClientId();
   const assertConfigured = () => {
@@ -47,18 +70,7 @@ export function chromeAuth(): AuthProvider {
         }
         return r.token;
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (/not signed in|sign in/i.test(msg)) {
-          throw new AppError('auth', 'Chrome 当前没有登录 Google 账号，无法授权', '先在 Chrome 右上角登录你的 Google 账号，再点"连接 YouTube"');
-        }
-        if (/did not approve|canceled|cancelled|user closed/i.test(msg)) {
-          throw new AppError('auth', '授权被取消了', '需要授权"查看你的 YouTube 账号"（只读）才能同步订阅和找片');
-        }
-        if (/bad client id|invalid.*client/i.test(msg)) {
-          throw new AppError('oauth_config', 'OAuth Client ID 无效或与扩展 ID 不匹配', '核对 Google Cloud 里 OAuth 客户端的"商品 ID"是否等于设置页显示的扩展 ID');
-        }
-        if (!interactive) throw new AppError('auth', '尚未连接 YouTube 账号，或授权已失效', '在设置页点"连接 YouTube"');
-        throw new AppError('auth', `YouTube 授权失败：${msg.slice(0, 200)}`);
+        throw authError(e instanceof Error ? e.message : String(e), interactive);
       }
     },
     async invalidate(token) {
