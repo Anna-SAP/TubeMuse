@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TubeMuse 麦克风授权</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="options-page">
+    <div class="options">
+      <section class="panel">
+        <h2>给 TubeMuse 授权麦克风</h2>
+        <p>Chrome 的侧边栏无法直接弹出麦克风授权框，所以需要在这个标签页里授权一次。授权后，侧边栏的语音输入就能直接使用。</p>
+        <p class="muted small">这一步只申请权限，拿到后立刻关闭麦克风，不录音、不保存任何音频。语音识别的音频去向（本地或浏览器云端服务）会在侧边栏明示。</p>
+        <button id="grant" class="btn primary">授权麦克风</button>
+        <div id="status" class="notice notice-info">点击上面的按钮，Chrome 会弹出授权框，请选择"允许"。</div>
+      </section>
+    </div>
+    <script type="module" src="mic-permission.js"></script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-e2e/
+# 本地私有配置：扩展私钥、OAuth Client ID 等，永不入库
+local/
+test-results/
+*.log
