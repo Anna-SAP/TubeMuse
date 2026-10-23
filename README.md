@@ -137,6 +137,8 @@ npm run build
 
 1. **当前使用**：选 Anthropic 或 OpenAI。
 2. 在对应的 **API Key** 框里粘贴 Key → **保存**。保存后输入框只显示"已保存（出于安全不回显）"，这是正常的。
+   - Anthropic 用户：在 [Claude Console → API keys](https://platform.claude.com/settings/keys) 点 **Create key** 时，建议把 Key **限定到某个工作区**（workspace），这样下面的"工作区 ID"可以留空。
+   - 如果你的 Key 没有限定工作区（测试时报"Key 没有绑定工作区"），到 [Workspaces](https://platform.claude.com/settings/workspaces) 页的 **ID** 列复制工作区 ID（`wrkspc_` 开头），填到 **Anthropic 工作区 ID（可选）** → **保存**。
 3. 模型名可以先保持默认（Anthropic：`claude-opus-5-5`；OpenAI：`gpt-6.1-sol`）。想省钱可以换成更便宜的模型，例如 `claude-sonnet-5-5`。
 4. （可选）点 **测试连接**，看到"连接正常"即可。这会产生一次极小的真实调用。
 
@@ -292,7 +294,7 @@ Chrome 的侧边栏没法直接弹出麦克风授权框，所以要单独授权�
 
 | 分区 | 内容 |
 |---|---|
-| 1. 大模型（LLM） | 提供商、Key、模型名、测试连接 |
+| 1. 大模型（LLM） | 提供商、Key、Anthropic 工作区 ID（可选）、模型名、测试连接 |
 | 2. YouTube 账号 | 扩展 ID、OAuth 状态、连接 / 断开 |
 | 3. 配额与找片 | 每日上限、单次口令上限、缓存时间、显示条数、默认地区 |
 | 4. 语音 | 默认识别语言、优先本地识别、麦克风授权页 |
@@ -355,7 +357,7 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 <details>
 <summary>发给大模型的数据（逐类列明）</summary>
 
-只发完成该任务所需的信息。**API Key 只出现在发往该服务自己的请求头里；YouTube 授权令牌、Google 账号信息、频道 ID、视频 ID、评分记录都不会发给大模型。** OpenAI 请求带 `store: false`。
+只发完成该任务所需的信息。**API Key（以及可选的 Anthropic 工作区 ID）只出现在发往该服务自己的请求头里，不进提示词；YouTube 授权令牌、Google 账号信息、频道 ID、视频 ID、评分记录都不会发给大模型。** OpenAI 请求带 `store: false`。
 
 | 调用 | 何时 | 发送内容 |
 |---|---|---|
@@ -385,6 +387,8 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 | "你的 Google Cloud 项目还没有启用 YouTube Data API v3" | 漏了 [1.2](#install) 的第 2 小步 | 启用后重试 |
 | "YouTube 授权已失效" / "尚未连接 YouTube 账号" | 授权过期或被撤销 | 设置页 → **连接 YouTube** |
 | "还没有填写 Anthropic（或 OpenAI）API Key" / "API Key 无效" | Key 没填或填错 | 设置页 **1.** 重新填写并保存 |
+| "这把 Anthropic API Key 没有绑定工作区…" | 你的 Key 没有限定到某个工作区，Anthropic 要求每个请求指明工作区（官方报错原文：*This API key is not scoped to a workspace*） | 二选一：设置页 **1.** 填 **Anthropic 工作区 ID**（[Workspaces](https://platform.claude.com/settings/workspaces) 页的 ID 列，`wrkspc_` 开头）；或在 Console 新建一把限定到某个工作区的 Key 替换 |
+| "找不到设置里填写的 Anthropic 工作区…" / "工作区 ID 格式不对" | 工作区 ID 填错，或这把 Key 无权使用该工作区 | 核对 ID；Key 已限定工作区的话，直接删掉工作区 ID |
 | "模型「…」不存在或你的账户无权使用" | 模型名写错，或你的账户不能用这个模型 | 改回默认模型名 |
 | "今天的 search 次数已用完" | 今日 100 次搜索已用完 | 等配额重置（提示里有你本地的重置时间）；同一句话可以走缓存 |
 | 点 🎤 提示"侧边栏无法直接弹出麦克风授权框" | 还没授权麦克风 | 点 **打开授权页**，按 [首次配置 ④](#setup) 操作 |

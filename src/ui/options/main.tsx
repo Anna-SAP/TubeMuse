@@ -8,6 +8,7 @@ import { ENDPOINTS } from '../../config/endpoints';
 import { oauthClientId, type AuthStatus } from '../../services/auth';
 import { clearAll, exportAll } from '../../services/data-service';
 import type { AppError } from '../../services/errors';
+import { isAnthropicWorkspaceId } from '../../services/llm';
 import { pingLlm } from '../../services/llm-factory';
 import { mutedDaysLeft, reminderActions } from '../../services/reminder-service';
 import { reclassifyRecords } from '../../services/watch-service';
@@ -76,6 +77,48 @@ function KeyField({ label, saved, onSave, onClear, testid }: { label: string; sa
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+/** 工作区 ID 不是密钥，保存后照常显示；只有 Key 没绑定工作区时才需要。 */
+function WorkspaceField({ saved, onSave, onClear }: { saved?: string; onSave: (v: string) => void; onClear: () => void }) {
+  const [draft, setDraft] = useState('');
+  const value = draft.trim();
+  const invalid = !!value && !isAnthropicWorkspaceId(value);
+  return (
+    <div class="field">
+      <span>Anthropic 工作区 ID（可选）</span>
+      <div class="row">
+        <input
+          class="input"
+          autocomplete="off"
+          data-testid="anthropic-workspace"
+          placeholder={saved ?? 'wrkspc_…'}
+          value={draft}
+          onInput={(e) => setDraft(e.currentTarget.value)}
+        />
+        <button
+          class="btn"
+          disabled={!value || invalid}
+          onClick={() => {
+            onSave(value);
+            setDraft('');
+          }}
+        >
+          保存
+        </button>
+        {saved && (
+          <button class="btn link" onClick={onClear}>
+            删除
+          </button>
+        )}
+      </div>
+      {invalid && <span class="warn-text small">应以 wrkspc_ 开头，从 Anthropic Console → Settings → Workspaces 的 ID 列整段复制</span>}
+      <span class="muted small">
+        {saved ? <>已保存：<code>{saved}</code>。</> : null}
+        只有报错"Key 没有绑定工作区"时才需要填写；限定到某个工作区的 Key 留空即可。只随请求头发往 {new URL(ENDPOINTS.anthropic).host}。
+      </span>
     </div>
   );
 }
@@ -158,6 +201,7 @@ function App() {
           </div>
         </div>
         <KeyField label="Anthropic API Key" testid="anthropic-key" saved={!!secrets.anthropicApiKey} onSave={(v) => updateSecrets({ anthropicApiKey: v })} onClear={() => updateSecrets({ anthropicApiKey: '' })} />
+        <WorkspaceField saved={secrets.anthropicWorkspaceId} onSave={(v) => updateSecrets({ anthropicWorkspaceId: v })} onClear={() => updateSecrets({ anthropicWorkspaceId: '' })} />
         <label class="field">
           <span>Anthropic 模型名</span>
           <input

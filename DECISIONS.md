@@ -205,3 +205,11 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 
 - X Bearer Token 与其他密钥一样只存本机、不进导出文件；脱敏规则与构建自检新增了 X Token 的格式。
 - 网络出口白名单由 `endpoints.ts` 生成，新增 `https://api.x.com`；冒烟测试会校验白名单只包含 5 个官方 API 源。
+
+## 24. Anthropic 工作区 ID（上线后修复）
+
+- 起因：手测时 Anthropic 返回 400 *This API key is not scoped to a workspace…*。核对官方文档（`platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace`）：个人 Key / 服务账号 Key 创建时可以不限定工作区，这类 Key 的**每个请求都必须带 `anthropic-workspace-id` 请求头**；限定到某个工作区的 Key 可以省略。SDK 不会自动带，需要调用方传。
+- 做法：设置页新增可选的"Anthropic 工作区 ID"，格式校验 `wrkspc_` 开头；填了就通过 SDK 的 `defaultHeaders` 随每个 Anthropic 请求发送，只发往 `api.anthropic.com`，不进提示词，OpenAI 路径不发。
+- 存放在 `secrets`（与 Key 同处）而不是 `settings`：它是账号标识，跟 Key 绑定使用；这样不进导出文件，"清空"时一并删除。它不是密钥，所以设置页照常显示已保存的值。
+- 报错：识别官方的三种工作区错误（未带头 400、格式不对 400、工作区不存在或无权 404），分别给出人话原因和解法；404 不再被误报成"模型不存在"。其余 400 改为显示服务方返回的原因文本（不再截断成 JSON 片段），提示语不再默认指向模型名。
+- 放弃的方案：自动调用 List Workspaces 帮用户选工作区——那是组织管理接口（Admin API），会让扩展碰到组织级数据、扩大访问面，超出规格。

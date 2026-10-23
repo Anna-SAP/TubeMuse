@@ -17,6 +17,7 @@ export async function getLlm(ctx: AppContext): Promise<LlmClient> {
     provider,
     model,
     apiKey,
+    ...(provider === 'anthropic' && secrets.anthropicWorkspaceId ? { workspaceId: secrets.anthropicWorkspaceId } : {}),
     baseURL: provider === 'anthropic' ? ctx.endpoints.anthropic : ctx.endpoints.openai,
     fetch: ctx.http,
   });

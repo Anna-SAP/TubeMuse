@@ -30,7 +30,14 @@ export interface LlmConfig {
   model: string;
   apiKey: string;
   baseURL: string;
+  /** 仅 Anthropic：Key 没有绑定工作区时必须随请求带上工作区 ID（anthropic-workspace-id 请求头） */
+  workspaceId?: string;
   fetch?: typeof fetch;
+}
+
+/** Anthropic 工作区 ID 形如 wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ */
+export function isAnthropicWorkspaceId(v: string): boolean {
+  return /^wrkspc_[A-Za-z0-9]{8,}$/.test(v);
 }
 
 const PROVIDER_NAMES: Record<LlmProvider, string> = { anthropic: 'Anthropic', openai: 'OpenAI' };
@@ -43,7 +50,18 @@ function parseJsonText(text: string, provider: LlmProvider): unknown {
   }
 }
 
-type ApiErrorLike = { status?: number; message?: string };
+type ApiErrorLike = { status?: number; message?: string; error?: unknown };
+
+/** 取服务方返回的原因文本：Anthropic 的错误体是 {error:{message}}，OpenAI SDK 已拆成 {message}。 */
+function providerMessage(err: unknown): string {
+  const body = (err as ApiErrorLike)?.error;
+  if (body && typeof body === 'object') {
+    const b = body as { message?: unknown; error?: { message?: unknown } };
+    const msg = b.error?.message ?? b.message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return String((err as ApiErrorLike)?.message ?? err);
+}
 
 function mapLlmError(err: unknown, provider: LlmProvider, model: string, apiKey: string): AppError {
   if (err instanceof AppError) return err;
@@ -55,7 +73,24 @@ function mapLlmError(err: unknown, provider: LlmProvider, model: string, apiKey:
   if (isTimeout) return new AppError('network', `${name} 请求超时`, '稍后重试');
   if (isConn) return new AppError('network', `无法连接到 ${name} API（网络错误）`, '检查网络后重试');
   const status = (err as ApiErrorLike)?.status;
-  const raw = redact(String((err as ApiErrorLike)?.message ?? err), [apiKey]).slice(0, 200);
+  const full = providerMessage(err);
+  const raw = redact(full, [apiKey]).slice(0, 300);
+  if (provider === 'anthropic') {
+    // 见 platform.claude.com/docs/en/manage-claude/authentication#select-a-workspace
+    if (status === 400 && /not scoped to a workspace/i.test(full)) {
+      return new AppError(
+        'llm_key',
+        '这把 Anthropic API Key 没有绑定工作区，Anthropic 要求每个请求指明用哪个工作区',
+        '二选一：在设置页「1. 大模型」填写工作区 ID（wrkspc_ 开头，在 Anthropic Console → Settings → Workspaces 的 ID 列）；或在 Console 新建一把限定到某个工作区的 Key 替换现在这把',
+      );
+    }
+    if (status === 400 && /anthropic-workspace-id/i.test(full)) {
+      return new AppError('llm_key', 'Anthropic 工作区 ID 格式不对', '应以 wrkspc_ 开头，从 Anthropic Console → Settings → Workspaces 的 ID 列整段复制');
+    }
+    if (status === 404 && /workspace/i.test(full)) {
+      return new AppError('llm_key', '找不到设置里填写的 Anthropic 工作区，或这把 Key 无权使用它', '核对设置页「1. 大模型」里的工作区 ID；如果 Key 已限定到某个工作区，可以删掉工作区 ID');
+    }
+  }
   switch (status) {
     case 401:
       return new AppError('llm_key', `${name} API Key 无效或已被撤销`, '在设置页重新填写 Key');
@@ -66,7 +101,7 @@ function mapLlmError(err: unknown, provider: LlmProvider, model: string, apiKey:
     case 429:
       return new AppError('llm', `${name} 请求过于频繁或额度不足`, '稍后重试，或检查账户余额');
     case 400:
-      return new AppError('llm', `${name} 拒绝了请求：${raw}`, '如果改过模型名，确认该模型支持结构化输出');
+      return new AppError('llm', `${name} 拒绝了请求：${raw}`, '按上面的原因处理；如果改过模型名，确认该模型支持结构化输出');
     default:
       if (status && status >= 500) return new AppError('llm', `${name} 服务暂时不可用（HTTP ${status}）`, '稍后重试');
       return new AppError('llm', `${name} 调用失败：${raw}`);
@@ -80,6 +115,7 @@ export function createAnthropicClient(cfg: LlmConfig): LlmClient {
     dangerouslyAllowBrowser: true,
     maxRetries: LLM_LIMITS.maxRetries,
     timeout: LLM_LIMITS.timeoutMs,
+    ...(cfg.workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': cfg.workspaceId } } : {}),
     ...(cfg.fetch ? { fetch: cfg.fetch } : {}),
   });
   return {

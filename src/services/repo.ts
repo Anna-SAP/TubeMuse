@@ -28,6 +28,8 @@ export type Settings = typeof DEFAULT_SETTINGS;
 
 export interface Secrets {
   anthropicApiKey?: string;
+  /** Anthropic 工作区 ID：Key 没有绑定工作区时才需要；和 Key 放在一起，不进导出 */
+  anthropicWorkspaceId?: string;
   openaiApiKey?: string;
   /** X API 的 App-only Bearer Token */
   xBearerToken?: string;

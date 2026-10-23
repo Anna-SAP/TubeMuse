@@ -12,6 +12,7 @@ import { attribute, rate, revertAdjustment } from '../../src/services/rating-ser
 import { generateClusters, syncProfile } from '../../src/services/profile-service';
 import { clearAll, exportAll } from '../../src/services/data-service';
 import { AppError } from '../../src/services/errors';
+import { isAnthropicWorkspaceId } from '../../src/services/llm';
 import { recordCall, EMPTY_LEDGER } from '../../src/core/quota';
 import { createFakeApi, type FakeVideo } from './fake-api';
 import { DAY, NOW, RAW_1, RAW_2, UTTERANCE_1, UTTERANCE_2 } from './helpers';
@@ -265,6 +266,65 @@ describe('配额与失败处理', () => {
     expect(body.text.format).toMatchObject({ type: 'json_schema', strict: true });
     expect(body.reasoning).toEqual({ effort: 'low' });
     expect(body.store).toBe(false);
+  });
+});
+
+describe('Anthropic 工作区（Key 没有绑定工作区）', () => {
+  const WS = 'wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ';
+  const setWorkspace = (ctx: AppContext, id: string) => stores.secrets.update(ctx.kv, ctx.locker, (s) => ({ ...s, anthropicWorkspaceId: id }));
+
+  it('没填工作区 ID → 说清原因和两种解法，不误导成模型问题', async () => {
+    const { ctx } = setup({ anthropicWorkspace: WS });
+    const err = await parseUtterance(ctx, UTTERANCE_1).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    const e = err as AppError;
+    expect(e.kind).toBe('llm_key');
+    expect(e.message).toContain('没有绑定工作区');
+    expect(e.hint).toContain('工作区 ID');
+    expect(e.hint).toContain('wrkspc_');
+    expect(`${e.message}${e.hint}`).not.toContain('模型名');
+    expect(`${e.message}${e.hint}`).not.toContain(ANTHROPIC_KEY);
+  });
+
+  it('填了工作区 ID → 只随请求头发往 Anthropic，不进 LLM 正文、不进导出', async () => {
+    const { ctx, api } = setup({ anthropicWorkspace: WS });
+    await setWorkspace(ctx, WS);
+    const intent = await parseUtterance(ctx, UTTERANCE_1);
+    await runSearch(ctx, { intent });
+    const llmReqs = api.requests.filter((r) => r.url.startsWith(ENDPOINTS.anthropic));
+    expect(llmReqs.length).toBeGreaterThan(0);
+    for (const r of llmReqs) {
+      expect(r.headers['anthropic-workspace-id']).toBe(WS);
+      expect(r.body).not.toContain(WS);
+    }
+    for (const r of api.requests.filter((x) => !x.url.startsWith(ENDPOINTS.anthropic))) expect(JSON.stringify(r)).not.toContain(WS);
+    expect(JSON.stringify(await exportAll(ctx))).not.toContain(WS);
+  });
+
+  it('工作区 ID 填错 → 指向工作区设置，而不是"模型不存在"', async () => {
+    const { ctx } = setup({ anthropicWorkspace: WS });
+    await setWorkspace(ctx, 'wrkspc_01SomeOtherWorkspace00');
+    const notFound = (await parseUtterance(ctx, UTTERANCE_1).catch((e: unknown) => e)) as AppError;
+    expect(notFound.kind).toBe('llm_key');
+    expect(notFound.message).toContain('找不到');
+    expect(notFound.message).not.toContain('模型');
+    await setWorkspace(ctx, 'my-workspace');
+    const bad = (await parseUtterance(ctx, UTTERANCE_1).catch((e: unknown) => e)) as AppError;
+    expect(bad.message).toContain('格式不对');
+  });
+
+  it('切到 OpenAI 时不发送 Anthropic 工作区 ID', async () => {
+    const { ctx, api } = setup({}, 'openai');
+    await setWorkspace(ctx, WS);
+    await parseUtterance(ctx, UTTERANCE_1);
+    for (const r of api.requests) expect(JSON.stringify(r)).not.toContain(WS);
+  });
+
+  it('工作区 ID 格式校验', () => {
+    expect(isAnthropicWorkspaceId(WS)).toBe(true);
+    expect(isAnthropicWorkspaceId('wrkspc_')).toBe(false);
+    expect(isAnthropicWorkspaceId('Default Workspace')).toBe(false);
+    expect(isAnthropicWorkspaceId(`${WS} `)).toBe(false);
   });
 });
 

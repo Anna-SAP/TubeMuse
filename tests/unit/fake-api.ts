@@ -39,6 +39,8 @@ export interface FakeApiOptions {
   /** X recent search：按检索式返回帖子；status 用于模拟 402 等错误 */
   xSearch?: (query: string, maxResults: number) => { status?: number; posts?: { id: string; text: string; likes: number; reposts: number; hoursAgo: number }[] };
   now?: number;
+  /** 模拟没有绑定工作区的 Anthropic Key：请求必须带这个 anthropic-workspace-id */
+  anthropicWorkspace?: string;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -124,6 +126,14 @@ export function createFakeApi(opts: FakeApiOptions) {
     }
 
     if (url.startsWith(ENDPOINTS.anthropic)) {
+      if (opts.anthropicWorkspace) {
+        // 错误文本取自官方文档 manage-claude/authentication#select-a-workspace
+        const ws = headers['anthropic-workspace-id'];
+        const fail = (status: number, type: string, message: string) => json({ type: 'error', error: { type, message }, request_id: 'req_test' }, status);
+        if (!ws) return fail(400, 'invalid_request_error', 'This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header with the ID of the workspace to use. Add the header, or use an API key that is scoped to a workspace.');
+        if (!/^wrkspc_/.test(ws)) return fail(400, 'invalid_request_error', 'anthropic-workspace-id header must be a valid workspace ID.');
+        if (ws !== opts.anthropicWorkspace) return fail(404, 'not_found_error', `Workspace \`${ws}\` not found.`);
+      }
       const b = JSON.parse(body ?? '{}');
       const out = opts.llm({ system: String(b.system ?? ''), user: String(b.messages?.[0]?.content ?? ''), provider: 'anthropic' });
       return json({
