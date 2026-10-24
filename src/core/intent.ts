@@ -1,6 +1,7 @@
 // LLM 原始输出 → Intent（规范化 + 覆盖守卫）。纯函数，可用固定样例单测。
 
 import { applyCoverageGuards } from './coverage';
+import { clip } from './text';
 import { normalizeConstraint, normalizeQueries, rawConstraint, type RawConstraint } from './constraints';
 import type { Constraint, Intent } from './types';
 
@@ -25,7 +26,7 @@ export function assembleIntent(utterance: string, raw: unknown, now: number, cor
     .filter(isRecord)
     .map((rc) => normalizeConstraint(rawConstraint({ ...(rc as Partial<RawConstraint>), kind: String(rc.kind ?? ''), span: String(rc.span ?? '') }), nextId()));
 
-  const topic = typeof raw.topic === 'string' ? raw.topic.trim().slice(0, 60) : '';
+  const topic = typeof raw.topic === 'string' ? clip(raw.topic.trim(), 60) : '';
   if (!constraints.some((c) => c.kind === 'topic') && topic) {
     constraints.unshift(normalizeConstraint(rawConstraint({ kind: 'topic', span: utterance.includes(topic) ? topic : '', terms: [topic] }), nextId()));
   }
@@ -34,14 +35,14 @@ export function assembleIntent(utterance: string, raw: unknown, now: number, cor
   let queries = normalizeQueries(raw.queries);
   if (!queries.length) {
     const terms = guarded.constraints.filter((c) => c.kind === 'topic').flatMap((c) => c.params.terms ?? []);
-    const q = (terms.length ? terms.join(' ') : topic || utterance).slice(0, 100);
+    const q = clip(terms.length ? terms.join(' ') : topic || utterance, 100);
     queries = [{ q }];
     guarded.notes.push('LLM 没有给出检索词，已用主题词代替');
   }
 
   return {
     utterance,
-    interpretation: typeof raw.interpretation === 'string' ? raw.interpretation.trim().slice(0, 300) : '',
+    interpretation: typeof raw.interpretation === 'string' ? clip(raw.interpretation.trim(), 300) : '',
     topic,
     queries,
     constraints: guarded.constraints,

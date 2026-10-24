@@ -2,6 +2,7 @@
 
 import { LEARNING } from '../config/defaults';
 import { learnFromRating, needsAttribution, revertChanges } from '../core/learning';
+import { clip } from '../core/text';
 import type { Adjustment, Attribution, Change, RatingRecord, SearchSession, UnderstandingCorrection } from '../core/types';
 import type { AppContext } from './context';
 import { AppError } from './errors';
@@ -142,7 +143,7 @@ export async function attribute(ctx: AppContext, input: AttributionInput): Promi
     const record: RatingRecord = { ...prev, attribution: input.attribution };
     delete record.adjustmentId;
     if (input.aspect) record.understandingAspect = input.aspect;
-    if (input.note?.trim()) record.note = input.note.trim().slice(0, 300);
+    if (input.note?.trim()) record.note = clip(input.note.trim(), 300);
 
     let adjustment: Adjustment;
     let correction: UnderstandingCorrection | undefined;

@@ -3,7 +3,7 @@
 
 import { X_API } from '../config/defaults';
 import type { HotspotPromptPost } from './prompts';
-import { uniqueStrings } from './text';
+import { clip, uniqueStrings } from './text';
 import type { Hotspot, InterestCluster, XPost } from './types';
 
 export interface TopicQuery {
@@ -81,7 +81,7 @@ export function toPromptPosts(cands: XPost[], now: number): { posts: HotspotProm
     return {
       ref,
       topic: p.topic,
-      text: p.text.slice(0, X_API.postTextChars),
+      text: clip(p.text, X_API.postTextChars),
       likes: p.likes,
       reposts: p.reposts,
       hoursAgo: Math.max(0, Math.round((now - Date.parse(p.createdAt)) / 3_600_000)),
@@ -118,11 +118,11 @@ export function assembleHotspots(raw: RawHotspots, refs: Map<string, XPost>, max
     }
     items.push({
       id: newId(),
-      title: h.title.trim().slice(0, 40),
-      summary: h.summary.trim().slice(0, 300),
-      utterance: h.utterance.trim().slice(0, 120),
+      title: clip(h.title.trim(), 40),
+      summary: clip(h.summary.trim(), 300),
+      utterance: clip(h.utterance.trim(), 120),
       topic: posts[0]!.topic,
-      posts: posts.slice(0, 3).map((p) => ({ id: p.id, url: postUrl(p.id), text: p.text.slice(0, 200), likes: p.likes, reposts: p.reposts, createdAt: p.createdAt })),
+      posts: posts.slice(0, 3).map((p) => ({ id: p.id, url: postUrl(p.id), text: clip(p.text, 200), likes: p.likes, reposts: p.reposts, createdAt: p.createdAt })),
     });
     if (items.length >= maxItems) break;
   }

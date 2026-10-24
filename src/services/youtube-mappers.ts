@@ -1,5 +1,6 @@
 // YouTube Data API v3 响应 → 领域对象（纯函数，用 fixture 单测）。
 
+import { clip } from '../core/text';
 import { parseIsoDuration } from '../core/time';
 import type { ChannelInfo, LikedVideo, VideoCandidate, VideoMeta } from '../core/types';
 
@@ -42,7 +43,7 @@ export function mapVideoItem(it: Json): Omit<VideoCandidate, 'hits'> | undefined
   const v: Omit<VideoCandidate, 'hits'> = {
     id: it.id,
     title: String(sn.title ?? ''),
-    description: String(sn.description ?? '').slice(0, 1000),
+    description: clip(String(sn.description ?? ''), 1000),
     channelId: String(sn.channelId ?? ''),
     channelTitle: String(sn.channelTitle ?? ''),
     publishedAt: String(sn.publishedAt ?? ''),
@@ -68,7 +69,7 @@ export function mapChannelItem(it: Json): ChannelInfo | undefined {
   const c: ChannelInfo = {
     id: it.id,
     title: String(it.snippet?.title ?? ''),
-    description: String(it.snippet?.description ?? '').slice(0, 300),
+    description: clip(String(it.snippet?.description ?? ''), 300),
     topicCategories: Array.isArray(it.topicDetails?.topicCategories) ? it.topicDetails.topicCategories.map(String) : [],
   };
   const subs = it.statistics?.hiddenSubscriberCount ? undefined : toNum(it.statistics?.subscriberCount);
@@ -82,7 +83,7 @@ export function mapSubscriptionItem(it: Json): ChannelInfo | undefined {
   return {
     id,
     title: String(it.snippet?.title ?? ''),
-    description: String(it.snippet?.description ?? '').slice(0, 300),
+    description: clip(String(it.snippet?.description ?? ''), 300),
     topicCategories: [],
   };
 }

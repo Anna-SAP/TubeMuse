@@ -69,8 +69,29 @@ export function hasCjk(text: string): boolean {
   return CJK.test(text);
 }
 
+/**
+ * 按长度截断，但不把 emoji 等"代理对"劈成两半。
+ * 半个代理对会被序列化成孤立的 \udXXX 转义，大模型服务端会以"请求体不是合法 JSON"拒收。
+ */
+export function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const end = isHighSurrogate(text.charCodeAt(max - 1)) ? max - 1 : max;
+  return text.slice(0, end);
+}
+
 export function truncate(text: string, max: number): string {
-  return text.length <= max ? text : text.slice(0, max) + '…';
+  return text.length <= max ? text : clip(text, max) + '…';
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
+/** 把孤立的代理项换成 U+FFFD，保证文本能编码成合法的 UTF-8 / JSON（兜底：以前存下的数据可能已被劈开）。 */
+export function wellFormed(text: string): string {
+  return text.replace(LONE_SURROGATE, '�');
 }
 
 /** 稳定的 53 位哈希（cyrb53），用于缓存键。 */

@@ -41,6 +41,17 @@ export interface FakeApiOptions {
   now?: number;
   /** 模拟没有绑定工作区的 Anthropic Key：请求必须带这个 anthropic-workspace-id */
   anthropicWorkspace?: string;
+  /** channels.list 返回的频道简介（按频道 ID） */
+  channelDescriptions?: Record<string, string>;
+}
+
+/**
+ * 像真实服务端一样拒收含"孤立代理项"（半个 emoji）的 JSON 请求体。
+ * JSON.stringify 只会把孤立代理项写成 \uXXXX 转义（成对的直接输出原字符），所以请求体里出现 D800–DFFF 的转义即为孤立。
+ */
+function loneSurrogateColumn(body: string | undefined): number | undefined {
+  const m = /\\u[dD][89a-fA-F][0-9a-fA-F]{2}/.exec(body ?? '');
+  return m ? m.index + 7 : undefined;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -104,7 +115,7 @@ export function createFakeApi(opts: FakeApiOptions) {
         return json({
           items: ids.map((id) => ({
             id,
-            snippet: { title: id, description: '' },
+            snippet: { title: id, description: opts.channelDescriptions?.[id] ?? '' },
             statistics: { subscriberCount: '120000' },
             topicDetails: { topicCategories: ['https://en.wikipedia.org/wiki/Technology'] },
             contentDetails: { relatedPlaylists: { uploads: `UU${id.slice(2)}` } },
@@ -119,7 +130,7 @@ export function createFakeApi(opts: FakeApiOptions) {
       if (path === 'subscriptions') {
         return json({
           pageInfo: { totalResults: opts.subscriptions?.length ?? 0 },
-          items: (opts.subscriptions ?? []).map((s) => ({ snippet: { title: s.title, description: '', resourceId: { channelId: s.id } } })),
+          items: (opts.subscriptions ?? []).map((s) => ({ snippet: { title: s.title, description: opts.channelDescriptions?.[s.id] ?? '', resourceId: { channelId: s.id } } })),
         });
       }
       return json({ error: { code: 404, message: 'not found' } }, 404);
@@ -133,6 +144,11 @@ export function createFakeApi(opts: FakeApiOptions) {
         if (!ws) return fail(400, 'invalid_request_error', 'This API key is not scoped to a workspace, so this request must include the anthropic-workspace-id header with the ID of the workspace to use. Add the header, or use an API key that is scoped to a workspace.');
         if (!/^wrkspc_/.test(ws)) return fail(400, 'invalid_request_error', 'anthropic-workspace-id header must be a valid workspace ID.');
         if (ws !== opts.anthropicWorkspace) return fail(404, 'not_found_error', `Workspace \`${ws}\` not found.`);
+      }
+      const bad = loneSurrogateColumn(body);
+      if (bad) {
+        // 与手测时 Anthropic 返回的原文一致
+        return json({ type: 'error', error: { type: 'invalid_request_error', message: `The request body is not valid JSON: unexpected end of hex escape at line 1 column ${bad}` }, request_id: 'req_test' }, 400);
       }
       const b = JSON.parse(body ?? '{}');
       const out = opts.llm({ system: String(b.system ?? ''), user: String(b.messages?.[0]?.content ?? ''), provider: 'anthropic' });
@@ -161,6 +177,7 @@ export function createFakeApi(opts: FakeApiOptions) {
     }
 
     if (url.startsWith(ENDPOINTS.openai)) {
+      if (loneSurrogateColumn(body)) return json({ error: { message: 'We could not parse the JSON body of your request.', type: 'invalid_request_error', param: null, code: null } }, 400);
       const b = JSON.parse(body ?? '{}');
       const out = opts.llm({ system: String(b.instructions ?? ''), user: String(b.input ?? ''), provider: 'openai' });
       return json({

@@ -340,6 +340,32 @@ describe('画像与数据', () => {
     expect(llmReq.body).not.toContain('UCsub1');
   });
 
+  it('复现：频道简介在截断边界上有 emoji → 生成兴趣簇不再被服务端以"不是合法 JSON"拒收', async () => {
+    const { ctx, api } = setup({ channelDescriptions: { UCsub1: `${'科'.repeat(119)}😀 每周更新 AI 科普` } });
+    await syncProfile(ctx);
+    const clusters = await generateClusters(ctx);
+    expect(clusters.length).toBeGreaterThan(0);
+    const body = api.requests.filter((r) => r.url.startsWith(ENDPOINTS.anthropic)).at(-1)!.body!;
+    expect(body).not.toMatch(/\\ud[89a-f][0-9a-f]{2}/i);
+  });
+
+  it('以前存下的数据里已有半个 emoji：发给大模型前清洗掉（Anthropic 与 OpenAI 都适用）', async () => {
+    for (const provider of ['anthropic', 'openai'] as const) {
+      const { ctx, api } = setup({}, provider);
+      await syncProfile(ctx);
+      await stores.profile.update(ctx.kv, ctx.locker, (p) => ({
+        ...p,
+        subscriptions: p.subscriptions.map((s) => ({ ...s, description: '旧版本截断留下的半个 emoji\ud83d' })),
+        likedVideos: p.likedVideos.map((v) => ({ ...v, title: `${v.title}\ude00` })),
+      }));
+      expect((await generateClusters(ctx)).length).toBeGreaterThan(0);
+      const base = provider === 'anthropic' ? ENDPOINTS.anthropic : ENDPOINTS.openai;
+      const body = api.requests.filter((r) => r.url.startsWith(base)).at(-1)!.body!;
+      expect(body).not.toMatch(/\\ud[89a-f][0-9a-f]{2}/i);
+      expect(body).toContain('�');
+    }
+  });
+
   it('导出不含 API Key；清空后什么都不剩', async () => {
     const { ctx } = setup();
     const intent = await parseUtterance(ctx, UTTERANCE_1);

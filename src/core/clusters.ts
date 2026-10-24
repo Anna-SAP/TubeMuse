@@ -1,6 +1,6 @@
 // 兴趣簇：视频匹配、LLM 聚类结果合并、用户编辑。
 
-import { matchedTerms, uniqueStrings } from './text';
+import { clip, matchedTerms, uniqueStrings } from './text';
 import type { ChannelInfo, InterestCluster, VideoCandidate } from './types';
 
 export interface ClusterMatch {
@@ -45,7 +45,7 @@ export function mergeClusterOutput(
   const assigned = new Set(locked.flatMap((c) => c.channelIds));
   const result: InterestCluster[] = [...locked];
   for (const item of raw.clusters ?? []) {
-    const name = (item.name ?? '').trim().slice(0, 40);
+    const name = clip((item.name ?? '').trim(), 40);
     if (!name) continue;
     const ids = uniqueStrings((item.channelRefs ?? []).map((r) => refToChannelId.get(r.trim()) ?? '')).filter(
       (id) => id && !assigned.has(id),
@@ -60,7 +60,7 @@ export function mergeClusterOutput(
     result.push({
       id: newId(),
       name,
-      description: (item.description ?? '').trim().slice(0, 200),
+      description: clip((item.description ?? '').trim(), 200),
       keywords: uniqueStrings(item.keywords ?? []).slice(0, 15),
       channelIds: ids,
       weight: 1,

@@ -6,6 +6,7 @@ import OpenAI from 'openai';
 import { ANTHROPIC_FALLBACK, LLM_LIMITS } from '../config/defaults';
 import type { JsonSchema } from '../core/prompts';
 import { redact } from '../core/redact';
+import { wellFormed } from '../core/text';
 import { AppError } from './errors';
 
 export type LlmProvider = 'anthropic' | 'openai';
@@ -126,8 +127,8 @@ export function createAnthropicClient(cfg: LlmConfig): LlmClient {
         const res = await client.beta.messages.create({
           model: cfg.model,
           max_tokens: LLM_LIMITS.maxTokens,
-          system: req.system,
-          messages: [{ role: 'user', content: req.user }],
+          system: wellFormed(req.system),
+          messages: [{ role: 'user', content: wellFormed(req.user) }],
           output_config: { effort: req.effort, format: { type: 'json_schema', schema: req.schema } },
           // 服务端拒答回退："default" 在不支持的模型上等同于不回退
           betas: [ANTHROPIC_FALLBACK.beta],
@@ -173,8 +174,8 @@ export function createOpenAIClient(cfg: LlmConfig): LlmClient {
       try {
         const res = await client.responses.create({
           model: cfg.model,
-          instructions: req.system,
-          input: req.user,
+          instructions: wellFormed(req.system),
+          input: wellFormed(req.user),
           max_output_tokens: LLM_LIMITS.maxTokens,
           text: { format: { type: 'json_schema', name: req.schemaName, schema: req.schema, strict: true } },
           ...(supportsReasoningEffort(cfg.model) ? { reasoning: { effort: req.effort } } : {}),

@@ -3,6 +3,7 @@
 
 import { YOUTUBE_CATEGORIES } from '../config/defaults';
 import { formatSigned } from './format';
+import { clip } from './text';
 import type { DailyPromptItem, WeeklyPromptCase } from './prompts';
 import {
   FACTOR_LABELS,
@@ -79,7 +80,7 @@ export interface DailyLlmOutput {
 }
 
 function asItem(e: DayEntry, text: string): SummaryItem {
-  return { videoId: e.record.videoId, title: titleOf(e), channelTitle: e.meta?.channelTitle ?? '', text: text.trim().slice(0, 300) };
+  return { videoId: e.record.videoId, title: titleOf(e), channelTitle: e.meta?.channelTitle ?? '', text: clip(text.trim(), 300) };
 }
 
 const isStr = (x: unknown): x is string => typeof x === 'string';

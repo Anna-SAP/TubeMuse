@@ -245,3 +245,9 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 继续用 `getAuthToken`：Comet 上不可用。
 - **以后怎么换**：若 Google 停用隐式授权，在 `services/auth.ts` 的 `webAuthFlowAuth` 里把 `runFlow` 换成授权码流程即可，`AuthProvider` 接口与调用方不用动。
 
+
+## 26. 发给大模型的文本：不劈开 emoji（上线后修复）
+
+- 起因：手测"生成兴趣簇"时 Anthropic 返回 400 *The request body is not valid JSON: unexpected end of hex escape*。原因是频道简介按 120 字、视频标题按 100 字用 `.slice()` 截断，截断点正好落在 emoji（两个 UTF-16 单元）中间，留下半个代理对；`JSON.stringify` 把它写成孤立的 `\udXXX` 转义，服务端的 JSON 解析器拒收整个请求。
+- 做法两层：(1) `core/text.ts` 新增 `clip()`，截断时若最后一个单元是高位代理就连它一起去掉；`truncate()` 和各处对外部文本（YouTube 简介/标题、X 帖子、LLM 输出字段、用户备注）的截断都改用它。(2) 兜底：`services/llm.ts` 发送前对 system / user 统一做 `wellFormed()`，把任何残留的孤立代理项换成 U+FFFD——以前版本存进本地的数据（例如已截断过的简介）也不会再触发。
+- 测试：单测里的假 Anthropic / OpenAI 按服务端规则拒收含孤立代理项转义的请求体；新增复现用例（简介在第 120 个字符处切到 emoji），确认修复前失败、修复后通过。

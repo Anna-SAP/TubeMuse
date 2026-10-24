@@ -2,7 +2,7 @@
 
 import { formatHoursWindow } from './time';
 import { formatCount } from './format';
-import { uniqueStrings } from './text';
+import { clip, uniqueStrings } from './text';
 import {
   CHANNEL_MODES,
   CONSTRAINT_KINDS,
@@ -122,12 +122,12 @@ const LIVE_LABELS: Record<EventType, string> = {
 const LANG_RE = /^[a-z]{2,3}(-[a-z]{2,4})?$/;
 
 function cleanStr(v: unknown, max = 120): string {
-  return typeof v === 'string' ? v.trim().slice(0, max) : '';
+  return typeof v === 'string' ? clip(v.trim(), max) : '';
 }
 
 function cleanTerms(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
-  return uniqueStrings(v.filter((x): x is string => typeof x === 'string').map((x) => x.slice(0, 40))).slice(0, 12);
+  return uniqueStrings(v.filter((x): x is string => typeof x === 'string').map((x) => clip(x, 40))).slice(0, 12);
 }
 
 function num(v: unknown): number {
