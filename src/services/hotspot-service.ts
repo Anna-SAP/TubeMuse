@@ -29,7 +29,16 @@ export interface RefreshOptions {
   retryAfterBlock?: boolean;
 }
 
+/**
+ * 同一时间只允许一次刷新：打开"发现"页的自动刷新与手动刷新可能撞在一起，
+ * 各自通过预算检查后都去读 X，会让当天花费超出预算。排队期间另一路刚刷新完，直接用它的结果。
+ */
 export async function refreshHotspots(ctx: AppContext, opts: RefreshOptions = {}): Promise<{ state: HotspotState; cached: boolean }> {
+  const requestedAt = ctx.now();
+  return ctx.locker.withLock('run:hotspots', () => refreshHotspotsLocked(ctx, opts, requestedAt));
+}
+
+async function refreshHotspotsLocked(ctx: AppContext, opts: RefreshOptions, requestedAt: number): Promise<{ state: HotspotState; cached: boolean }> {
   const [settings, secrets, cached, clusterState, sessions] = await Promise.all([
     stores.settings.read(ctx.kv),
     stores.secrets.read(ctx.kv),
@@ -39,6 +48,7 @@ export async function refreshHotspots(ctx: AppContext, opts: RefreshOptions = {}
   ]);
   if (!settings.x.enabled) throw new AppError('input', 'X 热点已在设置中关闭');
   if (!opts.force && cached && hotspotsFresh(cached, settings.x.cacheHours, ctx.now())) return { state: cached, cached: true };
+  if (cached && cached.fetchedAt > requestedAt) return { state: cached, cached: true };
   const token = secrets.xBearerToken;
   if (!token) throw new AppError('x_key', '还没有填写 X Bearer Token', '在设置页「X 热点」里填写；Token 只保存在本机');
 

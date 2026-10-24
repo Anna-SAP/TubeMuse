@@ -207,6 +207,17 @@ describe('X 热点（服务层，mock X 与 LLM）', () => {
     expect((await xSpend(ctx)).blocked).toBeDefined();
   });
 
+  it('打开页面的自动刷新与手动刷新撞在一起：只读一次 X，花费不翻倍', async () => {
+    const { ctx, xCalls } = setup();
+    let t = NOW;
+    const ticking: AppContext = { ...ctx, now: () => (t += 1) };
+    const [a, b] = await Promise.all([refreshHotspots(ticking), refreshHotspots(ticking, { force: true })]);
+    expect(xCalls).toHaveLength(4);
+    expect((await xSpend(ticking)).spentUsd).toBeCloseTo(0.3);
+    expect(b.cached).toBe(true);
+    expect(b.state.fetchedAt).toBe(a.state.fetchedAt);
+  });
+
   it('没填 Token：直接提示，不发请求', async () => {
     const { ctx, api } = setup({ xToken: false });
     await expect(refreshHotspots(ctx)).rejects.toMatchObject({ kind: 'x_key' });
@@ -252,6 +263,32 @@ describe('新博主发现（服务层）', () => {
     await stores.settings.update(ctx.kv, ctx.locker, (s) => ({ ...s, discovery: { ...s.discovery, weeklySearchCalls: 8 } }));
     const second = await runDiscovery(ctx);
     expect(second.recommendations.map((r) => r.channelId)).not.toContain(top.channelId);
+  });
+
+  it('复现：后台例行任务与手动"现在发现"同时运行 → 本周 search 不再翻倍（曾出现 16/8）', async () => {
+    const { ctx, api } = setup();
+    let t = NOW;
+    const ticking: AppContext = { ...ctx, now: () => (t += 1) };
+    const [a, b] = await Promise.all([runDiscovery(ticking), runDiscovery(ticking)]);
+    expect(api.requests.filter((r) => r.url.includes('/search?'))).toHaveLength(4);
+    expect(b.searchCalls).toBe(4);
+    expect(b.recommendations).toEqual(a.recommendations);
+  });
+
+  it('中途失败也按实际调用记账：每次 search 前就记进本周', async () => {
+    const { ctx } = setup();
+    const failing: AppContext = {
+      ...ctx,
+      http: async (input, init) =>
+        String(input instanceof Request ? input.url : input).includes('/channels?')
+          ? new Response(JSON.stringify({ error: { code: 500, message: 'boom' } }), { status: 500 })
+          : ctx.http(input, init),
+    };
+    await expect(runDiscovery(failing)).rejects.toBeInstanceOf(Error);
+    const weeks = Object.values((await stores.discovery.read(ctx.kv)).weeks);
+    expect(weeks).toHaveLength(1);
+    expect(weeks[0]!.searchCalls).toBe(4);
+    expect(weeks[0]!.notes.join()).toContain('上次运行失败');
   });
 });
 
