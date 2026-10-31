@@ -2,11 +2,14 @@
 // 内容脚本（采音频、画字幕）与后台（转写、翻译、记账）都只调用这里，单测直接覆盖。
 
 import {
+  BROWSER_SPEECH_LANGS,
   ASR_PRICES_PER_MINUTE,
   ASR_UNKNOWN_PRICE_PER_MINUTE,
   LLM_PRICES_PER_MTOK,
   LLM_UNKNOWN_PRICE_PER_MTOK,
   SUBTITLES,
+  type BrowserSpeechLang,
+  type SubtitleAsrEngine,
   type SubtitleLang,
 } from '../config/defaults';
 import { dominantScript } from './text';
@@ -20,11 +23,13 @@ export const SUBTITLE_PORT = 'tubemuse:subtitles';
 /** 内容脚本 → 后台 */
 export type SubtitleUp =
   | { type: 'hello'; videoId: string }
-  | { type: 'segment'; videoId: string; seq: number; start: number; end: number; audio: string };
+  | { type: 'segment'; videoId: string; seq: number; start: number; end: number; audio: string }
+  /** 浏览器识别出的一行（已定稿）：只送文字，不送音频 */
+  | { type: 'text'; videoId: string; seq: number; start: number; end: number; text: string; lang?: string };
 
 /** 后台 → 内容脚本 */
 export type SubtitleDown =
-  | { type: 'track'; videoId: string; cues: SubtitleCue[] }
+  | { type: 'track'; videoId: string; cues: SubtitleCue[]; recognition?: RecognitionPlan }
   | { type: 'cue'; videoId: string; seq: number; cue: SubtitleCue; stage: 'source' | 'translated' }
   | { type: 'error'; videoId: string; seq?: number; message: string; hint?: string; fatal: boolean; retryAfterMs?: number }
   /** 这一段处理完了（无论成败、是否已有字幕） */
@@ -36,10 +41,30 @@ export function backoffMs(failures: number, retryAfterMs?: number): number {
   return Math.min(SUBTITLES.backoffMaxMs, SUBTITLES.backoffBaseMs * 2 ** Math.max(0, failures - 1));
 }
 
+/** 浏览器识别用哪种语言、为什么 */
+export interface RecognitionPlan {
+  lang: string;
+  /** setting：设置里指定；video：视频的语言（YouTube 数据）；title：按标题文字推断；default：判断不了，用默认；manual：你在侧边栏给这个视频选的 */
+  source: 'setting' | 'video' | 'title' | 'default' | 'manual';
+  note?: string;
+}
+
+/** 声音交给谁识别（界面据此写明去向） */
+export type RecognitionMode = 'local' | 'cloud' | 'openai';
+
+export const RECOGNITION_MODE_LABELS: Record<RecognitionMode, string> = {
+  local: '本地语音包（声音不离开电脑）',
+  cloud: 'Chrome 云端识别（声音发往 Google）',
+  openai: 'OpenAI 转写（声音发往 OpenAI）',
+};
+
 /** 内容脚本报给侧边栏的状态 */
 export interface SubtitleTabState {
   videoId: string | null;
   captions: NativeCaptions;
+  engine?: SubtitleAsrEngine;
+  /** 浏览器识别：语言与去向（还没开始时为空） */
+  recognition?: { lang: string; source: RecognitionPlan['source']; mode?: RecognitionMode; note?: string };
   /** 正在为这个视频采音频、出字幕 */
   active: boolean;
   /** 你在侧边栏或快捷键对这个视频的选择（覆盖"自动开启"） */
@@ -542,10 +567,10 @@ export function recordTranslation(ledger: SubtitleLedger, day: string, model: st
 }
 
 /** 一小时连续说话的视频大约花多少（设置页提示用）：按典型用量与平均句长估算 */
-export function hourlyEstimateUsd(asrModel: string, translationModel: string | undefined): number {
+export function hourlyEstimateUsd(asrModel: string | undefined, translationModel: string | undefined): number {
   const e = SUBTITLES.translationTypical;
   const perCue = translationModel ? translationCostUsd(translationModel, e.inputTokens, e.outputTokens) : 0;
-  return round6(asrCostUsd(asrModel, 3600) + perCue * (3600 / e.secondsPerCue));
+  return round6((asrModel ? asrCostUsd(asrModel, 3600) : 0) + perCue * (3600 / e.secondsPerCue));
 }
 
 /** 视频时间 → 字幕列表里显示的 m:ss / h:mm:ss */
@@ -565,4 +590,230 @@ export function formatUsd(usd: number): string {
 /** 转写时长显示：不到 1 分钟显示秒 */
 export function formatAudioDuration(seconds: number): string {
   return seconds < 60 ? `${Math.round(seconds)} 秒` : `${(seconds / 60).toFixed(1)} 分钟`;
+}
+
+// ── 浏览器识别 ──
+
+export function isCjkText(text: string): boolean {
+  const sc = dominantScript(text);
+  return sc === 'han' || sc === 'kana' || sc === 'hangul';
+}
+
+/** 识别语言的显示名 */
+export function speechLangName(lang: string): string {
+  return (BROWSER_SPEECH_LANGS as Record<string, string>)[lang] ?? lang;
+}
+
+/** 语种 → 浏览器识别用的语言代码（中文按简体字识别） */
+function recognitionCodeFor(code: string): string | undefined {
+  const fam = langFamily(code);
+  if (!fam) return undefined;
+  if (fam === 'zh') return /yue|hk/i.test(code) ? 'yue-Hant-HK' : 'zh-CN';
+  return ({ en: 'en-US', ja: 'ja-JP', ko: 'ko-KR' } as Record<string, string>)[fam] ?? code;
+}
+
+/**
+ * 这个视频用哪种语言识别：设置里指定了就用它；自动时先看视频的语言（YouTube 数据），
+ * 没有就按标题文字推断，再不行用简体中文并说明。
+ */
+export function recognitionLangFor(setting: BrowserSpeechLang, meta: { language?: string; title?: string } | undefined, note?: string): RecognitionPlan {
+  if (setting !== 'auto') return { lang: setting, source: 'setting' };
+  const byMeta = meta?.language ? recognitionCodeFor(meta.language) : undefined;
+  if (byMeta) return { lang: byMeta, source: 'video' };
+  const byTitle = meta?.title ? ({ han: 'zh-CN', kana: 'ja-JP', hangul: 'ko-KR' } as Record<string, string>)[dominantScript(meta.title)] : undefined;
+  if (byTitle) return { lang: byTitle, source: 'title' };
+  return { lang: 'zh-CN', source: 'default', note: note ?? '没能判断视频的语言，先按简体中文识别；不对的话在侧边栏"字幕"页换一种' };
+}
+
+/** 定稿的一行：视频时间（秒）与文字 */
+export interface LiveLine {
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface LiveOptions {
+  stableMs: number;
+  latencySec: number;
+  lineChars: { cjk: number; latin: number };
+  maxChars: { cjk: number; latin: number };
+  idleCommitSec: number;
+}
+
+export const DEFAULT_LIVE: LiveOptions = {
+  stableMs: SUBTITLES.liveStableMs,
+  latencySec: SUBTITLES.liveLatencySec,
+  lineChars: SUBTITLES.liveLineChars,
+  maxChars: SUBTITLES.liveMaxChars,
+  idleCommitSec: SUBTITLES.liveIdleCommitSec,
+};
+
+const CJK_BREAK_AFTER = new Set('了呢吗吧啊呀的嘛哦喔噢耶哈了，。！？、'.split(''));
+
+/**
+ * 把浏览器边听边改的识别结果整理成一行一行的字幕：
+ * - 记下每个字第一次出现时的视频时间（减去识别延迟），作为它在视频里的时间；
+ * - 一段文字 stableMs 内不再变化才算定稿；定稿的部分满一行（或停顿够久）就交出一行；
+ * - 识别器给出 final 时把剩下的全部交出（太长再切）。
+ * 浏览器的识别结果没有时间戳，所以时间是估算的（误差约 1 秒）。
+ */
+export class LiveTranscript {
+  private text = '';
+  /** 每个字估算的说出时刻（视频时间） */
+  private appeared: number[] = [];
+  /** 每个字送到时的视频时间（判断"停顿多久"用，不减识别延迟） */
+  private arrived: number[] = [];
+  /** 每个字最后一次变化的墙钟时间（判断"稳定多久"用） */
+  private changedAt: number[] = [];
+  private committed = 0;
+
+  constructor(private readonly o: LiveOptions = DEFAULT_LIVE) {}
+
+  /** 还没定稿的尾巴（屏幕上滚动显示用） */
+  get tail(): string {
+    return this.text.slice(this.committed).trim();
+  }
+
+  /**
+   * 识别器送来当前这段的最新文字。videoTime 是收到时的视频进度，rate 是倍速，nowMs 是墙钟。
+   * 返回这次定稿的行。
+   */
+  update(rawText: string, isFinal: boolean, videoTime: number, rate: number, nowMs: number): LiveLine[] {
+    const text = rawText.replace(/\s+/g, ' ').replace(/^ /, '');
+    let lcp = 0;
+    while (lcp < text.length && lcp < this.text.length && text[lcp] === this.text[lcp]) lcp++;
+    const spokenAt = Math.max(0, videoTime - this.o.latencySec * (rate || 1));
+    this.appeared = [...this.appeared.slice(0, lcp), ...Array.from({ length: text.length - lcp }, () => spokenAt)];
+    this.arrived = [...this.arrived.slice(0, lcp), ...Array.from({ length: text.length - lcp }, () => videoTime)];
+    this.changedAt = [...this.changedAt.slice(0, lcp), ...Array.from({ length: text.length - lcp }, () => nowMs)];
+    this.text = text;
+    if (this.committed > text.length) this.committed = text.length; // 识别器把已定稿的部分改短了：以后的从这里接着算
+    if (isFinal) {
+      const out = this.cutAll(text.length, videoTime);
+      this.reset();
+      return out;
+    }
+    return this.commitStable(videoTime, nowMs);
+  }
+
+  /** 没有新结果时也定期检查：停顿够久的文字先交出（由内容脚本每轮调用） */
+  poll(videoTime: number, nowMs: number): LiveLine[] {
+    return this.commitStable(videoTime, nowMs);
+  }
+
+  /** 暂停、拖动、换视频、识别会话结束时：把还没交出的文字全部交出 */
+  flush(videoTime: number): LiveLine[] {
+    const out = this.cutAll(this.text.length, videoTime);
+    this.reset();
+    return out;
+  }
+
+  /** 丢掉还没交出的文字（例如拖动后，识别器手里的声音属于拖动前的位置） */
+  reset(): void {
+    this.text = '';
+    this.appeared = [];
+    this.arrived = [];
+    this.changedAt = [];
+    this.committed = 0;
+  }
+
+  private commitStable(videoTime: number, nowMs: number): LiveLine[] {
+    const out: LiveLine[] = [];
+    let stableEnd = this.committed;
+    while (stableEnd < this.text.length && this.changedAt[stableEnd]! <= nowMs - this.o.stableMs) stableEnd++;
+    const cjk = isCjkText(this.text);
+    const line = cjk ? this.o.lineChars.cjk : this.o.lineChars.latin;
+    while (stableEnd - this.committed >= line) {
+      const cut = this.chooseCut(this.committed, this.committed + line, stableEnd, cjk);
+      out.push(...this.emit(this.committed, cut, videoTime));
+    }
+    // 停顿够久：不满一行也先交出
+    if (stableEnd > this.committed && stableEnd === this.text.length && videoTime - this.arrived[stableEnd - 1]! >= this.o.idleCommitSec) {
+      out.push(...this.emit(this.committed, stableEnd, videoTime));
+    }
+    return out;
+  }
+
+  private cutAll(end: number, videoTime: number): LiveLine[] {
+    const out: LiveLine[] = [];
+    const cjk = isCjkText(this.text);
+    const max = cjk ? this.o.maxChars.cjk : this.o.maxChars.latin;
+    const line = cjk ? this.o.lineChars.cjk : this.o.lineChars.latin;
+    while (end - this.committed > max) {
+      const cut = this.chooseCut(this.committed, this.committed + line, end, cjk);
+      out.push(...this.emit(this.committed, cut, videoTime));
+    }
+    if (end > this.committed) out.push(...this.emit(this.committed, end, videoTime));
+    return out;
+  }
+
+  /** 在 ideal 附近找个好断点：英文等按空格，中文优先断在语气词后面 */
+  private chooseCut(from: number, ideal: number, limit: number, cjk: boolean): number {
+    const target = Math.min(ideal, limit);
+    if (cjk) {
+      for (let i = target; i > Math.max(from + 4, target - 4); i--) if (CJK_BREAK_AFTER.has(this.text[i - 1]!)) return i;
+      return target;
+    }
+    const space = this.text.lastIndexOf(' ', target);
+    return space > from + 8 ? space + 1 : target;
+  }
+
+  private emit(from: number, to: number, videoTime: number): LiveLine[] {
+    this.committed = to;
+    const text = this.text.slice(from, to).trim();
+    if (!text) return [];
+    const start = this.appeared[from] ?? videoTime;
+    const last = this.appeared[to - 1] ?? start;
+    return [{ start, end: Math.max(last + 0.4, start + 0.8), text }];
+  }
+}
+
+/**
+ * 浏览器识别时屏幕上显示什么：上一行是最近定稿的那行 + 还在识别的新字（只留最后一段，像滚动字幕），
+ * 下一行是最近定稿那行的译文。
+ */
+export function liveView(
+  cues: readonly SubtitleCue[],
+  tail: string,
+  t: number,
+  o: { recentSec: number; tailChars: { cjk: number; latin: number } } = { recentSec: SUBTITLES.liveRecentSec, tailChars: SUBTITLES.liveTailChars },
+): { source: string; translation: string } | undefined {
+  let recent: SubtitleCue | undefined;
+  for (const c of cues) if (c.text && c.start <= t + 1 && c.end >= t - o.recentSec && (!recent || c.start >= recent.start)) recent = c;
+  const joined = [recent?.text ?? '', tail].filter(Boolean).join(isCjkText(tail || recent?.text || '') ? '' : ' ');
+  if (!joined && !recent) return undefined;
+  const cjk = isCjkText(joined);
+  const max = cjk ? o.tailChars.cjk : o.tailChars.latin;
+  let source = joined;
+  if (source.length > max) {
+    source = source.slice(source.length - max);
+    if (!cjk) source = source.slice(source.indexOf(' ') + 1);
+    source = '…' + source;
+  }
+  return { source, translation: recent?.translation ?? '' };
+}
+
+/** 浏览器识别出错时怎么说、要不要停下 */
+export function speechErrorInfo(code: string, mode: 'local' | 'cloud', lang: string): { message: string; hint?: string; fatal: boolean; retryCloud?: boolean } | undefined {
+  const switchHint = '可以在设置页「12. 自动字幕」把转写方式改成 OpenAI';
+  switch (code) {
+    case 'no-speech':
+    case 'aborted':
+      return undefined;
+  }
+  // 本地语音包（实验特性）出任何问题都改用云端，并说明
+  if (mode === 'local') return { message: `本地语音包识别失败（${code}），改用 Chrome 云端识别（声音发往 Google）`, fatal: false, retryCloud: true };
+  switch (code) {
+    case 'network':
+      return { message: '连不上 Chrome 的语音识别服务', hint: `这项服务只有 Google Chrome 能用（Comet 等浏览器不行），也需要能访问 Google；${switchHint}`, fatal: true };
+    case 'language-not-supported':
+      return { message: `浏览器的语音识别不支持「${speechLangName(lang)}」`, hint: '在侧边栏"字幕"页给这个视频换一种识别语言', fatal: true };
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return { message: '浏览器不允许在这个页面使用语音识别', hint: switchHint, fatal: true };
+    case 'audio-capture':
+      return { message: '读不到这个视频的声音', hint: '刷新页面再试', fatal: true };
+    default:
+      return { message: `语音识别出错（${code}），稍后自动重试`, fatal: false };
+  }
 }

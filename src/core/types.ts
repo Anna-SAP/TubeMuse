@@ -472,6 +472,8 @@ export interface VideoMeta {
   fetchedAt: number;
   /** 视频已删除/私有，API 查不到 */
   missing?: boolean;
+  /** 视频的音频语言（defaultAudioLanguage，没有时用 defaultLanguage）；自动字幕据此选识别语言 */
+  language?: string;
 }
 
 export type Nature = 'learning' | 'entertainment' | 'other';

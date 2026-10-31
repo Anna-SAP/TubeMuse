@@ -9,6 +9,7 @@ import {
   estimateSegmentUsd,
   isCovered,
   putCue,
+  recognitionLangFor,
   tracksToDrop,
   recordAsr,
   recordTranslation,
@@ -16,15 +17,19 @@ import {
   translationCostUsd,
   translationTarget,
   wavInfo,
+  type RecognitionPlan,
   type SubtitleDown,
   type SubtitleSnapshot,
   type SubtitleUp,
 } from '../core/subtitles';
+import { OperationBudget } from '../core/quota';
 import { clip } from '../core/text';
 import { dayKey, nextMidnight } from '../core/time';
 import type { SubtitleCue, SubtitleTrack } from '../core/types';
 import type { AppContext } from './context';
 import { AppError, toAppError } from './errors';
+import { makeCharger, makeExhaustedMarker } from './quota-service';
+import { createYouTube } from './youtube';
 import { createLlmClient, createTranscriber, type LlmProvider } from './llm';
 import { stores, subtitleTrackStore, type Secrets, type Settings } from './repo';
 
@@ -93,6 +98,74 @@ async function reserve<T>(ctx: AppContext, usd: number, fn: () => Promise<T>): P
     reservedUsd = Math.max(0, reservedUsd - usd);
   }
 }
+
+/**
+ * 浏览器识别用哪种语言。设置为"自动"时：先看缓存的视频元数据；没有就用官方 API 查一次（videos.list，1 unit，
+ * 结果和观看记录共用一份缓存）；没连接 YouTube 或查不到时按标题推断或用默认值，并说明原因。
+ */
+export async function recognitionPlan(ctx: AppContext, videoId: string): Promise<RecognitionPlan> {
+  const settings = await stores.settings.read(ctx.kv);
+  const setting = settings.subtitles.browserLang;
+  if (setting !== 'auto') return recognitionLangFor(setting, undefined);
+  let meta = (await stores.videoMeta.read(ctx.kv))[videoId];
+  let note: string | undefined;
+  if (!meta) {
+    if ((await ctx.auth.status()) !== 'connected') {
+      note = '没有连接 YouTube（或授权已过期），读不到视频的语言，先按简体中文识别；不对的话在侧边栏"字幕"页换一种';
+    } else {
+      try {
+        const yt = createYouTube({
+          http: ctx.http,
+          auth: ctx.auth,
+          baseUrl: ctx.endpoints.youtubeApi,
+          charge: makeCharger(ctx, new OperationBudget({ searchCalls: 0, generalUnits: 1 }, '读取视频语言（自动字幕）'), settings.quota),
+          onQuotaExhausted: makeExhaustedMarker(ctx),
+        });
+        const [found] = await yt.videoMetas([videoId], ctx.now());
+        if (found) {
+          meta = found;
+          await stores.videoMeta.update(ctx.kv, ctx.locker, (m) => ({ ...m, [videoId]: found }));
+        }
+      } catch (e) {
+        note = `读不到视频的语言（${toAppError(e).message}），先按简体中文识别；不对的话在侧边栏"字幕"页换一种`;
+      }
+    }
+  }
+  return recognitionLangFor('auto', meta && !meta.missing ? meta : undefined, note);
+}
+
+export interface TextCueInput {
+  videoId: string;
+  start: number;
+  end: number;
+  text: string;
+  lang?: string;
+}
+
+/** 浏览器识别出的一行：存成字幕（不花转写费）；这段已有字幕时返回 undefined */
+export async function saveTextCue(ctx: AppContext, input: TextCueInput): Promise<SubtitleCue | undefined> {
+  const settings = await stores.settings.read(ctx.kv);
+  if (!settings.subtitles.enabled) throw new AppError('subtitles', '自动字幕已在设置中关闭');
+  const text = typeof input.text === 'string' ? clip(input.text.trim(), SUBTITLES.cueMaxChars) : '';
+  const ok =
+    VIDEO_ID.test(input.videoId) && Number.isFinite(input.start) && Number.isFinite(input.end) && input.start >= 0 && input.end > input.start && input.end - input.start <= 120 && !!text;
+  if (!ok) throw new AppError('subtitles', '收到的字幕格式不对，已丢弃', '刷新 YouTube 页面后再试；如果反复出现，请把这条提示告诉开发者');
+  const track = await getSubtitleTrack(ctx, input.videoId);
+  if (track && isCovered(track.cues, input.start, input.end)) return undefined;
+  const cue: SubtitleCue = {
+    id: `${input.videoId}:${Math.round(input.start * 1000)}`,
+    start: input.start,
+    end: input.end,
+    text,
+    ...(typeof input.lang === 'string' && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(input.lang) ? { lang: input.lang } : {}),
+    createdAt: ctx.now(),
+  };
+  await saveCue(ctx, input.videoId, cue, BROWSER_ASR_MODEL);
+  return cue;
+}
+
+/** 存在字幕里的"转写模型"名：浏览器识别 */
+export const BROWSER_ASR_MODEL = 'browser-speech';
 
 export interface SegmentInput {
   videoId: string;
@@ -243,8 +316,26 @@ export function subtitleSession(ctx: AppContext, send: (m: SubtitleDown) => void
     const videoId = typeof msg?.videoId === 'string' ? msg.videoId : '';
     if (!VIDEO_ID.test(videoId)) return;
     if (msg?.type === 'hello') {
-      const track = await getSubtitleTrack(ctx, videoId);
-      send({ type: 'track', videoId, cues: track?.cues ?? [] });
+      const [track, settings] = await Promise.all([getSubtitleTrack(ctx, videoId), stores.settings.read(ctx.kv)]);
+      const recognition = settings.subtitles.asrEngine === 'browser' ? await recognitionPlan(ctx, videoId) : undefined;
+      send({ type: 'track', videoId, cues: track?.cues ?? [], ...(recognition ? { recognition } : {}) });
+      return;
+    }
+    if (msg?.type === 'text') {
+      const seq = Number(msg.seq) || 0;
+      const secrets = await stores.secrets.read(ctx.kv);
+      try {
+        const cue = await saveTextCue(ctx, { videoId, start: Number(msg.start), end: Number(msg.end), text: String(msg.text ?? ''), ...(typeof msg.lang === 'string' ? { lang: msg.lang } : {}) });
+        if (!cue) return;
+        send({ type: 'cue', videoId, seq, cue, stage: 'source' });
+        const translated = await translateCue(ctx, videoId, cue);
+        if (translated !== cue) send({ type: 'cue', videoId, seq, cue: translated, stage: 'translated' });
+      } catch (err) {
+        const e = toAppError(err, [secrets.openaiApiKey, secrets.anthropicApiKey]);
+        send({ type: 'error', videoId, seq, message: e.message, ...(e.hint ? { hint: e.hint } : {}), fatal: isFatal(e) });
+      } finally {
+        send({ type: 'done', videoId, seq });
+      }
       return;
     }
     if (msg?.type !== 'segment' || typeof msg.audio !== 'string') return;

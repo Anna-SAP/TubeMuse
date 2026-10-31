@@ -573,13 +573,69 @@ try {
   await options.waitForTimeout(300);
   const subSection = (await options.locator('#subtitles').textContent()) ?? '';
   check(subSection.includes('12. 自动字幕') && /一小时连续说话的视频约 \$0\.\d\d/.test(subSection), '设置页有"自动字幕"一节，并按当前模型估算每小时花费');
+  check(await options.getByRole('radio', { name: /浏览器识别/ }).isChecked(), '转写方式默认是"浏览器识别"（免费）');
+  check(subSection.includes('本地语音包') && subSection.includes('识别语言'), '设置页显示识别语言与本地语音包状态');
   await options.locator('#subtitles').screenshot({ path: join(shots, '17-subtitle-settings.png') });
+
+  const transcribeReqs = () => requests.filter((r) => r.path === '/openai/v1/audio/transcriptions');
+  const subtitleLlmReqs = () => requests.filter((r) => r.path.startsWith('/anthropic') && r.body.includes('视频字幕翻译'));
+
+  console.log('\n[自动字幕：浏览器识别（默认）→ 边听边出字 → 一行一行存下并翻译，不发送音频]');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '字幕', exact: true }).click();
+  const llmBeforeBrowser = subtitleLlmReqs().length;
+  const [bsub] = await Promise.all([
+    context.waitForEvent('page'),
+    panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/watch?v=subBrowse001`),
+  ]);
+  bsub.on('pageerror', (e) => consoleErrors.push(`browser-speech watch pageerror: ${e.message}`));
+  bsub.on('console', (m) => m.type() === 'error' && consoleErrors.push(`browser-speech watch: ${m.text()}`));
+  await bsub.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await bsub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  await bsub.locator('[data-tubemuse="subtitles"] .tr').filter({ hasText: /Where was I\? \(\d+\)/ }).waitFor({ timeout: 20000 });
+  const bSrc = (await bsub.locator('[data-tubemuse="subtitles"] .src').textContent()) ?? '';
+  check(/第 \d+ 句：我说到哪里了/.test(bSrc), `浏览器识别：播放器里边听边出字：${bSrc}`);
+  check(transcribeReqs().length === 0, '浏览器识别不发任何音频（没有 OpenAI 转写请求）');
+  const bLlm = subtitleLlmReqs().slice(llmBeforeBrowser);
+  check(bLlm.length >= 1 && bLlm.every((r) => JSON.parse(r.body).model === 'claude-haiku-5-5' && !r.body.includes('subBrowse001')), `识别出的每一行交给 Claude（claude-haiku-5-5）翻译，不含视频 ID（${bLlm.length} 行）`);
+  await panel.getByTestId('subtitle-mode').filter({ hasText: 'Chrome 云端识别' }).waitFor({ timeout: 10000 });
+  const bTab = (await panel.getByTestId('subtitle-tab').textContent()) ?? '';
+  check(bTab.includes('浏览器识别 · Chrome 云端识别（声音发往 Google）'), '侧边栏写明转写方式与声音去向');
+  check((await panel.getByTestId('subtitle-lang').inputValue()) === 'zh-CN' && bTab.includes('默认'), '视频语言查不到（YouTube 数据里没有）：按简体中文识别，并说明是默认');
+  await bsub.waitForTimeout(3000);
+  const bCues = await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get(['subtitles:subBrowse001']).then((/** @type {any} */ r) => r['subtitles:subBrowse001']));
+  check(
+    bCues?.asrModel === 'browser-speech' && bCues.cues.length >= 2 && bCues.cues.every((/** @type {any} */ c) => /^第 \d+ 句：我说到哪里了$/.test(c.text) && c.end > c.start),
+    `识别出的行按视频时间存在本机（${bCues?.cues.length} 行）`,
+  );
+  await bsub.screenshot({ path: join(shots, '23-browser-speech-overlay.png') });
+  await panel.screenshot({ path: join(shots, '24-browser-speech-panel.png'), fullPage: true });
+
+  await panel.getByTestId('subtitle-lang').selectOption('en-US');
+  await panel.waitForFunction(() => /** @type {HTMLSelectElement | null} */ (document.querySelector('[data-testid="subtitle-lang"]'))?.value === 'en-US', null, { timeout: 5000 });
+  check(((await panel.getByTestId('subtitle-tab').textContent()) ?? '').includes('你选的'), '侧边栏给这个视频换识别语言：立即生效');
+  const spendB = (await panel.getByTestId('subtitle-spend-detail').textContent()) ?? '';
+  check(spendB.includes('浏览器识别不收费') && !/OpenAI 转写/.test(spendB), `花费只有翻译：${spendB}`);
+
+  console.log('\n[自动字幕：浏览器识别连不上语音服务（例如不是 Google Chrome）→ 停下并说明怎么办]');
+  await bsub.goto(`${MOCK}/watch?v=subBrowseNet`);
+  await bsub.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await bsub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  const netChip = bsub.locator('[data-tubemuse="subtitles"] .status');
+  await netChip.filter({ hasText: '连不上 Chrome 的语音识别服务' }).waitFor({ timeout: 15000 });
+  const netText = (await netChip.textContent()) ?? '';
+  check(netText.includes('已停止') && netText.includes('Google Chrome') && netText.includes('OpenAI'), `播放器里说明原因与办法：${netText.slice(0, 60)}…`);
+  await bsub.close();
+
+  console.log('\n[自动字幕：改用 OpenAI 转写]');
+  await options.bringToFront();
+  await options.getByRole('radio', { name: /OpenAI 转写/ }).check();
+  await options.waitForTimeout(400);
+  check((await options.locator('#subtitles').textContent())?.includes('语音转写模型（OpenAI）') === true, '选 OpenAI 后显示转写模型设置');
 
   console.log('\n[自动字幕：没有原生字幕的视频 → 采音频 → 转写 → 翻译 → 双语字幕叠加在播放器里]');
   await panel.bringToFront();
   await panel.getByRole('tab', { name: '字幕', exact: true }).click();
-  const transcribeReqs = () => requests.filter((r) => r.path === '/openai/v1/audio/transcriptions');
-  const subtitleLlmReqs = () => requests.filter((r) => r.path.startsWith('/anthropic') && r.body.includes('视频字幕翻译'));
   // 从侧边栏打开播放页并设为当前标签页（侧边栏要看的是"当前标签页"）
   const [sub] = await Promise.all([
     context.waitForEvent('page'),
@@ -627,7 +683,7 @@ try {
   check(tabText.includes('subNoCC00001') && tabText.includes('原生字幕没有'), `侧边栏识别当前标签页的视频与"没有原生字幕"：${tabText.slice(0, 60)}…`);
   await panel.getByTestId('subtitle-spend').waitFor({ timeout: 10000 });
   const spendText = (await panel.getByTestId('subtitle-spend-detail').textContent()) ?? '';
-  check(/\$0\.\d{3,4} \/ \$1\.00/.test(spendText) && /语音转写 [1-9]\d* 秒/.test(spendText) && /翻译 [1-9]\d* 句/.test(spendText), `花费实时可见：${spendText}`);
+  check(/\$0\.\d{3,4} \/ \$1\.00/.test(spendText) && /OpenAI 转写 [1-9]\d* 秒/.test(spendText) && /翻译 [1-9]\d* 句/.test(spendText), `花费实时可见：${spendText}`);
   await panel.screenshot({ path: join(shots, '19-subtitle-panel.png'), fullPage: true });
 
   // 播完后拖回第二句：按时间轴对齐显示，而且不再花钱

@@ -19,7 +19,8 @@ export interface RecognitionLike {
   onresult: ((e: { resultIndex: number; results: RecognitionResultList }) => void) | null;
   onerror: ((e: { error: string }) => void) | null;
   onend: (() => void) | null;
-  start(): void;
+  /** 传入音轨时识别这条音轨（Chrome 135+），不传则用麦克风 */
+  start(audioTrack?: MediaStreamTrack): void;
   stop(): void;
   abort(): void;
 }

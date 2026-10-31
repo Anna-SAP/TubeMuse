@@ -2,8 +2,8 @@
 // 状态来自注入 YouTube 页面的字幕脚本（只在本扩展内部传递）；字幕文字来自本机存储。
 
 import { useEffect, useMemo, useState } from 'preact/hooks';
-import { SUBTITLE_LANGS } from '../../config/defaults';
-import { formatAudioDuration, formatCueTime, formatUsd, type SubtitleTabState } from '../../core/subtitles';
+import { BROWSER_SPEECH_LANGS, SUBTITLE_LANGS } from '../../config/defaults';
+import { RECOGNITION_MODE_LABELS, formatAudioDuration, formatCueTime, formatUsd, speechLangName, type SubtitleTabState } from '../../core/subtitles';
 import { formatClock } from '../../core/time';
 import { stores, subtitleTrackStore } from '../../services/repo';
 import { subtitleTranslationModel } from '../../services/subtitle-service';
@@ -11,6 +11,9 @@ import { useStore, useSubtitleSpend } from '../shared/app';
 import { Notice } from '../shared/components';
 
 const CAPTION_LABELS = { available: '有', unavailable: '没有', unknown: '还没判断出来' } as const;
+
+/** 识别语言是怎么定的 */
+const LANG_SOURCE_LABELS = { setting: '设置里指定', video: '按视频的语言', title: '按标题文字推断', default: '默认', manual: '你选的' } as const;
 
 /** 跟踪本窗口的当前标签页，向它的字幕脚本要状态，并接收它主动推送的变化 */
 function useTabSubtitleState(): { tabId?: number; state?: SubtitleTabState | null } {
@@ -65,6 +68,15 @@ export function SubtitlesView() {
   const [busy, setBusy] = useState(false);
   if (!settings || !secrets) return null;
 
+  const setLang = async (lang: string) => {
+    if (tabId === undefined) return;
+    try {
+      await chrome.tabs.sendMessage(tabId, { type: 'tubemuse:subtitles:set-lang', lang });
+    } catch {
+      // 页面已关闭或换走
+    }
+  };
+
   const toggle = async (on: boolean) => {
     if (tabId === undefined) return;
     setBusy(true);
@@ -80,6 +92,8 @@ export function SubtitlesView() {
   const lines = (track?.cues ?? []).filter((c) => c.text);
   const { provider, model } = subtitleTranslationModel(settings);
   const s = settings.subtitles;
+  const openai = (state?.engine ?? s.asrEngine) === 'openai';
+  const rec = state?.recognition;
 
   return (
     <div class="subtitles">
@@ -91,9 +105,9 @@ export function SubtitlesView() {
           </button>
         </Notice>
       )}
-      {s.enabled && !secrets.openaiApiKey && (
+      {s.enabled && openai && !secrets.openaiApiKey && (
         <Notice kind="warn">
-          自动字幕需要 OpenAI API Key：语音转写只能用 OpenAI（Anthropic 没有语音转文字接口）。找片等其他功能可以继续用 Anthropic。
+          转写方式是 OpenAI，需要 OpenAI API Key（Anthropic 没有语音转文字接口）。也可以在设置页改用免费的浏览器识别。
           <button class="btn link small" onClick={() => chrome.runtime.openOptionsPage()}>
             去填写
           </button>
@@ -111,9 +125,30 @@ export function SubtitlesView() {
               <dd>{CAPTION_LABELS[state.captions]}</dd>
               <dt>状态</dt>
               <dd data-testid="subtitle-status">{state.status}</dd>
+              <dt>转写</dt>
+              <dd data-testid="subtitle-mode">{openai ? RECOGNITION_MODE_LABELS.openai : rec?.mode ? `浏览器识别 · ${RECOGNITION_MODE_LABELS[rec.mode]}` : '浏览器识别（还没开始）'}</dd>
+              {!openai && rec && rec.lang && (
+                <>
+                  <dt>识别语言</dt>
+                  <dd>
+                    <select class="input" data-testid="subtitle-lang" value={rec.lang} onChange={(e) => void setLang(e.currentTarget.value)}>
+                      {!(rec.lang in BROWSER_SPEECH_LANGS) && <option value={rec.lang}>{speechLangName(rec.lang)}</option>}
+                      {Object.entries(BROWSER_SPEECH_LANGS)
+                        .filter(([code]) => code !== 'auto')
+                        .map(([code, name]) => (
+                          <option value={code}>{name}</option>
+                        ))}
+                    </select>
+                    <div class="muted small">
+                      {LANG_SOURCE_LABELS[rec.source]}
+                      {rec.note ? `：${rec.note}` : ''}
+                    </div>
+                  </dd>
+                </>
+              )}
               <dt>已生成</dt>
               <dd>
-                {state.cues} 句{state.pending ? `（识别中 ${state.pending} 段）` : ''}
+                {state.cues} 句{state.pending ? `（处理中 ${state.pending} 句）` : ''}
               </dd>
             </dl>
             {state.error && (
@@ -148,14 +183,18 @@ export function SubtitlesView() {
         <section class="panel">
           <h2>今日字幕花费</h2>
           <p data-testid="subtitle-spend-detail">
-            {formatUsd(spend.spentUsd)} / ${spend.budgetUsd.toFixed(2)}：语音转写 {formatAudioDuration(spend.asrSeconds)}，翻译 {spend.translations} 句。
+            {formatUsd(spend.spentUsd)} / ${spend.budgetUsd.toFixed(2)}：{spend.asrSeconds ? `OpenAI 转写 ${formatAudioDuration(spend.asrSeconds)}，` : ''}翻译 {spend.translations} 句。{openai ? '' : '浏览器识别不收费。'}
             {spend.exhausted && <strong class="warn-text"> 已到上限，已停止识别。</strong>}
           </p>
           <p class="muted small">
             本地估算{spend.estimatedPrice ? '（有模型不在价目表里，按保守单价估算）' : ''}，以 OpenAI / {provider === 'anthropic' ? 'Anthropic' : 'OpenAI'} 账单为准；你的本地时间 {formatClock(spend.resetAt)} 重置。
           </p>
           <p class="muted small">
-            去向：视频的声音（切成几秒一段）发往 OpenAI 转写为文字（{s.asrModel}）；转写出的文字发往{provider === 'anthropic' ? ' Anthropic' : ' OpenAI'}（{model}）翻译成
+            去向：
+            {openai
+              ? `视频的声音（切成几秒一段）发往 OpenAI 转写为文字（${s.asrModel}）`
+              : `视频的声音交给浏览器自带的语音识别（${rec?.mode ? RECOGNITION_MODE_LABELS[rec.mode] : '装了本地语音包时在本机识别，否则由 Chrome 发往 Google'}）`}
+            ；转写出的文字发往{provider === 'anthropic' ? ' Anthropic' : ' OpenAI'}（{model}）翻译成
             {SUBTITLE_LANGS[s.targetLang]}（原文已是{SUBTITLE_LANGS[s.targetLang]}时译成 {SUBTITLE_LANGS[s.altTargetLang]}）。音频不保存，字幕文字只存在本机。
           </p>
         </section>

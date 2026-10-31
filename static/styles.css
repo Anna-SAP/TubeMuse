@@ -897,7 +897,8 @@ textarea.input {
   align-items: flex-start;
   margin: 6px 0;
 }
-.panel > label.inline input[type='checkbox'] {
+.panel > label.inline input[type='checkbox'],
+.panel > label.inline input[type='radio'] {
   margin-top: 3px;
 }
 .danger-zone {
