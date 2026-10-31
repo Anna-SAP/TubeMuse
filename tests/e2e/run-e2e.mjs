@@ -574,6 +574,7 @@ try {
   const subSection = (await options.locator('#subtitles').textContent()) ?? '';
   check(subSection.includes('12. 自动字幕') && /一小时连续说话的视频约 \$0\.\d\d/.test(subSection), '设置页有"自动字幕"一节，并按当前模型估算每小时花费');
   check(await options.getByRole('radio', { name: /浏览器识别/ }).isChecked(), '转写方式默认是"浏览器识别"（免费）');
+  check(!(await options.getByTestId('subtitle-autostart').isChecked()), '"无字幕时自动开始"默认关闭');
   check(subSection.includes('本地语音包') && subSection.includes('识别语言'), '设置页显示识别语言与本地语音包状态');
   await options.locator('#subtitles').screenshot({ path: join(shots, '17-subtitle-settings.png') });
 
@@ -592,6 +593,15 @@ try {
   bsub.on('console', (m) => m.type() === 'error' && consoleErrors.push(`browser-speech watch: ${m.text()}`));
   await bsub.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
   await bsub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  // 字幕默认关闭：没有原生字幕的视频播放起来也不出字幕、不识别、不翻译，等你手动开启
+  await bsub.waitForTimeout(3000);
+  await panel.getByTestId('subtitle-status').filter({ hasText: '字幕默认关闭' }).waitFor({ timeout: 10000 });
+  check(
+    (await bsub.locator('[data-tubemuse="subtitles"]').count()) === 0 && subtitleLlmReqs().length === llmBeforeBrowser,
+    '字幕默认关闭：没有原生字幕的视频播放 3 秒，不出字幕、不识别、不翻译',
+  );
+  check(((await panel.getByTestId('subtitle-status').textContent()) ?? '').includes('Alt+Shift+S'), '侧边栏说明怎么手动开启');
+  await panel.getByRole('button', { name: '为这个视频生成字幕' }).click();
   await bsub.locator('[data-tubemuse="subtitles"] .tr').filter({ hasText: /Where was I\? \(\d+\)/ }).waitFor({ timeout: 20000 });
   const bSrc = (await bsub.locator('[data-tubemuse="subtitles"] .src').textContent()) ?? '';
   check(/第 \d+ 句：我说到哪里了/.test(bSrc), `浏览器识别：播放器里边听边出字：${bSrc}`);
@@ -621,6 +631,8 @@ try {
   await bsub.goto(`${MOCK}/watch?v=subBrowseNet`);
   await bsub.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
   await bsub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  // 换了视频又回到默认关闭：再手动开启一次
+  await panel.getByRole('button', { name: '为这个视频生成字幕' }).click();
   const netChip = bsub.locator('[data-tubemuse="subtitles"] .status');
   await netChip.filter({ hasText: '连不上 Chrome 的语音识别服务' }).waitFor({ timeout: 15000 });
   const netText = (await netChip.textContent()) ?? '';
@@ -630,6 +642,8 @@ try {
   console.log('\n[自动字幕：改用 OpenAI 转写]');
   await options.bringToFront();
   await options.getByRole('radio', { name: /OpenAI 转写/ }).check();
+  // 后面的场景验证"无字幕时自动开始"这个可选项仍然好用
+  await options.getByTestId('subtitle-autostart').check();
   await options.waitForTimeout(400);
   check((await options.locator('#subtitles').textContent())?.includes('语音转写模型（OpenAI）') === true, '选 OpenAI 后显示转写模型设置');
 

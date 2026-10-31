@@ -36,6 +36,13 @@ export interface Secrets {
   xBearerToken?: string;
 }
 
+/** 旧版的"无字幕时自动开始"（autoStart，默认开）：改为默认关闭后换了新键，旧值丢弃，大家都从"关"开始 */
+function withoutLegacySubtitleKeys(stored: unknown): object {
+  if (!stored || typeof stored !== 'object') return {};
+  const { autoStart: _legacy, ...rest } = stored as Record<string, unknown>;
+  return rest;
+}
+
 /** 设置按分区与默认值合并，旧版本存下的数据缺字段也能正常读取。 */
 export function mergeSettings(stored: unknown): Settings {
   const s = (stored && typeof stored === 'object' ? stored : {}) as Partial<Record<keyof Settings, Record<string, unknown>>>;
@@ -60,7 +67,7 @@ export function mergeSettings(stored: unknown): Settings {
     douban: { ...d.douban, ...(s.douban as object) },
     subtitles: {
       ...d.subtitles,
-      ...(s.subtitles as object),
+      ...withoutLegacySubtitleKeys(s.subtitles),
       translationModels: { ...d.subtitles.translationModels, ...((s.subtitles?.translationModels as object) ?? {}) },
     },
   } as Settings;

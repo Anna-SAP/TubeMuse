@@ -147,7 +147,7 @@ function wantActive(): boolean {
   const m = manual.get(videoId);
   if (m === 'off') return false;
   if (fatalActive()) return false;
-  return m === 'on' || (settings.autoStart && captions === 'unavailable');
+  return m === 'on' || (settings.autoStartNoCaptions && captions === 'unavailable');
 }
 
 function setNotice(text: string, hint?: string): void {
@@ -587,9 +587,9 @@ function tabState(): SubtitleTabState {
   else if (fatalActive() && m !== 'off') status = `已停止：${fatal!.message}`;
   else if (active) status = st?.text.replace(/^TubeMuse 字幕：/, '') ?? '正在出字幕';
   else if (m === 'off') status = '你已关闭这个视频的字幕';
+  else if (!settings.autoStartNoCaptions) status = '未开启（字幕默认关闭）：点"为这个视频生成字幕"或按 Alt+Shift+S';
   else if (captions === 'available') status = '这个视频有原生字幕，不自动生成';
   else if (captions === 'unknown') status = '还没判断出有没有原生字幕（广告结束、视频开始播放后再看）；可以手动开启';
-  else if (!settings.autoStart) status = '没有原生字幕；"自动开启"已关闭，可以手动开启';
   else status = '准备中…';
   const recognition: SubtitleTabState['recognition'] =
     c?.engine === 'browser' && c.plan

@@ -134,8 +134,11 @@ export const DEFAULT_SETTINGS = {
   },
   subtitles: {
     enabled: true,
-    /** 播放器显示"字幕不可用"时自动开始（关掉后只在你手动开启时生成） */
-    autoStart: true,
+    /**
+     * 播放器显示"字幕不可用"时自动开始。默认关闭（用户 2026-11-01 要求）：每个视频都由你手动开启
+     * （侧边栏"字幕"页或 Alt+Shift+S）。旧版的 autoStart（默认开）不再生效，见 mergeSettings。
+     */
+    autoStartNoCaptions: false,
     /** 每日字幕花费上限（美元，按本地日计）：语音转写 + 翻译 */
     dailyBudgetUsd: 1,
     /** 转写方式：浏览器自带的语音识别（免费；用户 2026-11-01 选为默认）或 OpenAI 转写 */

@@ -476,6 +476,22 @@ describe('后台：转写 → 存字幕 → 翻译 → 记账', () => {
   });
 });
 
+describe('字幕默认关闭，只在你手动开启时生成', () => {
+  it('新装：没有原生字幕的视频也不自动开始', () => {
+    expect(mergeSettings(undefined).subtitles.autoStartNoCaptions).toBe(false);
+  });
+  it('旧版存下的"自动开始"（autoStart: true）不再生效，并从设置里去掉；其他字幕设置保留', () => {
+    const s = mergeSettings({ subtitles: { autoStart: true, dailyBudgetUsd: 2, asrEngine: 'openai' } });
+    expect(s.subtitles.autoStartNoCaptions).toBe(false);
+    expect('autoStart' in s.subtitles).toBe(false);
+    expect(s.subtitles.dailyBudgetUsd).toBe(2);
+    expect(s.subtitles.asrEngine).toBe('openai');
+  });
+  it('你在设置页打开了"自动开始"就照做', () => {
+    expect(mergeSettings({ subtitles: { autoStartNoCaptions: true } }).subtitles.autoStartNoCaptions).toBe(true);
+  });
+});
+
 describe('字幕翻译模型', () => {
   it('默认用更快更省的小模型，随"1. 大模型"的提供商切换', () => {
     const s = mergeSettings(undefined);
