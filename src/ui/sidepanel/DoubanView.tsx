@@ -3,7 +3,7 @@
 import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { doubanFresh, hueOf, ratingStars } from '../../core/douban';
-import { formatRelative } from '../../core/time';
+import { formatDateTime, formatRelative } from '../../core/time';
 import type { DoubanFeed, DoubanReview } from '../../core/types';
 import { addDoubanSubject, refreshDoubanFeed, removeDoubanSubject, selectDoubanSubject } from '../../services/douban-service';
 import type { AppError } from '../../services/errors';
@@ -12,10 +12,6 @@ import { appCtx, asAppError, useStore } from '../shared/app';
 import { ErrorBox, Notice, Spinner } from '../shared/components';
 
 const firstChar = (s: string) => Array.from(s.trim())[0] ?? '?';
-
-function absoluteTime(ms: number): string {
-  return new Date(ms).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-}
 
 /** 本地生成的封面：没有海报、或豆瓣拒绝外站加载海报时使用 */
 function Cover({ title }: { title: string }) {
@@ -38,7 +34,7 @@ function Stars({ rating }: { rating: string }) {
   );
 }
 
-function ReviewCard({ r, now }: { r: DoubanReview; now: number }) {
+function ReviewCard({ r, timeZone }: { r: DoubanReview; timeZone: string }) {
   const link = (children: ComponentChildren, cls: string) =>
     r.url ? (
       <a class={cls} href={r.url} target="_blank" rel="noopener noreferrer">
@@ -62,9 +58,15 @@ function ReviewCard({ r, now }: { r: DoubanReview; now: number }) {
             r.author
           )}
         </span>
-        <span class="muted small" title={r.publishedAt ? absoluteTime(r.publishedAt) : undefined}>
-          {r.publishedAt ? formatRelative(r.publishedAt, now) : '时间未知'}
-        </span>
+        {r.publishedAt ? (
+          <time class="muted small db-time" dateTime={new Date(r.publishedAt).toISOString()} data-testid="douban-time">
+            {formatDateTime(r.publishedAt, timeZone)}
+          </time>
+        ) : (
+          <span class="muted small" data-testid="douban-time">
+            时间未知
+          </span>
+        )}
         {r.rating && <Stars rating={r.rating} />}
       </div>
       {link(r.title, 'db-title')}
@@ -230,7 +232,7 @@ export function DoubanView() {
               <p class="muted small db-note">豆瓣的 RSS 只附每篇评论开头的一小段，点"读全文"到豆瓣看完整内容。</p>
               <ul class="db-reviews">
                 {entry.feed.reviews.map((r) => (
-                  <ReviewCard key={r.id} r={r} now={ctx.now()} />
+                  <ReviewCard key={r.id} r={r} timeZone={ctx.timeZone} />
                 ))}
               </ul>
             </>

@@ -1,4 +1,4 @@
-// 时间工具：太平洋时间日界（配额重置）、ISO 8601 时长、相对时间。
+// 时间工具：太平洋时间日界（配额重置）、ISO 8601 时长、相对时间、精确时间。
 
 const HOUR = 3_600_000;
 export const DAY_MS = 24 * HOUR;
@@ -22,6 +22,13 @@ function partsIn(timeZone: string, at: number): { y: number; m: number; d: numbe
 export function dayKey(at: number, timeZone: string): string {
   const { y, m, d } = partsIn(timeZone, at);
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+/** 某时刻在指定时区的精确时间 YYYY/MM/DD HH:mm（24 小时制，零点是 00:00 而不是 24:00）。 */
+export function formatDateTime(at: number, timeZone: string): string {
+  const { y, m, d, h, min } = partsIn(timeZone, at);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${y}/${pad(m)}/${pad(d)} ${pad(h)}:${pad(min)}`;
 }
 
 /** 下一个指定时区零点对应的 UTC 毫秒（自动处理夏令时）。 */

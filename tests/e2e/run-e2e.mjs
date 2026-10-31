@@ -446,11 +446,34 @@ try {
   const reviews = await panel.getByTestId('douban-review').evaluateAll((els) =>
     els.map((e) => {
       const a = e.querySelector('a.db-title');
-      return { title: e.querySelector('.db-title')?.textContent ?? '', href: a?.getAttribute('href') ?? '', target: a?.getAttribute('target') ?? '', excerpt: e.querySelector('.db-excerpt')?.textContent ?? '' };
+      const time = e.querySelector('[data-testid="douban-time"]');
+      return {
+        title: e.querySelector('.db-title')?.textContent ?? '',
+        href: a?.getAttribute('href') ?? '',
+        target: a?.getAttribute('target') ?? '',
+        excerpt: e.querySelector('.db-excerpt')?.textContent ?? '',
+        time: time?.textContent ?? '',
+        timeTitle: time?.getAttribute('title') ?? '',
+      };
     }),
   );
   check(reviews.length === 5, `打开"豆瓣"页自动读取预置条目：${reviews.length} 篇评论（重复的已去掉）`);
   check(reviews[0]?.title === '笑出眼泪', '按发布时间从新到旧排列');
+  // 夹具里最新一篇的 pubDate 是 Thu, 22 Oct 2026 01:31:55 GMT：按浏览器所在时区换算后应原样显示
+  const tz = await panel.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const tp = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(Date.parse('Thu, 22 Oct 2026 01:31:55 GMT'))
+      .map((x) => [x.type, x.value]),
+  );
+  const expectedTime = `${tp.year}/${tp.month}/${tp.day} ${tp.hour}:${tp.minute}`;
+  check(
+    reviews[0]?.time === expectedTime &&
+      reviews.slice(0, -1).every((r) => /^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/.test(r.time)) &&
+      reviews.at(-1)?.time === '时间未知' &&
+      reviews.every((r) => !r.timeTitle),
+    `评论时间显示为本地精确时间（${expectedTime}，${tz}），没有"几周前"，也没有悬浮提示`,
+  );
   check(reviews.some((r) => r.excerpt === '期待上…') && reviews.every((r) => !/�|\\u|&#34;/.test(r.excerpt)), '摘要取自截断的 Draft.js，没有转义残渣或乱码');
   check(
     reviews.filter((r) => r.href).every((r) => r.href.startsWith('https://movie.douban.com/review/') && r.target === '_blank') && reviews.some((r) => !r.href),

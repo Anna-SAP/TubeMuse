@@ -12,10 +12,24 @@ import { exportAll } from '../../src/services/data-service';
 import { addDoubanSubject, refreshDoubanFeed, removeDoubanSubject } from '../../src/services/douban-service';
 import { stores } from '../../src/services/repo';
 import { memoryKV, memoryLocker } from '../../src/services/storage';
+import { formatDateTime } from '../../src/core/time';
 
 const FIXTURE = readFileSync(join(__dirname, '..', 'fixtures', 'douban-reviews.xml'), 'utf8');
 const NOW = Date.parse('2026-10-31T12:00:00Z');
 const ID = '35299923';
+
+describe('评论发布时间：按本地时区显示为 YYYY/MM/DD HH:mm', () => {
+  const pub = Date.parse('Wed, 21 Oct 2026 19:04:05 GMT');
+  it('RSS 的 GMT 时间换算到本地时区（跨日也对）', () => {
+    expect(formatDateTime(pub, 'Asia/Shanghai')).toBe('2026/10/22 03:04');
+    expect(formatDateTime(pub, 'America/Los_Angeles')).toBe('2026/10/21 12:04');
+    expect(formatDateTime(pub, 'UTC')).toBe('2026/10/21 19:04');
+  });
+  it('零点显示 00:00（不是 24:00），月日时分补零', () => {
+    expect(formatDateTime(Date.parse('2026-10-21T16:00:00Z'), 'Asia/Shanghai')).toBe('2026/10/22 00:00');
+    expect(formatDateTime(Date.parse('2026-01-02T03:04:59Z'), 'UTC')).toBe('2026/01/02 03:04');
+  });
+});
 
 describe('认出条目 ID', () => {
   it.each([

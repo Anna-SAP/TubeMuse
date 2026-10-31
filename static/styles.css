@@ -1220,6 +1220,9 @@ label.btn {
 .db-byline .muted {
   flex: none;
 }
+.db-time {
+  font-variant-numeric: tabular-nums;
+}
 .db-stars,
 .db-byline .badge {
   margin-left: auto;
