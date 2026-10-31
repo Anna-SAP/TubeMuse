@@ -3,7 +3,7 @@
 
 import { DOUBAN } from '../config/defaults';
 import { DOUBAN_IMAGE_ORIGINS } from '../config/endpoints';
-import { DoubanFeedError, doubanFeedUrl, doubanFresh, parseDoubanFeed, parseSubjectInput } from '../core/douban';
+import { DoubanFeedError, doubanFeedUrl, doubanFresh, parseDoubanFeed, parseSubjectInput, pruneTransientFeeds } from '../core/douban';
 import type { DoubanFeed, DoubanState } from '../core/types';
 import type { AppContext } from './context';
 import { AppError } from './errors';
@@ -66,7 +66,11 @@ export async function refreshDoubanFeed(ctx: AppContext, subjectId: string, opts
     const feed = parseFeed(await fetchFeedXml(ctx, subjectId), subjectId);
     await stores.douban.update(ctx.kv, ctx.locker, (s) => ({
       ...s,
-      feeds: { ...s.feeds, [subjectId]: { fetchedAt: ctx.now(), feed } },
+      feeds: pruneTransientFeeds(
+        { ...s.feeds, [subjectId]: { fetchedAt: ctx.now(), feed } },
+        s.subjects.map((x) => x.id),
+        DOUBAN.transientFeedsKept,
+      ),
       subjects: s.subjects.map((x) => (x.id === subjectId ? { ...x, title: feed.title } : x)),
     }));
     return { cached: false };
@@ -82,7 +86,9 @@ export async function addDoubanSubject(ctx: AppContext, input: string): Promise<
   await stores.douban.update(ctx.kv, ctx.locker, (s) => {
     if (s.subjects.some((x) => x.id === id)) return { ...s, selected: id };
     if (s.subjects.length >= DOUBAN.maxSubjects) throw new AppError('input', `最多订阅 ${DOUBAN.maxSubjects} 个条目`, '先取消订阅不再看的条目');
-    return { ...s, subjects: [...s.subjects, { id, addedAt: ctx.now() }], selected: id };
+    // 跟随标签页时已经读过的条目：直接用缓存里的条目名，不必等下一次读取
+    const title = s.feeds[id]?.feed.title;
+    return { ...s, subjects: [...s.subjects, { id, addedAt: ctx.now(), ...(title ? { title } : {}) }], selected: id };
   });
   return id;
 }

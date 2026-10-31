@@ -128,6 +128,8 @@ export const DEFAULT_SETTINGS = {
     enabled: true,
     /** 打开"豆瓣"页、且当前条目的缓存已过期时自动读取一次 RSS */
     autoRefresh: true,
+    /** 当前标签页打开的是 www.douban.com 上的条目或其评论 RSS 时，"豆瓣"页自动切到该条目（只读标签页地址） */
+    followActiveTab: true,
     cacheMinutes: 30,
   },
 };
@@ -165,6 +167,8 @@ export const DOUBAN = {
   /** 首次使用时预置的条目（可删除） */
   defaultSubjects: [{ id: '35299923', title: '白衣逆行者' }],
   maxSubjects: 20,
+  /** 跟随标签页看过、但没订阅的条目，最多保留几份缓存（来回切换时不必反复请求豆瓣） */
+  transientFeedsKept: 5,
   /** 评价词 → 星级（豆瓣五档） */
   ratingStars: { 力荐: 5, 推荐: 4, 还行: 3, 较差: 2, 很差: 1 } as Record<string, number>,
 } as const;

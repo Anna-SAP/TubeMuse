@@ -5,7 +5,17 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DOUBAN } from '../../src/config/defaults';
 import { DOUBAN_IMAGE_ORIGINS, ENDPOINTS } from '../../src/config/endpoints';
-import { DoubanFeedError, hueOf, parseDescription, parseDoubanFeed, parseSubjectInput, ratingStars, splitReviewTitle } from '../../src/core/douban';
+import {
+  DoubanFeedError,
+  hueOf,
+  parseDescription,
+  parseDoubanFeed,
+  parseSubjectInput,
+  pruneTransientFeeds,
+  ratingStars,
+  splitReviewTitle,
+  subjectFromTabUrl,
+} from '../../src/core/douban';
 import type { AuthProvider } from '../../src/services/auth';
 import type { AppContext } from '../../src/services/context';
 import { exportAll } from '../../src/services/data-service';
@@ -257,5 +267,54 @@ describe('豆瓣 RSS 服务层（mock fetch）', () => {
     await refreshDoubanFeed(ctx, ID);
     const file = await exportAll(ctx);
     expect((file.data.douban as { feeds: Record<string, unknown> }).feeds[ID]).toBeDefined();
+  });
+
+  it(`跟随标签页读过的未订阅条目：缓存按条目分开，最多留 ${DOUBAN.transientFeedsKept} 份，订阅的不删`, async () => {
+    const { ctx, calls, setNow } = setup();
+    await refreshDoubanFeed(ctx, ID);
+    const others = Array.from({ length: DOUBAN.transientFeedsKept + 2 }, (_, i) => String(37_322_580 + i));
+    for (const [i, id] of others.entries()) {
+      setNow(NOW + i * 1000);
+      await refreshDoubanFeed(ctx, id);
+    }
+    expect(calls.map((c) => c.url.split('/')[5])).toEqual([ID, ...others]);
+    const s = await stores.douban.read(ctx.kv);
+    expect(Object.keys(s.feeds).sort()).toEqual([ID, ...others.slice(-DOUBAN.transientFeedsKept)].sort());
+    expect(s.subjects.map((x) => x.id)).toEqual([ID]);
+  });
+
+  it('订阅一个已经读过（缓存里有）的条目：直接带上条目名，不再请求', async () => {
+    const { ctx, calls } = setup();
+    await refreshDoubanFeed(ctx, '37322586');
+    await addDoubanSubject(ctx, '37322586');
+    const s = await stores.douban.read(ctx.kv);
+    expect(s.subjects.find((x) => x.id === '37322586')).toMatchObject({ title: '白衣逆行者' });
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe('跟随当前标签页：从标签页地址认出条目', () => {
+  const BASE = 'https://www.douban.com';
+  it.each([
+    ['https://www.douban.com/feed/subject/37322586/reviews', '37322586'],
+    ['https://www.douban.com/subject/37322586/', '37322586'],
+    ['https://movie.douban.com/subject/37322586/reviews?start=20', '37322586'],
+    ['http://127.0.0.1:47321/douban/feed/subject/37322586/reviews', undefined],
+    ['https://www.douban.com/people/123456/', undefined],
+    ['https://www.youtube.com/watch?v=abc', undefined],
+    ['chrome://newtab/', undefined],
+    ['', undefined],
+    [undefined, undefined],
+  ])('%s → %s', (url, id) => expect(subjectFromTabUrl(url, BASE)).toBe(id));
+
+  it('e2e：mock 的 RSS 地址也能被跟随', () => {
+    expect(subjectFromTabUrl('http://127.0.0.1:47321/douban/feed/subject/37322586/reviews', 'http://127.0.0.1:47321/douban')).toBe('37322586');
+    expect(subjectFromTabUrl('http://127.0.0.1:47321/watch?v=x', 'http://127.0.0.1:47321/douban')).toBeUndefined();
+  });
+
+  it('清理缓存：保留订阅的全部 + 最近读过的若干个未订阅条目', () => {
+    const feeds = { a: { fetchedAt: 1 }, b: { fetchedAt: 5 }, c: { fetchedAt: 3 }, d: { fetchedAt: 4 }, sub: { fetchedAt: 0 } };
+    expect(Object.keys(pruneTransientFeeds(feeds, ['sub'], 2)).sort()).toEqual(['b', 'd', 'sub']);
+    expect(Object.keys(pruneTransientFeeds(feeds, ['a', 'b', 'c', 'd', 'sub'], 0)).sort()).toEqual(['a', 'b', 'c', 'd', 'sub']);
   });
 });

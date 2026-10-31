@@ -2,7 +2,7 @@
 
 import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { doubanFresh, hueOf, ratingStars } from '../../core/douban';
+import { doubanFresh, hueOf, ratingStars, subjectFromTabUrl } from '../../core/douban';
 import { formatDateTime, formatRelative } from '../../core/time';
 import type { DoubanFeed, DoubanReview } from '../../core/types';
 import { addDoubanSubject, refreshDoubanFeed, removeDoubanSubject, selectDoubanSubject } from '../../services/douban-service';
@@ -87,7 +87,23 @@ function ReviewCard({ r, timeZone }: { r: DoubanReview; timeZone: string }) {
   );
 }
 
-function Hero({ feed, fetchedAt, busy, onRefresh, onRemove }: { feed: DoubanFeed; fetchedAt: number; busy: boolean; onRefresh: () => void; onRemove: () => void }) {
+function Hero({
+  feed,
+  fetchedAt,
+  busy,
+  subscribed,
+  onRefresh,
+  onRemove,
+  onSubscribe,
+}: {
+  feed: DoubanFeed;
+  fetchedAt: number;
+  busy: boolean;
+  subscribed: boolean;
+  onRefresh: () => void;
+  onRemove: () => void;
+  onSubscribe: () => void;
+}) {
   const ctx = appCtx();
   // 记下加载失败的海报地址（而不是布尔值）：换条目后自然重置
   const [failedPoster, setFailedPoster] = useState<string>();
@@ -115,9 +131,15 @@ function Hero({ feed, fetchedAt, busy, onRefresh, onRemove }: { feed: DoubanFeed
                 在豆瓣打开 ↗
               </a>
             )}
-            <button class="btn link small" onClick={onRemove}>
-              取消订阅
-            </button>
+            {subscribed ? (
+              <button class="btn link small" onClick={onRemove}>
+                取消订阅
+              </button>
+            ) : (
+              <button class="btn small primary" disabled={busy} onClick={onSubscribe}>
+                订阅这个条目
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -153,17 +175,69 @@ export function DoubanView() {
     }
   };
 
+  // 正在看的条目：你点选的订阅条目，或跟随当前标签页切过来的条目（可能没订阅）
+  const [viewing, setViewing] = useState<string>();
   const subjects = state?.subjects ?? [];
-  const selected = subjects.find((s) => s.id === state?.selected)?.id ?? subjects[0]?.id;
+  const selected = viewing ?? subjects.find((s) => s.id === state?.selected)?.id ?? subjects[0]?.id;
+  const subscribed = !!selected && subjects.some((s) => s.id === selected);
   const entry = selected ? state?.feeds[selected] : undefined;
 
-  // 打开"豆瓣"页、且当前条目没有缓存或缓存已过期时自动读取一次（设置里可关）；每个条目每次打开侧边栏最多自动读一次
+  // 跟随当前标签页：当前窗口激活的标签页切换或换了地址，且新地址是豆瓣条目 / 评论 RSS 时，切到该条目。
+  // 只读标签页地址（浏览器只给有主机权限的 www.douban.com 地址），不读页面内容。同一地址的重复事件
+  // （加载完成、标题变化）不再切换，免得覆盖你刚点选的条目；离开豆瓣再回来会重新跟随。
+  const lastPageSubject = useRef<string>();
+  const follow = !!settings?.douban.enabled && !!settings.douban.followActiveTab;
+  useEffect(() => {
+    if (!follow) return;
+    let windowId: number | undefined;
+    const onUrl = (url: string | undefined) => {
+      const id = subjectFromTabUrl(url, ctx.endpoints.douban);
+      if (id === lastPageSubject.current) return;
+      lastPageSubject.current = id;
+      if (id) setViewing(id);
+    };
+    const onActivated = (info: chrome.tabs.OnActivatedInfo) => {
+      if (info.windowId !== windowId) return;
+      chrome.tabs.get(info.tabId).then((t) => onUrl(t.url), () => onUrl(undefined));
+    };
+    const onUpdated = (_id: number, _change: chrome.tabs.OnUpdatedInfo, tab: chrome.tabs.Tab) => {
+      if (tab.active && tab.windowId === windowId) onUrl(tab.url);
+    };
+    chrome.tabs.onActivated.addListener(onActivated);
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    void chrome.windows.getCurrent().then(async (w) => {
+      windowId = w.id;
+      const [tab] = await chrome.tabs.query({ active: true, windowId });
+      onUrl(tab?.url);
+    });
+    return () => {
+      chrome.tabs.onActivated.removeListener(onActivated);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      lastPageSubject.current = undefined;
+    };
+  }, [follow]);
+
+  // 当前条目没有缓存或缓存已过期时自动读取一次（设置里可关）；每个条目每次打开"豆瓣"页最多自动读一次。
+  // 缓存按条目 ID 分开存，切到别的条目不会拿到上一个条目的缓存。
   useEffect(() => {
     if (!settings || !state || !selected || autoTried.current.has(selected)) return;
     if (!settings.douban.enabled || !settings.douban.autoRefresh || doubanFresh(entry, settings.douban.cacheMinutes, ctx.now())) return;
     autoTried.current.add(selected);
     void run(`load:${selected}`, () => refreshDoubanFeed(ctx, selected));
   }, [settings, state, selected]);
+
+  const choose = (id: string) => {
+    setViewing(id);
+    void selectDoubanSubject(ctx, id);
+  };
+  const remove = (id: string) =>
+    void run('remove', () => removeDoubanSubject(ctx, id)).then((ok) => {
+      if (ok) setViewing(undefined);
+    });
+  const subscribe = (id: string) =>
+    void run('add', () => addDoubanSubject(ctx, id)).then((ok) => {
+      if (ok) setViewing(id);
+    });
 
   if (!settings || !state) return null;
   if (!settings.douban.enabled) {
@@ -179,7 +253,11 @@ export function DoubanView() {
 
   const add = async () => {
     if (!draft.trim()) return;
-    if (await run('add', () => addDoubanSubject(ctx, draft))) setDraft('');
+    let id: string | undefined;
+    if (await run('add', async () => (id = await addDoubanSubject(ctx, draft)))) {
+      setDraft('');
+      if (id) setViewing(id);
+    }
   };
 
   return (
@@ -198,16 +276,19 @@ export function DoubanView() {
             订阅
           </button>
         </form>
-        <p class="muted small db-help">读取条目的公开评论 RSS：只连 www.douban.com，不登录、不带你的豆瓣 Cookie；缓存 {settings.douban.cacheMinutes} 分钟。</p>
-        {subjects.length > 0 && (
-          <div class="db-chips" aria-label="已订阅的条目">
+        <p class="muted small db-help">
+          读取条目的公开评论 RSS：只连 www.douban.com，不登录、不带你的豆瓣 Cookie；缓存 {settings.douban.cacheMinutes} 分钟。
+          {follow ? '当前标签页打开豆瓣条目或它的评论 RSS 时，这里会自动切过去。' : ''}
+        </p>
+        {(subjects.length > 0 || (selected && !subscribed)) && (
+          <div class="db-chips" aria-label="条目">
+            {selected && !subscribed && (
+              <button aria-pressed="true" class="db-chip on page" data-testid="douban-page-chip" title="当前标签页上的条目（未订阅）">
+                当前页 · {entry?.feed.title ?? `条目 ${selected}`}
+              </button>
+            )}
             {subjects.map((s) => (
-              <button
-                aria-pressed={s.id === selected}
-                class={`db-chip${s.id === selected ? ' on' : ''}`}
-                data-testid="douban-chip"
-                onClick={() => void selectDoubanSubject(ctx, s.id)}
-              >
+              <button aria-pressed={s.id === selected} class={`db-chip${s.id === selected ? ' on' : ''}`} data-testid="douban-chip" onClick={() => choose(s.id)}>
                 {s.title ?? `条目 ${s.id}`}
               </button>
             ))}
@@ -223,8 +304,10 @@ export function DoubanView() {
             feed={entry.feed}
             fetchedAt={entry.fetchedAt}
             busy={!!busy}
+            subscribed={subscribed}
             onRefresh={() => void run(`load:${selected}`, () => refreshDoubanFeed(ctx, selected, { force: true }))}
-            onRemove={() => void run('remove', () => removeDoubanSubject(ctx, selected))}
+            onRemove={() => remove(selected)}
+            onSubscribe={() => subscribe(selected)}
           />
           {busy === `load:${selected}` && <Spinner label="正在读取豆瓣 RSS…" />}
           {entry.feed.reviews.length ? (
@@ -248,9 +331,15 @@ export function DoubanView() {
           <button class="btn" onClick={() => void run(`load:${selected}`, () => refreshDoubanFeed(ctx, selected, { force: true }))}>
             读取最新评论
           </button>
-          <button class="btn link small" onClick={() => void run('remove', () => removeDoubanSubject(ctx, selected))}>
-            取消订阅
-          </button>
+          {subscribed ? (
+            <button class="btn link small" onClick={() => remove(selected)}>
+              取消订阅
+            </button>
+          ) : (
+            <button class="btn link small" onClick={() => subscribe(selected)}>
+              订阅这个条目
+            </button>
+          )}
         </div>
       )}
     </div>

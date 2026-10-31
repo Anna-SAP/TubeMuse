@@ -1107,6 +1107,11 @@ label.btn {
   color: var(--accent);
   font-weight: 600;
 }
+/* 跟随标签页切过来、还没订阅的条目 */
+.db-chip.page {
+  border-style: dashed;
+  cursor: default;
+}
 .db-hero-main {
   display: flex;
   gap: 12px;

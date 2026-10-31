@@ -28,6 +28,16 @@ export function parseSubjectInput(input: string): string | undefined {
   return /\/subject\/(\d{4,12})(?:\/|$)/.exec(url.pathname)?.[1];
 }
 
+/**
+ * 标签页地址 → 条目 ID：豆瓣（https）的条目页与评论 RSS。feedBase 是 RSS 所在的源（正式版即 www.douban.com，
+ * e2e 是本机 mock），这样 mock 的 RSS 页面也能被跟随。浏览器只把有主机权限的标签页地址交给扩展。
+ */
+export function subjectFromTabUrl(url: string | undefined, feedBase: string): string | undefined {
+  if (!url) return undefined;
+  if (url.startsWith(`${feedBase}/`)) return /\/subject\/(\d{4,12})(?:\/|$)/.exec(url.slice(feedBase.length))?.[1];
+  return url.startsWith('https://') ? parseSubjectInput(url) : undefined;
+}
+
 export function doubanFeedUrl(base: string, subjectId: string): string {
   return `${base}/feed/subject/${encodeURIComponent(subjectId)}/reviews`;
 }
@@ -196,6 +206,18 @@ export function hueOf(text: string): number {
   let h = 0;
   for (const ch of text) h = (h * 31 + ch.codePointAt(0)!) % 360;
   return h;
+}
+
+/** 只保留订阅条目的缓存，外加最近读过的 keep 个未订阅条目（跟随标签页时看过的） */
+export function pruneTransientFeeds<T extends { fetchedAt: number }>(feeds: Record<string, T>, subscribed: readonly string[], keep: number): Record<string, T> {
+  const ids = new Set(subscribed);
+  const transient = Object.entries(feeds)
+    .filter(([id]) => !ids.has(id))
+    .sort((a, b) => b[1].fetchedAt - a[1].fetchedAt)
+    .slice(0, keep)
+    .map(([id]) => id);
+  for (const id of transient) ids.add(id);
+  return Object.fromEntries(Object.entries(feeds).filter(([id]) => ids.has(id)));
 }
 
 export function doubanFresh(entry: { fetchedAt: number } | undefined, cacheMinutes: number, now: number): boolean {

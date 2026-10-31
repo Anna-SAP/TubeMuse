@@ -533,6 +533,10 @@ function App() {
           <input type="checkbox" checked={settings.douban.autoRefresh} onChange={(e) => updateSettings((s) => ({ ...s, douban: { ...s.douban, autoRefresh: e.currentTarget.checked } }))} />
           打开"豆瓣"页、且当前条目的缓存已过期时自动读取（关掉后只在你点"刷新"时读取）
         </label>
+        <label class="inline">
+          <input type="checkbox" checked={settings.douban.followActiveTab} onChange={(e) => updateSettings((s) => ({ ...s, douban: { ...s.douban, followActiveTab: e.currentTarget.checked } }))} />
+          跟随当前标签页：浏览 www.douban.com 上的条目或它的评论 RSS 时，"豆瓣"页自动切到该条目（只读标签页地址，不读页面内容，不会自动订阅）
+        </label>
       </Section>
 
       <Section title="12. 数据" id="data">

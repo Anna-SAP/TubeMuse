@@ -513,6 +513,54 @@ try {
   await panel.waitForFunction(() => document.querySelectorAll('.db-chip').length === 2, null, { timeout: 5000 });
   check((await panel.locator('.db-chip.on').textContent()) === '白衣逆行者', '取消订阅后回到第一个条目');
 
+  console.log('\n[豆瓣：跟随当前标签页]');
+  // 只数扩展自己发的 RSS 请求（标签页打开 RSS 地址本身也是一次请求，但那是浏览器导航）
+  const rssFetches = (/** @type {string} */ id) => requests.filter((r) => r.path === `/douban/feed/subject/${id}/reviews` && r.headers['sec-fetch-mode'] !== 'navigate').length;
+  // 侧边栏此时在后台标签页里：按固定间隔轮询，不依赖 requestAnimationFrame
+  const waitSubject = (/** @type {string} */ title) =>
+    panel.waitForFunction((t) => document.querySelector('.db-subject')?.textContent === t, title, { timeout: 15000, polling: 100 });
+  const feedUrl = (/** @type {string} */ id) => `${MOCK}/douban/feed/subject/${id}/reviews`;
+  const tabUpdate = (/** @type {number} */ id, /** @type {string} */ url) => panel.evaluate(([i, u]) => /** @type {any} */ (globalThis).chrome.tabs.update(i, { url: u }), /** @type {[number, string]} */ ([id, url]));
+  const tabId = /** @type {number} */ (
+    await panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }).then((/** @type {any} */ t) => t.id), feedUrl('37322586'))
+  );
+  await waitSubject('生日快乐');
+  check(
+    rssFetches('37322586') === 1 && ((await panel.getByTestId('douban-page-chip').textContent()) ?? '').includes('生日快乐') && (await panel.getByTestId('douban-chip').count()) === 2,
+    '当前标签页打开《生日快乐》的评论 RSS：豆瓣页自动切过去并读取，标为"当前页"，没有自动订阅',
+  );
+  await panel.screenshot({ path: join(shots, '16-douban-follow.png'), fullPage: true });
+
+  const cachedBefore = rssFetches('35299923');
+  await tabUpdate(tabId, feedUrl('35299923'));
+  await waitSubject('白衣逆行者');
+  check(rssFetches('35299923') === cachedBefore, '同一标签页换到另一个条目的地址：随之切换；该条目缓存未过期，不重复请求');
+  await tabUpdate(tabId, feedUrl('37322586'));
+  await waitSubject('生日快乐');
+  check(rssFetches('37322586') === 1, '切回刚看过的未订阅条目：用它自己的缓存，不重复请求');
+
+  await panel.getByTestId('douban-chip').filter({ hasText: '白衣逆行者' }).click();
+  await waitSubject('白衣逆行者');
+  await panel.evaluate((i) => /** @type {any} */ (globalThis).chrome.tabs.reload(i), tabId);
+  await panel.waitForTimeout(1500);
+  check((await panel.locator('.db-subject').textContent()) === '白衣逆行者', '手动点选订阅条目后，同一页面刷新不会把它切走');
+
+  await tabUpdate(tabId, 'about:blank');
+  await panel.waitForTimeout(800);
+  check((await panel.locator('.db-subject').textContent()) === '白衣逆行者', '标签页离开豆瓣：保持当前显示');
+  await tabUpdate(tabId, feedUrl('37322586'));
+  await waitSubject('生日快乐');
+  check(true, '再回到豆瓣条目：重新跟随');
+
+  await panel.getByRole('button', { name: '订阅这个条目' }).click();
+  await panel.waitForFunction(() => document.querySelectorAll('[data-testid="douban-chip"]').length === 3, null, { timeout: 5000, polling: 100 });
+  check(
+    (await panel.getByTestId('douban-page-chip').count()) === 0 && (await panel.locator('.db-chip.on').textContent()) === '生日快乐' && (await panel.getByRole('button', { name: '取消订阅' }).count()) === 1,
+    '点"订阅这个条目"后加入订阅列表',
+  );
+  await panel.evaluate((i) => /** @type {any} */ (globalThis).chrome.tabs.remove(i), tabId);
+  await panel.bringToFront();
+
   console.log('\n[Phase 3：X 网络红线]');
   const xr = requests.filter((r) => r.path.startsWith('/x/'));
   check(xr.length > 0 && xr.every((r) => r.headers.authorization === `Bearer ${X_TOKEN}` && !JSON.stringify(r.query).includes(X_TOKEN)), 'X 请求只在请求头里带 Token');

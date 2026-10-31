@@ -8,10 +8,14 @@ export const PORT = 47321;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const HOUR = 3_600_000;
 
-/** 豆瓣评论 RSS：35299923 用单测同一份夹具；1084336 是没有评论的图书；其他 ID 返回 404 */
+/** 豆瓣评论 RSS：35299923 用单测同一份夹具；1084336 是没有评论的图书；37322586 用于"跟随当前标签页"；其他 ID 返回 404 */
 const DOUBAN_FEEDS = {
   35299923: readFileSync(new URL('../fixtures/douban-reviews.xml', import.meta.url), 'utf8'),
   1084336: '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>关于某书的最新评论</title><link>https://book.douban.com/subject/1084336/reviews</link></channel></rss>',
+  37322586:
+    '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>关于生日快乐的最新评论</title><link>https://movie.douban.com/subject/37322586/reviews</link>' +
+    '<item><title>一场生日派对 (评论: 生日快乐)</title><link>https://movie.douban.com/review/17573365/</link><description><![CDATA[测试用户己评论: 生日快乐 (https://movie.douban.com/subject/37322586/)\n评价: 推荐\n\n撕开整座城市的缝隙...]]></description><dc:creator>测试用户己</dc:creator><pubDate>Mon, 27 Apr 2026 14:24:35 GMT</pubDate></item>' +
+    '</channel></rss>',
 };
 
 /** @param {number} hoursAgo */
