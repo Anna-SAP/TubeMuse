@@ -5,6 +5,8 @@ import { createBrowserContext, type AppContext } from '../../services/context';
 import { toAppError, type AppError } from '../../services/errors';
 import { quotaSnapshot } from '../../services/quota-service';
 import { xSpend } from '../../services/hotspot-service';
+import { subtitleSpend } from '../../services/subtitle-service';
+import type { SubtitleSnapshot } from '../../core/subtitles';
 import { stores, type Store } from '../../services/repo';
 import type { QuotaSnapshot } from '../../core/quota';
 
@@ -14,10 +16,11 @@ export function appCtx(): AppContext {
   return ctxSingleton;
 }
 
-/** 读取某个存储键，并在其他页面（侧边栏/设置页）修改它时自动刷新。 */
-export function useStore<T>(store: Store<T>): T | undefined {
+/** 读取某个存储键，并在其他页面（侧边栏/设置页）修改它时自动刷新。store 为空时返回 undefined。 */
+export function useStore<T>(store: Store<T> | undefined): T | undefined {
   const [value, setValue] = useState<T>();
   useEffect(() => {
+    if (!store) return setValue(undefined);
     let alive = true;
     const load = () => store.read(appCtx().kv).then((v) => alive && setValue(v));
     void load();
@@ -76,5 +79,22 @@ export function useXSpend(): import('../../core/x-budget').XSnapshot | undefined
     if (!settings?.x.enabled || !secrets?.xBearerToken) return setSnap(undefined);
     void xSpend(appCtx()).then(setSnap);
   }, [ledger, settings, secrets, tick]);
+  return snap;
+}
+
+/** 自动字幕花费快照（开启自动字幕时返回），账本或设置变化时刷新 */
+export function useSubtitleSpend(): SubtitleSnapshot | undefined {
+  const ledger = useStore(stores.subtitleLedger);
+  const settings = useStore(stores.settings);
+  const [tick, setTick] = useState(0);
+  const [snap, setSnap] = useState<SubtitleSnapshot>();
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    if (!settings?.subtitles.enabled) return setSnap(undefined);
+    void subtitleSpend(appCtx()).then(setSnap);
+  }, [ledger, settings, tick]);
   return snap;
 }

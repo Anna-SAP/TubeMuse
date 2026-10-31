@@ -561,6 +561,137 @@ try {
   await panel.evaluate((i) => /** @type {any} */ (globalThis).chrome.tabs.remove(i), tabId);
   await panel.bringToFront();
 
+  // ───────────────────────── 自动字幕 ─────────────────────────
+  console.log('\n[自动字幕：设置]');
+  const OPENAI_KEY = 'e2e-openai-test-key-not-real';
+  await options.bringToFront();
+  await options.reload();
+  await options.getByTestId('openai-key').fill(OPENAI_KEY);
+  await options.getByTestId('openai-key').locator('xpath=following-sibling::button[1]').click();
+  await options.locator('[data-testid="openai-key"][placeholder="已保存（出于安全不回显）"]').waitFor({ timeout: 5000 });
+  check((await options.getByTestId('subtitle-model').inputValue()) === 'claude-haiku-5-5', '字幕翻译模型默认是 claude-haiku-5-5（更快更省）');
+  await options.waitForTimeout(300);
+  const subSection = (await options.locator('#subtitles').textContent()) ?? '';
+  check(subSection.includes('12. 自动字幕') && /一小时连续说话的视频约 \$0\.\d\d/.test(subSection), '设置页有"自动字幕"一节，并按当前模型估算每小时花费');
+  await options.locator('#subtitles').screenshot({ path: join(shots, '17-subtitle-settings.png') });
+
+  console.log('\n[自动字幕：没有原生字幕的视频 → 采音频 → 转写 → 翻译 → 双语字幕叠加在播放器里]');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '字幕', exact: true }).click();
+  const transcribeReqs = () => requests.filter((r) => r.path === '/openai/v1/audio/transcriptions');
+  const subtitleLlmReqs = () => requests.filter((r) => r.path.startsWith('/anthropic') && r.body.includes('视频字幕翻译'));
+  // 从侧边栏打开播放页并设为当前标签页（侧边栏要看的是"当前标签页"）
+  const [sub] = await Promise.all([
+    context.waitForEvent('page'),
+    panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/watch?v=subNoCC00001`),
+  ]);
+  sub.on('pageerror', (e) => consoleErrors.push(`subtitle watch pageerror: ${e.message}`));
+  sub.on('console', (m) => m.type() === 'error' && consoleErrors.push(`subtitle watch: ${m.text()}`));
+  await sub.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  // YouTube 自己的元素（不含本扩展的字幕层）：开始前后逐字比较
+  const ytOwnHtml = () => sub.evaluate(() => [.../** @type {HTMLElement} */ (document.getElementById('movie_player')).children].filter((e) => !e.hasAttribute('data-tubemuse')).map((e) => e.outerHTML));
+  const ytChildrenBefore = await ytOwnHtml();
+  await sub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  const trLine = sub.locator('[data-tubemuse="subtitles"] .tr');
+  await trLine.filter({ hasText: /Where was I\? \(\d+\)/ }).waitFor({ timeout: 30000 });
+  const srcLine = (await sub.locator('[data-tubemuse="subtitles"] .src').textContent()) ?? '';
+  const firstShownAt = await sub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime);
+  check(/第 \d+ 句：我说到哪里了/.test(srcLine), `播放器里出现原文：${srcLine}`);
+  check(/Where was I\? \(\d+\)/.test((await trLine.textContent()) ?? ''), `并出现第二行译文（中文原文 → 英文）：${await trLine.textContent()}`);
+  check(firstShownAt < 6, `第一次观看：说完一句几秒内就出字幕（视频第 ${firstShownAt.toFixed(1)} 秒）`);
+  await sub.screenshot({ path: join(shots, '18-subtitle-overlay.png') });
+
+  const hosts = await sub.evaluate(() => document.querySelectorAll('#movie_player > [data-tubemuse="subtitles"]').length);
+  check(hosts === 1 && JSON.stringify(await ytOwnHtml()) === JSON.stringify(ytChildrenBefore), '只在播放器里加了一层字幕，YouTube 自己的元素原样未动');
+  const tr = transcribeReqs();
+  check(tr.length >= 1 && tr.every((r) => r.headers.authorization === `Bearer ${OPENAI_KEY}`), `音频发往 OpenAI 转写（${tr.length} 段），Key 只在请求头里`);
+  check(
+    tr.every((r) => r.body.includes('name="model"') && r.body.includes('gpt-transcribe') && r.body.includes('RIFF') && r.body.includes('WAVE')),
+    '每段是 WAV 文件 + 模型名 gpt-transcribe',
+  );
+  check(
+    tr.every((r) => String(r.headers.origin ?? '').startsWith('chrome-extension://')),
+    '转写请求由扩展后台发出（不是注入 YouTube 的脚本自己发的）',
+  );
+  check(tr.every((r) => !r.body.includes('subNoCC00001')), '发给 OpenAI 的内容不含视频 ID');
+  check(requests.filter((r) => !r.path.startsWith('/openai')).every((r) => !JSON.stringify(r).includes(OPENAI_KEY)), 'OpenAI Key 从未发往别处');
+  const sl = subtitleLlmReqs();
+  check(
+    sl.length >= 1 && sl.every((r) => JSON.parse(r.body).model === 'claude-haiku-5-5' && r.body.includes('English') && !r.body.includes('subNoCC00001')),
+    `翻译用默认的字幕模型（claude-haiku-5-5），只发字幕文字与目标语言（${sl.length} 句）`,
+  );
+
+  // 侧边栏"字幕"页：状态、花费、已生成的字幕
+  await panel.getByTestId('subtitle-status').waitFor({ timeout: 10000 });
+  const tabText = (await panel.getByTestId('subtitle-tab').textContent()) ?? '';
+  check(tabText.includes('subNoCC00001') && tabText.includes('原生字幕没有'), `侧边栏识别当前标签页的视频与"没有原生字幕"：${tabText.slice(0, 60)}…`);
+  await panel.getByTestId('subtitle-spend').waitFor({ timeout: 10000 });
+  const spendText = (await panel.getByTestId('subtitle-spend-detail').textContent()) ?? '';
+  check(/\$0\.\d{3,4} \/ \$1\.00/.test(spendText) && /语音转写 [1-9]\d* 秒/.test(spendText) && /翻译 [1-9]\d* 句/.test(spendText), `花费实时可见：${spendText}`);
+  await panel.screenshot({ path: join(shots, '19-subtitle-panel.png'), fullPage: true });
+
+  // 播完后拖回第二句：按时间轴对齐显示，而且不再花钱
+  await sub.waitForFunction(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).ended, null, { timeout: 30000, polling: 250 });
+  await sub.waitForTimeout(1500);
+  const countAfterFirstPass = transcribeReqs().length;
+  const cues = await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('subtitles:subNoCC00001').then((/** @type {any} */ r) => r['subtitles:subNoCC00001'].cues));
+  check(cues.length >= 4 && cues.every((/** @type {any} */ c) => c.translation), `整段视频生成了 ${cues.length} 句双语字幕并存在本机`);
+  const second = cues[1];
+  await sub.evaluate((t) => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = t;
+    return v.play();
+  }, second.start + 0.3);
+  await sub.waitForTimeout(400);
+  const replay = await sub.evaluate(() => {
+    const host = document.querySelector('[data-tubemuse="subtitles"]');
+    return { src: host?.shadowRoot?.querySelector('.src')?.textContent, late: host?.shadowRoot?.querySelector('.wrap')?.classList.contains('late') };
+  });
+  check(replay.src === second.text && replay.late === false, `拖回去回看：按时间轴精确显示"${replay.src}"`);
+  await sub.waitForTimeout(2000);
+  await sub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).pause());
+  check(transcribeReqs().length === countAfterFirstPass, '回看已有字幕的部分不再识别、不再花钱');
+
+  // 侧边栏一键关闭 / 重新开启
+  await panel.getByRole('button', { name: '关闭这个视频的字幕' }).click();
+  await sub.waitForFunction(() => !document.querySelector('[data-tubemuse="subtitles"]'), null, { timeout: 5000 });
+  check(((await panel.getByTestId('subtitle-status').textContent()) ?? '').includes('你已关闭'), '侧边栏一键关闭：字幕层立即移除');
+  await panel.getByRole('button', { name: '为这个视频生成字幕' }).click();
+  await sub.waitForFunction(() => !!document.querySelector('[data-tubemuse="subtitles"]'), null, { timeout: 5000 });
+  check(true, '再点一次重新开启');
+
+  console.log('\n[自动字幕：有原生字幕的视频不自动生成]');
+  const beforeHasCC = transcribeReqs().length;
+  await sub.goto(`${MOCK}/watch?v=subHasCC0002`);
+  await sub.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await sub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  await sub.waitForTimeout(4000);
+  check((await sub.locator('[data-tubemuse="subtitles"]').count()) === 0 && transcribeReqs().length === beforeHasCC, '有原生字幕：不采音频、不加字幕层、不花钱');
+  check(((await panel.getByTestId('subtitle-status').textContent()) ?? '').includes('有原生字幕'), '侧边栏说明为什么没有自动开启');
+  await sub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).pause());
+
+  console.log('\n[自动字幕：到每日预算立即停止并提示]');
+  // 人为把今天的字幕花费调到预算上限
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const d = new Date();
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    await c.storage.local.set({ subtitleLedger: { days: { [day]: { spentUsd: 1, asrSeconds: 0, asrUsd: 1, translations: 0, inputTokens: 0, outputTokens: 0, translateUsd: 0 } } } });
+  });
+  const beforeBudget = transcribeReqs().length;
+  await sub.goto(`${MOCK}/watch?v=subNoCC00003`);
+  await sub.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await sub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  const statusChip = sub.locator('[data-tubemuse="subtitles"] .status');
+  await statusChip.filter({ hasText: '已到上限' }).waitFor({ timeout: 15000 });
+  await sub.waitForTimeout(3000);
+  check(transcribeReqs().length === beforeBudget, '超预算：一个转写请求都没有发出');
+  check(((await statusChip.textContent()) ?? '').includes('已停止'), `播放器里用人话说明：${(await statusChip.textContent())?.slice(0, 60)}…`);
+  check(((await panel.getByTestId('subtitle-tab').textContent()) ?? '').includes('已到上限'), '侧边栏同步显示停止原因与恢复方法');
+  await sub.screenshot({ path: join(shots, '20-subtitle-budget.png') });
+  await sub.close();
+  await panel.bringToFront();
+
   console.log('\n[Phase 3：X 网络红线]');
   const xr = requests.filter((r) => r.path.startsWith('/x/'));
   check(xr.length > 0 && xr.every((r) => r.headers.authorization === `Bearer ${X_TOKEN}` && !JSON.stringify(r.query).includes(X_TOKEN)), 'X 请求只在请求头里带 Token');

@@ -359,3 +359,31 @@ export function buildHotspotPrompt(posts: HotspotPromptPost[], minItems: number,
   const user = ['帖子（编号 | 主题 | 点赞 | 转发 | 多久前 | 正文）：', ...posts.map((p) => `${p.ref} | ${p.topic} | ${p.likes} | ${p.reposts} | ${p.hoursAgo} 小时前 | ${p.text.replace(/\s+/g, ' ')}`)].join('\n');
   return { system, user };
 }
+
+export const SUBTITLE_TRANSLATION_SCHEMA: JsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['translation'],
+  properties: { translation: str },
+};
+
+export interface SubtitlePromptInput {
+  /** 当前这句（语音转写结果） */
+  text: string;
+  /** 前几句原文，只作上下文 */
+  previous: string[];
+  /** 目标语言的显示名，例如"简体中文""English" */
+  targetName: string;
+}
+
+/** 字幕翻译：只发当前这句与前几句的转写文字和目标语言；不发视频 ID、标题、频道、音频。 */
+export function buildSubtitleTranslationPrompt(input: SubtitlePromptInput): { system: string; user: string } {
+  const system = [
+    `你是视频字幕翻译。把"当前字幕"译成${input.targetName}，用于和原文上下并排显示的双语字幕。`,
+    '要求：忠实、口语化、简洁，读起来像字幕；人名和术语前后一致。原文来自语音识别，可能有错字或断句不完整：按上下文理解，但不要补写没说出来的内容。',
+    '"前文"只用来理解语境，不要翻译前文。只输出 translation 一个字段。',
+  ].join('\n');
+  const prev = input.previous.length ? input.previous.map((p) => `- ${truncate(p, 200)}`).join('\n') : '（无）';
+  const user = `前文：\n${prev}\n\n当前字幕：\n${truncate(input.text, 400)}`;
+  return { system, user };
+}

@@ -4,7 +4,8 @@ import { DEFAULT_FACTOR_WEIGHTS, DEFAULT_SETTINGS, DOUBAN } from '../config/defa
 import { EMPTY_LEDGER, type QuotaLedger } from '../core/quota';
 import type { SearchCache } from '../core/cache';
 import type { XLedger } from '../core/x-budget';
-import type { DiscoveryState, DoubanState, HotspotState } from '../core/types';
+import type { DiscoveryState, DoubanState, HotspotState, SubtitleIndex, SubtitleTrack } from '../core/types';
+import type { SubtitleLedger } from '../core/subtitles';
 import type {
   Adjustment,
   ClusterState,
@@ -57,6 +58,11 @@ export function mergeSettings(stored: unknown): Settings {
     x: { ...d.x, ...(s.x as object) },
     discovery: { ...d.discovery, ...(s.discovery as object) },
     douban: { ...d.douban, ...(s.douban as object) },
+    subtitles: {
+      ...d.subtitles,
+      ...(s.subtitles as object),
+      translationModels: { ...d.subtitles.translationModels, ...((s.subtitles?.translationModels as object) ?? {}) },
+    },
   } as Settings;
 }
 
@@ -122,9 +128,18 @@ export const stores = {
   discovery: new Store<DiscoveryState>('discovery', () => ({ weeks: {}, dismissed: {} })),
   /** 豆瓣评论 RSS：订阅的条目与各自最近一次读取的结果 */
   douban: new Store<DoubanState>('douban', defaultDoubanState),
+  /** 自动字幕：哪些视频有字幕（字幕本身按视频分键存放，见 subtitleTrackStore） */
+  subtitleIndex: new Store<SubtitleIndex>('subtitleIndex', () => ({})),
+  /** 自动字幕花费记账（按本地日） */
+  subtitleLedger: new Store<SubtitleLedger>('subtitleLedger', () => ({ days: {} })),
   /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
 };
+
+/** 一个视频的字幕（按视频时间），回看时直接用、不再花钱。每个视频一个键：写入时不必把所有视频的字幕都重写一遍 */
+export function subtitleTrackStore(videoId: string): Store<SubtitleTrack | null> {
+  return new Store<SubtitleTrack | null>(`subtitles:${videoId}`, () => null);
+}
 
 export interface YouTubeAuthState {
   accessToken?: string;

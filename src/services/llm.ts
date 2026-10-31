@@ -2,7 +2,7 @@
 // Key 只放在请求头里发往对应服务；错误信息经过脱敏。
 
 import Anthropic from '@anthropic-ai/sdk';
-import OpenAI from 'openai';
+import OpenAI, { toFile } from 'openai';
 import { ANTHROPIC_FALLBACK, LLM_LIMITS } from '../config/defaults';
 import type { JsonSchema } from '../core/prompts';
 import { redact } from '../core/redact';
@@ -20,10 +20,17 @@ export interface JsonRequest {
   effort: 'low' | 'medium';
 }
 
+export interface LlmUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface LlmClient {
   provider: LlmProvider;
   model: string;
   generateJson(req: JsonRequest): Promise<unknown>;
+  /** 同 generateJson，并返回服务方报告的 token 用量（自动字幕按此记账） */
+  generateJsonWithUsage(req: JsonRequest): Promise<{ value: unknown; usage: LlmUsage }>;
 }
 
 export interface LlmConfig {
@@ -119,10 +126,7 @@ export function createAnthropicClient(cfg: LlmConfig): LlmClient {
     ...(cfg.workspaceId ? { defaultHeaders: { 'anthropic-workspace-id': cfg.workspaceId } } : {}),
     ...(cfg.fetch ? { fetch: cfg.fetch } : {}),
   });
-  return {
-    provider: 'anthropic',
-    model: cfg.model,
-    async generateJson(req) {
+  const run = async (req: JsonRequest): Promise<{ value: unknown; usage: LlmUsage }> => {
       try {
         const res = await client.beta.messages.create({
           model: cfg.model,
@@ -145,11 +149,16 @@ export function createAnthropicClient(cfg: LlmConfig): LlmClient {
           .map((b) => b.text)
           .join('');
         if (!text) throw new AppError('llm', 'Anthropic 没有返回内容', '请重试');
-        return parseJsonText(text, 'anthropic');
+        return { value: parseJsonText(text, 'anthropic'), usage: { inputTokens: res.usage?.input_tokens ?? 0, outputTokens: res.usage?.output_tokens ?? 0 } };
       } catch (e) {
         throw mapLlmError(e, 'anthropic', cfg.model, cfg.apiKey);
       }
-    },
+  };
+  return {
+    provider: 'anthropic',
+    model: cfg.model,
+    generateJson: (req) => run(req).then((r) => r.value),
+    generateJsonWithUsage: run,
   };
 }
 
@@ -167,10 +176,7 @@ export function createOpenAIClient(cfg: LlmConfig): LlmClient {
     timeout: LLM_LIMITS.timeoutMs,
     ...(cfg.fetch ? { fetch: cfg.fetch } : {}),
   });
-  return {
-    provider: 'openai',
-    model: cfg.model,
-    async generateJson(req) {
+  const run = async (req: JsonRequest): Promise<{ value: unknown; usage: LlmUsage }> => {
       try {
         const res = await client.responses.create({
           model: cfg.model,
@@ -195,14 +201,81 @@ export function createOpenAIClient(cfg: LlmConfig): LlmClient {
         }
         const text = res.output_text || collected;
         if (!text) throw new AppError('llm', 'OpenAI 没有返回内容', '请重试');
-        return parseJsonText(text, 'openai');
+        return { value: parseJsonText(text, 'openai'), usage: { inputTokens: res.usage?.input_tokens ?? 0, outputTokens: res.usage?.output_tokens ?? 0 } };
       } catch (e) {
         throw mapLlmError(e, 'openai', cfg.model, cfg.apiKey);
       }
-    },
+  };
+  return {
+    provider: 'openai',
+    model: cfg.model,
+    generateJson: (req) => run(req).then((r) => r.value),
+    generateJsonWithUsage: run,
   };
 }
 
 export function createLlmClient(cfg: LlmConfig): LlmClient {
   return cfg.provider === 'anthropic' ? createAnthropicClient(cfg) : createOpenAIClient(cfg);
+}
+
+// ── 语音转写（自动字幕）：OpenAI /v1/audio/transcriptions，一段一段上传 WAV ──
+
+export interface TranscribeRequest {
+  wav: Uint8Array;
+  /** 前文（提高断句、人名、术语的连贯性） */
+  prompt?: string;
+}
+
+export interface TranscribeResult {
+  text: string;
+  /** 识别出的语言（gpt-transcribe 返回 languages: [{ code }]；可能为空） */
+  language?: string;
+  /** 服务方报告的计费时长；没报告时为 undefined，由调用方按音频时长记账 */
+  billedSeconds?: number;
+}
+
+export interface Transcriber {
+  model: string;
+  transcribe(req: TranscribeRequest): Promise<TranscribeResult>;
+}
+
+export function createTranscriber(cfg: { model: string; apiKey: string; baseURL: string; fetch?: typeof fetch }): Transcriber {
+  const base = cfg.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
+  // 带上 Response：SDK 上传文件前会检测 fetch 是否支持 FormData，没有这个属性时会去 fetch('data:,')，被扩展的 CSP 拦下并报错
+  const fetchWithResponse = Object.assign((input: RequestInfo | URL, init?: RequestInit) => base(input, init), { Response });
+  const client = new OpenAI({
+    apiKey: cfg.apiKey,
+    baseURL: cfg.baseURL,
+    dangerouslyAllowBrowser: true,
+    maxRetries: 0,
+    timeout: LLM_LIMITS.transcribeTimeoutMs,
+    fetch: fetchWithResponse,
+  });
+  return {
+    model: cfg.model,
+    async transcribe(req) {
+      try {
+        const file = await toFile(req.wav, 'segment.wav', { type: 'audio/wav' });
+        const res = (await client.audio.transcriptions.create({
+          file,
+          model: cfg.model,
+          response_format: 'json',
+          ...(req.prompt ? { prompt: wellFormed(req.prompt) } : {}),
+        })) as { text?: unknown; languages?: { code?: unknown }[]; usage?: { type?: string; seconds?: unknown } };
+        const language = res.languages?.find((l) => typeof l?.code === 'string')?.code as string | undefined;
+        const seconds = res.usage?.type === 'duration' && typeof res.usage.seconds === 'number' ? res.usage.seconds : undefined;
+        return {
+          text: typeof res.text === 'string' ? res.text.trim() : '',
+          ...(language ? { language } : {}),
+          ...(seconds !== undefined ? { billedSeconds: seconds } : {}),
+        };
+      } catch (e) {
+        const err = mapLlmError(e, 'openai', cfg.model, cfg.apiKey);
+        if (err.kind === 'llm' && /模型「/.test(err.message)) {
+          throw new AppError('subtitles', `语音转写模型「${cfg.model}」不存在或你的 OpenAI 账户无权使用`, '在设置页「12. 自动字幕」检查转写模型名（默认 gpt-transcribe）');
+        }
+        throw err;
+      }
+    },
+  };
 }

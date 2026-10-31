@@ -39,9 +39,17 @@ try {
   check(/^[a-p]{32}$/.test(extId), `正式版加载成功，扩展 ID：${extId}`);
   const manifest = await sw.evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());
   check(!!manifest.content_security_policy, 'CSP 已生效');
-  const matches = (manifest.content_scripts ?? []).flatMap((/** @type {any} */ c) => c.matches);
-  check(JSON.stringify(matches) === JSON.stringify(['https://www.youtube.com/*']), `观看追踪脚本只注入 www.youtube.com（${matches.join(', ')}）`);
-  check(manifest.permissions.includes('alarms') && !manifest.permissions.includes('tabs') && !manifest.permissions.includes('scripting'), `权限最小化：${manifest.permissions.join(', ')}`);
+  const scripts = (manifest.content_scripts ?? []).map((/** @type {any} */ c) => ({ js: c.js.join(','), matches: c.matches.join(',') }));
+  check(
+    JSON.stringify(scripts) === JSON.stringify([{ js: 'content-tracker.js', matches: 'https://www.youtube.com/*' }, { js: 'content-subtitles.js', matches: 'https://www.youtube.com/*' }]),
+    `观看追踪与自动字幕脚本只注入 www.youtube.com（${scripts.map((/** @type {{ js: string; matches: string }} */ s) => `${s.js} → ${s.matches}`).join('；')}）`,
+  );
+  check(
+    manifest.permissions.includes('alarms') && !['tabs', 'scripting', 'tabCapture', 'offscreen', 'downloads', 'webRequest', 'declarativeNetRequest'].some((p) => manifest.permissions.includes(p)),
+    `权限最小化（自动字幕没有新增权限：不用 tabCapture / 下载）：${manifest.permissions.join(', ')}`,
+  );
+  check(!manifest.web_accessible_resources, '没有向网页暴露任何扩展文件');
+  check(manifest.commands?.['toggle-subtitles']?.suggested_key?.default === 'Alt+Shift+S', '快捷键 Alt+Shift+S 开关字幕');
   // 授权走 launchWebAuthFlow：不再需要 manifest 的 oauth2（那是 getAuthToken 专用，依赖浏览器级 Google 登录）
   check(!manifest.oauth2 && manifest.permissions.includes('identity'), 'manifest 不含 oauth2，授权走 launchWebAuthFlow');
   const connect = /connect-src ([^;]+)/.exec(manifest.content_security_policy.extension_pages)?.[1]?.trim().split(/\s+/) ?? [];

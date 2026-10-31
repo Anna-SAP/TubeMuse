@@ -1,4 +1,4 @@
-// MV3 service worker：点图标开侧边栏；接收观看上报；定时任务（每日总结、周报、补元数据、导师提醒）。
+// MV3 service worker：点图标开侧边栏；接收观看上报；自动字幕（转写、翻译、记账）；定时任务（每日总结、周报、补元数据、导师提醒）。
 // service worker 会休眠、浏览器可能在到点时没开：闹钟设为跨会话保留，并且每次醒来都检查闹钟是否还在、按"应该已完成但还没有"补算。
 
 import { SUMMARY } from './config/defaults';
@@ -9,6 +9,7 @@ import { stores } from './services/repo';
 import { runScheduledJobs } from './services/summary-service';
 import { checkReminder } from './services/reminder-service';
 import { ingestSession } from './services/watch-service';
+import { SUBTITLE_PORT, subtitleSession } from './services/subtitle-service';
 
 const ctx = createBrowserContext();
 const TICK = 'tubemuse-tick';
@@ -87,6 +88,29 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender) => {
     return false;
   }
   return false;
+});
+
+// 自动字幕：YouTube 播放页里的字幕脚本经长连接送来切好的音频片段，这里转写、翻译后回传
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== SUBTITLE_PORT) return;
+  if (!port.sender || !fromTrackedSite(port.sender)) return port.disconnect();
+  let open = true;
+  port.onDisconnect.addListener(() => (open = false));
+  const handle = subtitleSession(ctx, (m) => {
+    if (!open) return;
+    try {
+      port.postMessage(m);
+    } catch {
+      open = false;
+    }
+  });
+  port.onMessage.addListener((m) => void keepAlive(() => handle(m)).catch((e) => console.warn('[TubeMuse] 字幕处理失败', e instanceof Error ? e.message : e)));
+});
+
+// 快捷键：开关当前标签页这个视频的字幕（只发给本扩展的字幕脚本；不是 YouTube 页面时什么也不做）
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command !== 'toggle-subtitles' || tab?.id === undefined) return;
+  void chrome.tabs.sendMessage(tab.id, { type: 'tubemuse:subtitles:toggle' }).catch(() => undefined);
 });
 
 void ensureAlarms();

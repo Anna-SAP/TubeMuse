@@ -1,5 +1,5 @@
 // @ts-check
-// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI、X、豆瓣评论 RSS。
+// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI（含语音转写）、X、豆瓣评论 RSS，以及 YouTube 播放页。
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -57,6 +57,16 @@ export const WATCH_VIDEOS = [
   { id: 'p2Glance0002', seconds: 900, title: '搞笑合集 第 8 期', channelId: 'UCp2fun', channelTitle: '快乐每一天', categoryId: '24' },
   { id: 'p2Half000003', seconds: 1200, title: '神经网络课程 第 2 讲', channelId: 'UCp2learn', channelTitle: '机器学习课堂', categoryId: '27' },
 ];
+/**
+ * 自动字幕用的播放页：captions 决定播放器字幕按钮的样子（属性取自 2026-11 实测的 YouTube 播放器）。
+ * 音频是"说话"的模拟：一段一段带谐波的声音，中间有停顿。
+ */
+export const SUBTITLE_VIDEOS = [
+  { id: 'subNoCC00001', seconds: 14, captions: 'none' },
+  { id: 'subHasCC0002', seconds: 10, captions: 'yes' },
+  { id: 'subNoCC00003', seconds: 10, captions: 'none' },
+];
+
 const WATCH_AS_MOCK = WATCH_VIDEOS.map((w) => ({ id: w.id, title: w.title, channelId: w.channelId, channelTitle: w.channelTitle, hoursAgo: 200, duration: `PT${w.seconds}S`, views: 1000, likes: 10, lang: 'zh', categoryId: w.categoryId }));
 
 /** Phase 3：新博主发现的候选（都未订阅；UCold 不活跃，不应被推荐） */
@@ -110,6 +120,11 @@ function llmAnswer(/** @type {string} */ system, /** @type {string} */ user) {
     };
   }
   if (system.includes('只回复')) return { ok: true };
+  if (system.includes('视频字幕翻译')) {
+    // 当前这句形如"第 N 句：……"：译文带上同一个编号，便于断言哪句对哪句
+    const n = /当前字幕：\n第 (\d+) 句/.exec(user)?.[1] ?? '?';
+    return { translation: `Where was I? (${n})` };
+  }
   if (system.includes('学习记录助手')) {
     // 像真 LLM 一样按观看程度挑：看完的进"学了什么"，部分观看的进"值得回看"
     const lines = user.split('\n');
@@ -191,6 +206,39 @@ function silentWav(seconds) {
   return buf;
 }
 
+/** 16kHz、16 位单声道的"说话"WAV：0.5 秒静音后，1.6 秒声音 + 0.8 秒停顿反复 */
+const speechCache = new Map();
+/** @param {number} seconds */
+function speechWav(seconds) {
+  if (speechCache.has(seconds)) return speechCache.get(seconds);
+  const rate = 16000;
+  const n = rate * seconds;
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + n * 2, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(rate, 24);
+  buf.writeUInt32LE(rate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write('data', 36);
+  buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate;
+    const inBurst = t >= 0.5 && (t - 0.5) % 2.4 < 1.6;
+    const v = inBurst ? 0.3 * (0.7 * Math.sin(2 * Math.PI * 220 * t) + 0.3 * Math.sin(2 * Math.PI * 660 * t)) : 0;
+    buf.writeInt16LE(Math.round(v * 32767), 44 + i * 2);
+  }
+  speechCache.set(seconds, buf);
+  return buf;
+}
+
+let transcribeCounter = 0;
+
 // 1×1 PNG（缩略图占位）
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8+P9/PQAJ1wN/0KxJWAAAAABJRU5ErkJggg==', 'base64');
 
@@ -226,13 +274,23 @@ export function startMockServer() {
       if (p === '/watch') {
         const id = url.searchParams.get('v') ?? '';
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        const sv = SUBTITLE_VIDEOS.find((x) => x.id === id);
+        if (sv) {
+          const label = sv.captions === 'yes' ? 'Subtitles/closed captions' : 'Subtitles/closed captions unavailable';
+          const tooltip = sv.captions === 'yes' ? 'Subtitles/closed captions (c)' : label;
+          return res.end(
+            `<!doctype html><html><head><meta charset="utf-8"><title>mock watch</title><style>#movie_player{position:relative;width:640px;height:360px;background:#000}#player{width:100%;height:100%}.ytp-chrome-bottom{position:absolute;left:12px;right:12px;bottom:0;height:48px}</style></head>` +
+              `<body><div id="movie_player" class="html5-video-player ytp-autohide"><video id="player" preload="auto" src="/media/${id}.wav"></video>` +
+              `<div class="ytp-chrome-bottom"><button class="ytp-subtitles-button ytp-button" aria-keyshortcuts="c" data-tooltip-title="${tooltip}" data-title-no-tooltip="${label}" aria-pressed="false" aria-label="${label}">CC</button></div></div></body></html>`,
+          );
+        }
         return res.end(`<!doctype html><html><head><meta charset="utf-8"><title>mock watch</title></head><body><div id="movie_player"><video id="player" preload="auto" src="/media/${id}.wav"></video></div></body></html>`);
       }
       if (p.startsWith('/media/')) {
         const id = p.slice('/media/'.length).replace(/.wav$/, '');
-        const w = WATCH_VIDEOS.find((x) => x.id === id);
+        const w = WATCH_VIDEOS.find((x) => x.id === id) ?? SUBTITLE_VIDEOS.find((x) => x.id === id);
         if (!w) return send(404, {});
-        const wav = silentWav(w.seconds);
+        const wav = SUBTITLE_VIDEOS.includes(/** @type {any} */ (w)) ? speechWav(w.seconds) : silentWav(w.seconds);
         const range = /bytes=(d+)-(d*)/.exec(String(req.headers.range ?? ''));
         if (range) {
           const start = Number(range[1]);
@@ -301,6 +359,10 @@ export function startMockServer() {
           stop_sequence: null,
           usage: { input_tokens: 100, output_tokens: 100 },
         });
+      }
+      if (p === '/openai/v1/audio/transcriptions' && req.method === 'POST') {
+        transcribeCounter++;
+        return send(200, { text: `第 ${transcribeCounter} 句：我说到哪里了`, languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 2 } });
       }
       if (p === '/openai/v1/responses' && req.method === 'POST') {
         const b = JSON.parse(body || '{}');

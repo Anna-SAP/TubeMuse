@@ -1,9 +1,11 @@
-// 设置页：LLM Key、YouTube 授权、配额与找片偏好、语音、学习开关、数据导出与清空。
+// 设置页：LLM Key、YouTube 授权、配额与找片偏好、语音、学习开关、自动字幕、数据导出与清空。
 
 import { render } from 'preact';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE } from '../../config/defaults';
+import { DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE, SUBTITLE_LANGS, type SubtitleLang } from '../../config/defaults';
+import { asrPrice, hourlyEstimateUsd, llmPrice } from '../../core/subtitles';
+import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { ENDPOINTS } from '../../config/endpoints';
 import { oauthClientId, oauthRedirectUrl, type AuthStatus } from '../../services/auth';
 import { clearAll, exportAll } from '../../services/data-service';
@@ -539,8 +541,10 @@ function App() {
         </label>
       </Section>
 
-      <Section title="12. 数据" id="data">
-        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论），但不含 API Key、X Token 与授权令牌。</p>
+      <SubtitleSection settings={settings} hasOpenAiKey={!!secrets.openaiApiKey} update={updateSettings} />
+
+      <Section title="13. 数据" id="data">
+        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费），但不含 API Key、X Token 与授权令牌（也从不保存任何音频）。</p>
         <div class="row">
           <button
             class="btn"
@@ -630,8 +634,104 @@ function App() {
         </ul>
         <p class="muted small">Google 登录 / 授权窗口（accounts.google.com）由浏览器自己打开，授权结果回跳到 chromiumapp.org 由浏览器直接截获；云端语音识别由浏览器自己连接 Google 语音服务（侧边栏会明示）。</p>
         <p class="muted small">注入 youtube.com 的观看追踪脚本只读取本地播放器状态（进度、时长、暂停、倍速、是否广告、标签页是否可见），不读取页面内容、不改动页面、不发任何网络请求。</p>
+        <p class="muted small">注入 youtube.com 的自动字幕脚本在视频播放时采集这个视频的声音（不下载、不保存），交给扩展后台发往 <code>{new URL(ENDPOINTS.openai).host}</code> 转写；它在播放器里加一层只读字幕，不改动 YouTube 自己的元素，本身不发任何网络请求。</p>
       </Section>
     </div>
+  );
+}
+
+function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Settings; hasOpenAiKey: boolean; update: (fn: (s: Settings) => Settings) => void }) {
+  const s = settings.subtitles;
+  const set = (patch: Partial<Settings['subtitles']>) => update((x) => ({ ...x, subtitles: { ...x.subtitles, ...patch } }));
+  const { provider, model } = subtitleTranslationModel(settings);
+  const fast = DEFAULT_SETTINGS.subtitles.translationModels[provider];
+  const perHour = hourlyEstimateUsd(s.asrModel, s.translate ? model : undefined);
+  const priceKnown = asrPrice(s.asrModel).known && (!s.translate || llmPrice(model).known);
+  const langOptions = Object.entries(SUBTITLE_LANGS) as [SubtitleLang, string][];
+  return (
+    <Section title="12. 自动字幕" id="subtitles">
+      <p class="muted small">
+        为没有原生字幕的 YouTube 视频生成双语字幕：播放时采集这个视频的声音，切成几秒一段发往 OpenAI 转写（音频不保存），再用你的大模型把每句译成第二语言，叠加显示在播放器里。第一次观看时字幕会比说话晚几秒出现；字幕按视频时间存在本机，回看或拖回去时就是对齐的，也不会再花钱。
+      </p>
+      {!hasOpenAiKey && <p class="warn-text small">需要 OpenAI API Key（在上面「1. 大模型」填写）：语音转写只能用 OpenAI，Anthropic 没有语音转文字接口。找片等其他功能可以继续用 Anthropic。</p>}
+      <label class="inline">
+        <input type="checkbox" checked={s.enabled} onChange={(e) => set({ enabled: e.currentTarget.checked })} />
+        启用自动字幕
+      </label>
+      <label class="inline">
+        <input type="checkbox" checked={s.autoStart} onChange={(e) => set({ autoStart: e.currentTarget.checked })} />
+        播放器显示"字幕不可用"时自动开始（关掉后只在你从侧边栏"字幕"页或按 Alt+Shift+S 开启时生成）
+      </label>
+      <div class="grid">
+        <NumField
+          label="每日预算（美元，按本地日）"
+          value={s.dailyBudgetUsd}
+          min={0.05}
+          max={50}
+          step={0.05}
+          hint={`按当前设置，一小时连续说话的视频约 $${perHour.toFixed(2)}${priceKnown ? '' : '（有模型不在价目表里，按保守单价估算）'}`}
+          onChange={(v) => set({ dailyBudgetUsd: v })}
+        />
+        <label class="field">
+          <span>语音转写模型（OpenAI）</span>
+          <input class="input" value={s.asrModel} onChange={(e) => set({ asrModel: e.currentTarget.value.trim() || DEFAULT_SETTINGS.subtitles.asrModel })} />
+          <span class="muted small">${asrPrice(s.asrModel).perMinute}/分钟{asrPrice(s.asrModel).known ? '' : '（未知模型，按保守单价估算）'}</span>
+        </label>
+      </div>
+      <label class="inline">
+        <input type="checkbox" checked={s.translate} onChange={(e) => set({ translate: e.currentTarget.checked })} />
+        翻译成第二语言（双语字幕）
+      </label>
+      <div class="grid">
+        <label class="field">
+          <span>第二行译成</span>
+          <select class="input" value={s.targetLang} onChange={(e) => set({ targetLang: e.currentTarget.value as SubtitleLang })}>
+            {langOptions.map(([code, name]) => (
+              <option value={code}>{name}</option>
+            ))}
+          </select>
+        </label>
+        <label class="field">
+          <span>原文已是这种语言时改译成</span>
+          <select class="input" value={s.altTargetLang} onChange={(e) => set({ altTargetLang: e.currentTarget.value as SubtitleLang })}>
+            {langOptions.map(([code, name]) => (
+              <option value={code}>{name}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <label class="field">
+        <span>字幕翻译模型（{provider === 'anthropic' ? 'Anthropic' : 'OpenAI'}，跟随「1. 大模型」当前选择的提供商）</span>
+        <input
+          class="input"
+          data-testid="subtitle-model"
+          placeholder={`留空 = 用 ${settings.llm.models[provider]}`}
+          value={s.translationModels[provider]}
+          onChange={(e) => set({ translationModels: { ...s.translationModels, [provider]: e.currentTarget.value.trim() } })}
+        />
+        <span class="muted small">
+          当前：{model}（${llmPrice(model).input}/${llmPrice(model).output} 每百万 token 输入/输出{llmPrice(model).known ? '' : '，未知模型按保守单价估算'}）。每句字幕都要调用一次，模型越快字幕出得越早。
+          {model !== fast && (
+            <>
+              {' '}
+              <button class="btn link small" onClick={() => set({ translationModels: { ...s.translationModels, [provider]: fast } })}>
+                改回默认的 {fast}（更快、更省：一小时约 ${hourlyEstimateUsd(s.asrModel, fast).toFixed(2)}）
+              </button>
+            </>
+          )}
+        </span>
+      </label>
+      <div class="grid">
+        <NumField label="字号倍数" value={s.fontScale} min={0.6} max={2} step={0.1} onChange={(v) => set({ fontScale: v })} />
+      </div>
+      <label class="inline">
+        <input type="checkbox" checked={s.showSource} onChange={(e) => set({ showSource: e.currentTarget.checked })} />
+        显示原文（关掉后只显示译文；没有译文时仍显示原文）
+      </label>
+      <p class="muted small">
+        发给 OpenAI 的只有这几秒音频与前几句转写文字（帮助连贯）；发给翻译模型的只有当前这句和前三句的文字与目标语言。都不含视频 ID、标题、频道或你的账号信息。花费在侧边栏顶部"字幕 $"实时显示，到每日预算立即停止并提示。
+      </p>
+    </Section>
   );
 }
 

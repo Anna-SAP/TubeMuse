@@ -130,6 +130,8 @@ code {
   padding: 6px 0;
   cursor: pointer;
   font: inherit;
+  white-space: nowrap;
+  min-width: 0;
 }
 .tab.on {
   background: var(--accent);
@@ -1287,4 +1289,38 @@ a.db-title:hover {
   .tab {
     font-size: 12px;
   }
+}
+
+/* ── 自动字幕 ── */
+.cue-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.cue-list li {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: 8px;
+  font-size: 13px;
+}
+.cue-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.cue-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cue-tr {
+  color: var(--muted);
+}
+.subtitles details > summary {
+  cursor: pointer;
+  font-weight: 600;
 }

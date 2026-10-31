@@ -87,9 +87,9 @@ await esbuild.build({
   logLevel: 'warning',
 });
 
-// 内容脚本不能是 ES 模块：单独打成 IIFE
+// 内容脚本不能是 ES 模块：单独打成 IIFE（观看追踪、自动字幕各一个文件，互不依赖）
 await esbuild.build({
-  entryPoints: { 'content-tracker': join(root, 'src', 'content', 'tracker.ts') },
+  entryPoints: { 'content-tracker': join(root, 'src', 'content', 'tracker.ts'), 'content-subtitles': join(root, 'src', 'content', 'subtitles.ts') },
   outdir,
   bundle: true,
   format: 'iife',
@@ -133,8 +133,14 @@ const manifest = {
   background: { service_worker: 'background.js', type: 'module' },
   side_panel: { default_path: 'sidepanel.html' },
   options_page: 'options.html',
-  // 只在 YouTube 播放页读取本地播放器状态做观看追踪
-  content_scripts: [{ matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' }],
+  // 观看追踪：只读取本地播放器状态。自动字幕：播放时采集该视频音频交给后台转写，并在播放器内叠加只读字幕层
+  content_scripts: [
+    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
+    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
+  ],
+  commands: {
+    'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕' },
+  },
   action: { default_title: 'TubeMuse', default_icon: icons },
   icons,
   content_security_policy: { extension_pages: csp },
@@ -164,6 +170,12 @@ if (!e2e) {
 const tracker = readFileSync(join(outdir, 'content-tracker.js'), 'utf8');
 for (const bad of [/\bfetch\(/, /XMLHttpRequest/, /\.innerHTML\s*=/, /appendChild\(/, /insertAdjacent/, /\bWebSocket\b/, /sendBeacon/]) {
   if (bad.test(tracker)) fail(`内容脚本里出现了不允许的操作（${bad}）：它只能读取播放器状态。`);
+}
+// 红线（2026-11-01 变更）：字幕脚本可以采集音频、在播放器里加一层字幕，但不得自己发网络请求（音频经后台发往 OpenAI），
+// 不得用 HTML 字符串写入页面（字幕文字只用 textContent），不得读写页面 Cookie，不得触发下载
+const subtitles = readFileSync(join(outdir, 'content-subtitles.js'), 'utf8');
+for (const bad of [/\bfetch\(/, /XMLHttpRequest/, /\bWebSocket\b/, /sendBeacon/, /\bEventSource\b/, /\.innerHTML\s*=/, /outerHTML\s*=/, /insertAdjacentHTML/, /document\.cookie/, /\.download\s*=/]) {
+  if (bad.test(subtitles)) fail(`字幕脚本里出现了不允许的操作（${bad}）：它只能采音频、交给后台、画字幕层。`);
 }
 
 for (const file of walk(outdir)) {

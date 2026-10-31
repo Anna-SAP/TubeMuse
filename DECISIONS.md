@@ -281,3 +281,29 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 - **不加权限**：MV3 下标签页的 `url` 只对有 `tabs` 权限或有该网址主机权限的扩展可见。扩展已有 `https://www.douban.com/*` 主机权限（读 RSS 用），所以不需要 `tabs` 权限，也看不到其他网站的网址；冒烟测试里"权限最小化"一项照旧通过。代价：`movie.douban.com` 等子域名上的条目页看不到网址，不会跟随。放弃 `tabs` 权限（能看到所有标签页的网址，隐私面太大）与加子域名主机权限（扩大网络出口，属红线变更，需用户确认）。
 - 缓存：跟随时看过、但没订阅的条目也会缓存，来回切换不重复请求豆瓣；只保留最近 5 份（`DOUBAN.transientFeedsKept`），订阅的条目全部保留。订阅一个已缓存的条目时直接带上条目名（e2e 发现：之前会显示成"条目 <ID>"）。
 - 测试：单测覆盖网址识别（含 e2e 的 mock 地址）、缓存清理、订阅时带条目名；e2e 用 `chrome.tabs.create / update / reload` 驱动真实标签页：打开 RSS → 自动切换并读取；同一标签页换地址 → 随之切换、走缓存；刷新不覆盖手动点选；离开豆瓣保持显示、回来重新跟随；点"订阅这个条目"加入列表。
+
+## 30. 自动字幕：无原生字幕视频的双语字幕（2026-11-01，规格外新增）
+
+- 起因：用户要求为没有原生字幕（播放器显示 "Subtitles/closed captions unavailable"）的 YouTube 视频自动生成字幕并显示双语：ASR、BYOK 大模型翻译、注入播放器、时间轴对齐。
+- **红线变更（用户 2026-11-01 确认，CLAUDE.md §1、§2 同步）**：原红线是"注入脚本只读播放器状态做观看追踪""不改动 YouTube 页面""不提供下载"。开工前停下汇报，用户在四个方案里选了"采音频 + 播放器内显示"：新增一个独立内容脚本，只在播放时经 `captureStream()` 采集当前视频的音频、读取字幕按钮状态、在播放器内叠加一层只读字幕；脚本自身不发网络请求。观看追踪脚本与它的构建检查不变。
+- **外部事实（2026-11-01 核实）**
+  - `chrome.tabCapture.getMediaStreamId` 必须在用户"调用扩展"之后（点工具栏图标、快捷键、右键菜单、omnibox），官方列表不含侧边栏里的点击；采集期间该标签页对用户静音，需要自己再播放一遍（[tabCapture](https://developer.chrome.com/docs/extensions/reference/api/tabCapture)、[screen capture](https://developer.chrome.com/docs/extensions/how-to/web-platform/screen-capture)）。
+  - 真实 YouTube（Chrome 152 内核的内置浏览器）实测：`#movie_player video` 是 MSE（`blob:` 地址），`captureStream()` 拿到 live 的音轨，不影响播放、不静音；`new AudioContext({ sampleRate: 16000 })` + `ScriptProcessorNode` 3 秒取到 45056 个样本、RMS 0.10；播放器音量调到 0 时采到的音频不变。用 TubeMuse 的切段参数跑这段访谈的 26 秒真实音频：切成 6 段，2.3–6.3 秒，没有强制切断。
+  - 字幕按钮：无字幕时 `data-tooltip-title` 与 `data-title-no-tooltip` 相同（都是 "Subtitles/closed captions unavailable"）；有字幕时提示带快捷键后缀（"Subtitles/closed captions (c)"）；`aria-label` 在有字幕的视频上也可能残留 "unavailable"，不能用；广告期间按钮反映的是广告。
+  - OpenAI：文件转写推荐 `gpt-transcribe`（$0.0045/分钟），返回 `text` 与 `languages: [{ code }]`，支持 `prompt`；实时转写 `gpt-live-transcribe`（$0.017/分钟）只文档化了服务端标准 Key 或服务端签发的临时密钥两种鉴权；`whisper-1`、`gpt-4o(-mini)-transcribe` 2027-02-26 下线。Anthropic 没有语音输入。
+  - Web Speech API 的 `start(audioTrack)`（识别任意音轨）有 Intent to Ship，但没能确认已在稳定版上线；Comet 等非 Chrome 浏览器的云端识别通常不可用。
+  - OpenAI SDK 6.x 上传文件前会 `fetch('data:,')` 探测 FormData 支持，会被扩展 CSP 拦下并报错；给 fetch 带上 `Response` 属性即可跳过探测。
+- **音频来源：内容脚本 `video.captureStream()`。** 不需要新权限、不静音、不需要每个标签页点一次图标、自动开启也能用。放弃 `tabCapture` + offscreen 文档（要用户在每个标签页点工具栏图标，而本扩展点图标是开侧边栏；还会静音标签页）；放弃直接下载音轨（违反"不提供下载 / 不抓取"，且 YouTube 的分发方式让它很不稳）。代价：只能边播边听，第一次观看时字幕比说话晚几秒——用户在问题描述里已接受。
+- **采样：16 kHz 的 AudioContext + `ScriptProcessorNode`。** 浏览器负责重采样；不需要加载任何模块文件。放弃 AudioWorklet：要从 YouTube 页面加载扩展里的脚本（得开 `web_accessible_resources`，网页就能探测到扩展），或用 blob 模块（受页面 CSP 影响，不可控）。放弃 `MediaStreamTrackProcessor`：规范已把它移到 Worker，窗口里的版本前途不明。替换：`src/content/subtitles.ts` 的 `startCapture` 一处。
+- **切句（`core/subtitles.ts` 的 `Segmenter`，纯函数）：** 30 ms 帧能量 + 自适应底噪判有无人声；停顿 ≥ 0.45 秒交出一句；短于 1.5 秒的等下一句合并（停顿超过 1 秒则直接交出）；一直不停顿时到 7 秒在后 60% 最安静的一帧切开；人声 < 0.3 秒的片段丢弃。每帧按"块末的视频时间 − 剩余样本时长 × 倍速"换算成视频时间，所以倍速播放、后台节流都不影响对齐；进度跳变 > 1.2 秒视为拖动，先交出已有的部分。暂停、广告、拖动中、换视频时 flush，不采集。放弃按固定 5 秒切：会把字切成两半，识别和翻译都变差。
+- **转写：OpenAI `gpt-transcribe`，一段一个 WAV（16-bit PCM）上传，由后台 service worker 发出。** 内容脚本经 `chrome.runtime.Port` 送 base64 的 WAV；后台校验（视频 ID 格式、本扩展编码的 16 kHz 单声道 WAV、≤ 8 秒）后再调用。`prompt` 带前 3 句转写文字（≤ 200 字）提高连贯性。不发视频 ID。放弃 `gpt-live-transcribe`：贵约 4 倍，浏览器里的鉴权没有文档（用户在问题里选了分段方案）。替换：`services/llm.ts` 的 `createTranscriber`（仍是唯一接触 SDK 的文件）。
+- **翻译：复用 BYOK 大模型，单独可设"字幕翻译模型"。** 每句一次 `generateJsonWithUsage`（`effort: 'low'`），只发这一句 + 前 3 句原文 + 目标语言名；翻译失败只写 `translationError`，原文照常显示。**默认用 `claude-haiku-5-5`（提供商是 OpenAI 时用 `gpt-6-luna`），用户 2026-11-01 确认**：每句都要调用一次，跟随主模型 `claude-opus-5-5` 时一小时约 $3、$1 的预算二十来分钟就用完，字幕也出得更慢；Haiku 一小时约 $0.08。字段清空 = 跟随"1. 大模型"的主模型；设置页并排显示一小时估算花费，换成别的模型后有一键"改回默认"。双语组合按用户选择：原文是中文 → 英文，其他 → 简体中文（`translationTarget`，先用转写返回的语言，缺失时按文字推断）。
+- **显示：`#movie_player` 里加一个带 Shadow DOM 的元素，只用 `textContent` 写字。** `pointer-events: none`，不遮挡点击；字号按播放器高度缩放（全屏自动变大）；控制栏出现时上移。显示规则（`pickCue`）：先按时间轴找覆盖当前时刻的句子（回看精确对齐）；找不到时显示刚送到的那句至少 2.5 秒（第一次观看）；晚到超过 20 秒的不再即时显示。播放器左上角的小字只用来说状态和错误（人话，不静默）。放弃原生 `<track>`：样式不可控，双语两种颜色做不到。放弃只在侧边栏显示：要转头看。
+- **原生字幕判定（`nativeCaptionsState`）：** 用上面的结构性规则（提示文字是否等于按钮名、是否带快捷键后缀、`aria-pressed`），与界面语言无关；判断不出就是 `unknown`，不自动开启。广告期间不判断。
+- **回看不花钱：** 字幕按视频时间存本机：每个视频一个键 `subtitles:<视频ID>`，加一个小索引 `subtitleIndex`（视频 → 最近更新时间），超过 100 个视频删最久没更新的。没有把所有视频放进一个键：每句字幕要写两次（原文、译文），单键会随视频增多每几秒重写几 MB；新片段与已有字幕重叠过半就不上传（内容脚本与后台各查一次，两个标签页放同一个视频也不重复）；只有音乐/杂音的片段记成空字幕，回看时同样跳过。
+- **成本可见与护栏：** `subtitleLedger` 按本地日记账（转写按服务方报告的秒数 × 单价，翻译按返回的 token × 单价）；单价表在 `config/defaults.ts`（2026-11 官方定价），不在表里的模型按最贵一档保守估算并在界面注明。每段先按最坏情况（转写 + 一次翻译的保守 token 数）预留，剩余不够就不发请求，内容脚本停下并说明，改设置或 5 分钟后再试（重试本身不花钱）。在途请求的预留只在后台这一个 service worker 里计数，多个标签页同时出字幕也守得住。侧边栏顶部新增 `字幕 $` 条。默认每日 $1。
+- **开关：** 设置页总开关与"无字幕时自动开启"；侧边栏"字幕"页对当前视频开 / 关；快捷键 `Alt+Shift+S`（`commands`，不需要权限）。手动选择只在这个标签页里记住。
+- **权限：没有新增。** 不用 `tabCapture`、`offscreen`、`downloads`、`web_accessible_resources`；冒烟测试逐项核对。侧边栏和后台跟字幕脚本只用 `tabs.sendMessage` / `runtime` 消息通信（不需要 `tabs` 权限）。
+- **构建检查：** 字幕脚本产物里不得出现 `fetch(`、`XMLHttpRequest`、`WebSocket`、`sendBeacon`、`EventSource`、`innerHTML =`、`outerHTML =`、`insertAdjacentHTML`、`document.cookie`、`.download =`；观看追踪脚本的检查不变。
+- **测试：** 单测 40 条（切段：停顿、合并、长句切分、倍速、拖动、flush；WAV 往返与拒收；按钮判定；双语组合；显示时机；回看去重；记账与保守估价；后台流程：请求形态、Key 只在请求头、不发视频 ID、缺 Key、预算、并发预留、翻译失败、空转写、会话消息与致命错误）。e2e 在 mock 播放页上用"说话"音频跑完整流程：自动开启 → 采音频 → mock 转写 → mock 翻译 → 播放器里出现双语字幕；YouTube 自己的元素逐字不变；转写请求的 Origin 是扩展（不是内容脚本发的）；拖回去按时间轴对齐且不再请求；侧边栏开关；有原生字幕不开启；超预算一个请求都不发并在播放器里说明。
+- **没做 / 留给以后：** 实时流式转写（延迟更低，等浏览器里的鉴权有文档后再评估）；本地 Whisper（音频不出本机，但要内置几百 MB 模型）；导出 SRT（规格外，没做）；Shorts 不出字幕。
