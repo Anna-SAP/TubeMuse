@@ -719,8 +719,8 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
         启用自动字幕
       </label>
       <label class="inline">
-        <input type="checkbox" checked={s.autoStart} onChange={(e) => set({ autoStart: e.currentTarget.checked })} />
-        播放器显示"字幕不可用"时自动开始（关掉后只在你从侧边栏"字幕"页或按 Alt+Shift+S 开启时生成）
+        <input type="checkbox" data-testid="subtitle-autostart" checked={s.autoStartNoCaptions} onChange={(e) => set({ autoStartNoCaptions: e.currentTarget.checked })} />
+        播放器显示"字幕不可用"时自动开始（默认关闭：字幕只在你从侧边栏"字幕"页或按 Alt+Shift+S 开启时生成）
       </label>
       <p class="small">
         <strong>转写方式（声音 → 文字）</strong>
