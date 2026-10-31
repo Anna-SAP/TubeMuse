@@ -15,6 +15,7 @@ export type ErrorKind =
   | 'x_key' // X Bearer Token 缺失/无效
   | 'x_budget' // 达到 X 每日预算或 X 账户余额/花费上限
   | 'x'
+  | 'douban' // 豆瓣 RSS 读取失败
   | 'network'
   | 'input'
   | 'internal';

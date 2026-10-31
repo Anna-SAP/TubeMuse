@@ -124,6 +124,12 @@ export const DEFAULT_SETTINGS = {
     /** 每周为此最多消耗几次 search.list */
     weeklySearchCalls: 8,
   },
+  douban: {
+    enabled: true,
+    /** 打开"豆瓣"页、且当前条目的缓存已过期时自动读取一次 RSS */
+    autoRefresh: true,
+    cacheMinutes: 30,
+  },
 };
 
 /** X API（2026-10 官方定价页；按返回的资源条数计费，同一资源在同一 UTC 日内只计一次） */
@@ -152,6 +158,15 @@ export const DISCOVERY = {
   /** 每次运行最多为多少个候选频道读取最近上传（每个 1 unit） */
   maxCandidatesToInspect: 10,
   generalUnitBudget: 40,
+} as const;
+
+/** 豆瓣评论 RSS 阅读器 */
+export const DOUBAN = {
+  /** 首次使用时预置的条目（可删除） */
+  defaultSubjects: [{ id: '35299923', title: '白衣逆行者' }],
+  maxSubjects: 20,
+  /** 评价词 → 星级（豆瓣五档） */
+  ratingStars: { 力荐: 5, 推荐: 4, 还行: 3, 较差: 2, 很差: 1 } as Record<string, number>,
 } as const;
 
 /** 观看追踪的内部参数 */

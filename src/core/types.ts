@@ -649,3 +649,50 @@ export interface DiscoveryState {
   /** 你点过"不感兴趣"的频道，不再推荐 */
   dismissed: Record<string, { title: string; at: number }>;
 }
+
+// ── 豆瓣评论 RSS ──
+
+export interface DoubanReview {
+  /** 评论 ID（取自链接 /review/<ID>/；取不到时用 guid / 链接） */
+  id: string;
+  title: string;
+  /** 评论原文链接（只接受 https 的 douban.com 地址，否则不给链接） */
+  url?: string;
+  author: string;
+  authorUrl?: string;
+  /** 毫秒时间戳；RSS 里没有或解析不了时为 0 */
+  publishedAt: number;
+  /** RSS 只附开头一小段（豆瓣在服务端就截断了） */
+  excerpt: string;
+  truncated: boolean;
+  /** 评价词（力荐 / 推荐 / 还行 / 较差 / 很差，或其他原文）；RSS 里常为空 */
+  rating?: string;
+}
+
+export interface DoubanFeed {
+  subjectId: string;
+  /** 条目名，例如"白衣逆行者" */
+  title: string;
+  /** 条目页（movie / book / music.douban.com） */
+  subjectUrl?: string;
+  /** 电影 / 图书 / 音乐 / 条目 */
+  kind: string;
+  /** 条目海报（只接受豆瓣图片域名） */
+  posterUrl?: string;
+  /** 按发布时间从新到旧 */
+  reviews: DoubanReview[];
+}
+
+export interface DoubanSubject {
+  id: string;
+  /** 读取 RSS 之前不知道条目名 */
+  title?: string;
+  addedAt: number;
+}
+
+export interface DoubanState {
+  subjects: DoubanSubject[];
+  feeds: Record<string, { fetchedAt: number; feed: DoubanFeed }>;
+  /** 上次看的条目 */
+  selected?: string;
+}

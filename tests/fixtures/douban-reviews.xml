@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 测试夹具：结构照抄 https://www.douban.com/feed/subject/35299923/reviews（2026-10-31），用户名与正文为虚构。 -->
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+
+
+<channel>
+  <title>关于白衣逆行者的最新评论</title>
+  <link>https://movie.douban.com/subject/35299923/reviews</link>
+  <description><![CDATA[在豆瓣上发表的关于白衣逆行者的最新评论]]></description>
+  <language>zh-cn</language>
+  <copyright>&amp;copy; 2013, douban.com.</copyright>
+  <pubDate>Sat, 17 Oct 2026 14:32:50 GMT</pubDate>
+    
+    <item>
+        <title>太感动了，哭了好几次 (评论: 白衣逆行者)</title>
+        <link>https://movie.douban.com/review/17860199/</link>
+        <description><![CDATA[
+测试用户甲评论: 白衣逆行者 (https://movie.douban.com/subject/35299923/)
+评价: 
+
+{&#34;blocks&#34;:[{&#34;key&#34;:&#34;24j0s&#34;,&#34;text&#34;:&#34;几乎是哭着看完了全片&#34;,&#34;type&#34;:&#34;unstyled&#34;,&#34;depth&#34;:0,&#34;inlineStyleRanges&#34;:[],&#34;entityRan...
+]]></description>
+            <content:encoded><![CDATA[
+
+<img src="https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2936741903.jpg" style="float:right;margin-left:16px"/><a
+    href="https://www.douban.com/people/1000001/">测试用户甲</a>评论: <a href="https://movie.douban.com/subject/35299923//">白衣逆行者</a><br/>
+<br/>评价: <br/><br/>
+]]></content:encoded>
+        <dc:creator>测试用户甲</dc:creator>
+        <pubDate>Sat, 17 Oct 2026 14:32:50 GMT</pubDate>
+        <guid isPermaLink="true">https://movie.douban.com/review/17860199/</guid>
+    </item>
+    
+    <item>
+        <title>期待了很久 (评论: 白衣逆行者)</title>
+        <link>https://movie.douban.com/review/17865838/</link>
+        <description><![CDATA[
+测试用户乙评论: 白衣逆行者 (https://movie.douban.com/subject/35299923/)
+评价: 力荐
+
+{&#34;entityMap&#34;: {}, &#34;blocks&#34;: [{&#34;key&#34;: &#34;&#34;, &#34;text&#34;: &#34;期待上\u66...
+]]></description>
+            <content:encoded><![CDATA[
+
+<img src="https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2936741903.jpg" style="float:right;margin-left:16px"/><a
+    href="https://www.douban.com/people/test_user_b/">测试用户乙</a>评论: <a href="https://movie.douban.com/subject/35299923//">白衣逆行者</a><br/>
+<br/>评价: 力荐<br/><br/>
+]]></content:encoded>
+        <dc:creator>测试用户乙</dc:creator>
+        <pubDate>Wed, 21 Oct 2026 16:38:11 GMT</pubDate>
+        <guid isPermaLink="true">https://movie.douban.com/review/17865838/</guid>
+    </item>
+    
+    <item>
+        <title>听我说谢谢你 (评论: 白衣逆行者)</title>
+        <link>https://movie.douban.com/review/17865935/</link>
+        <description><![CDATA[
+小狗🐶评论: 白衣逆行者 (https://movie.douban.com/subject/35299923/)
+评价: 
+
+{&#34;entityMap&#34;: {}, &#34;blocks&#34;: [{&#34;key&#34;: &#34;&#34;, &#34;text&#34;: &#34;送给你\ud8...
+]]></description>
+            <content:encoded><![CDATA[
+
+<img src="https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2936741903.jpg" style="float:right;margin-left:16px"/><a
+    href="https://www.douban.com/people/3000003/">小狗🐶</a>评论: <a href="https://movie.douban.com/subject/35299923//">白衣逆行者</a><br/>
+<br/>评价: <br/><br/>
+]]></content:encoded>
+        <dc:creator>小狗🐶</dc:creator>
+        <pubDate>Wed, 21 Oct 2026 19:04:05 GMT</pubDate>
+        <guid isPermaLink="true">https://movie.douban.com/review/17865935/</guid>
+    </item>
+    
+    <item>
+        <title>笑出眼泪 (评论: 白衣逆行者)</title>
+        <link>https://movie.douban.com/review/17866001/</link>
+        <description><![CDATA[
+测试用户丁评论: 白衣逆行者 (https://movie.douban.com/subject/35299923/)
+评价: 还行
+
+{&#34;entityMap&#34;: {}, &#34;blocks&#34;: [{&#34;key&#34;: &#34;a&#34;, &#34;text&#34;: &#34;第一段 😂&#34;, &#34;type&#34;: &#34;unstyled&#34;}, {&#34;key&#34;: &#34;b&#34;, &#34;text&#34;: &#34;第二段说得是“我们”&#34;, &#34;type&#34;: &#34;unstyled&#34;}]}
+]]></description>
+            <content:encoded><![CDATA[
+
+<img src="https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2936741903.jpg" style="float:right;margin-left:16px"/><a
+    href="https://www.douban.com/people/4000004/">测试用户丁</a>评论: <a href="https://movie.douban.com/subject/35299923//">白衣逆行者</a><br/>
+<br/>评价: 还行<br/><br/>
+]]></content:encoded>
+        <dc:creator>测试用户丁</dc:creator>
+        <pubDate>Thu, 22 Oct 2026 01:31:55 GMT</pubDate>
+        <guid isPermaLink="true">https://movie.douban.com/review/17866001/</guid>
+    </item>
+    
+    <item>
+        <title>老版本的纯文本摘要 (评论: 白衣逆行者)</title>
+        <link>javascript:alert(1)</link>
+        <description>测试用户戊评论: 白衣逆行者 (https://movie.douban.com/subject/35299923/)
+评价: 
+
+节奏&amp;剪辑都不错&lt;br/&gt;第二行...</description>
+            <content:encoded><![CDATA[<img src="https://evil.example.com/x.jpg"/><a href="javascript:alert(2)">测试用户戊</a>]]></content:encoded>
+        <pubDate>not a date</pubDate>
+        <guid isPermaLink="false">plain-5</guid>
+    </item>
+    
+    <item>
+        <title>太感动了，哭了好几次 (评论: 白衣逆行者)</title>
+        <link>https://movie.douban.com/review/17860199/</link>
+        <description><![CDATA[重复的一条]]></description>
+        <dc:creator>测试用户甲</dc:creator>
+        <pubDate>Sat, 17 Oct 2026 14:32:50 GMT</pubDate>
+    </item>
+</channel>
+</rss>

@@ -1,10 +1,10 @@
 // 类型化的本地数据仓库：每个键一个 Store，读时补默认值，改时加锁。
 
-import { DEFAULT_FACTOR_WEIGHTS, DEFAULT_SETTINGS } from '../config/defaults';
+import { DEFAULT_FACTOR_WEIGHTS, DEFAULT_SETTINGS, DOUBAN } from '../config/defaults';
 import { EMPTY_LEDGER, type QuotaLedger } from '../core/quota';
 import type { SearchCache } from '../core/cache';
 import type { XLedger } from '../core/x-budget';
-import type { DiscoveryState, HotspotState } from '../core/types';
+import type { DiscoveryState, DoubanState, HotspotState } from '../core/types';
 import type {
   Adjustment,
   ClusterState,
@@ -56,6 +56,7 @@ export function mergeSettings(stored: unknown): Settings {
     weekly: { ...d.weekly, ...(s.weekly as object) },
     x: { ...d.x, ...(s.x as object) },
     discovery: { ...d.discovery, ...(s.discovery as object) },
+    douban: { ...d.douban, ...(s.douban as object) },
   } as Settings;
 }
 
@@ -85,6 +86,7 @@ export class Store<T> {
 }
 
 export const defaultRankingModel = (): RankingModel => ({ weights: { ...DEFAULT_FACTOR_WEIGHTS }, channelPrefs: {}, version: 1 });
+export const defaultDoubanState = (): DoubanState => ({ subjects: DOUBAN.defaultSubjects.map((s) => ({ ...s, addedAt: 0 })), feeds: {} });
 export const emptyProfile = (): Profile => ({ subscriptions: [], likedVideos: [], likedChannels: [] });
 
 export const stores = {
@@ -118,6 +120,8 @@ export const stores = {
   xLedger: new Store<XLedger>('xLedger', () => ({ days: {} })),
   hotspots: new Store<HotspotState | null>('hotspots', () => null),
   discovery: new Store<DiscoveryState>('discovery', () => ({ weeks: {}, dismissed: {} })),
+  /** 豆瓣评论 RSS：订阅的条目与各自最近一次读取的结果 */
+  douban: new Store<DoubanState>('douban', defaultDoubanState),
   /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
 };

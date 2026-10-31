@@ -518,8 +518,25 @@ function App() {
         </div>
       </Section>
 
-      <Section title="11. 数据" id="data">
-        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐），但不含 API Key、X Token 与授权令牌。</p>
+      <Section title="11. 豆瓣评论" id="douban">
+        <p class="muted small">
+          侧边栏"豆瓣"页读取你订阅的条目的公开评论 RSS。只向 <code>{new URL(ENDPOINTS.douban).host}</code> 发 GET 请求：不登录、不带你的豆瓣 Cookie、不带来源页；海报直接从豆瓣图片服务器加载，被防盗链拒绝时换成本地生成的封面。
+        </p>
+        <label class="inline">
+          <input type="checkbox" checked={settings.douban.enabled} onChange={(e) => updateSettings((s) => ({ ...s, douban: { ...s.douban, enabled: e.currentTarget.checked } }))} />
+          启用豆瓣评论
+        </label>
+        <div class="grid">
+          <NumField label="缓存（分钟）" value={settings.douban.cacheMinutes} min={5} max={1440} onChange={(v) => updateSettings((s) => ({ ...s, douban: { ...s.douban, cacheMinutes: v } }))} />
+        </div>
+        <label class="inline">
+          <input type="checkbox" checked={settings.douban.autoRefresh} onChange={(e) => updateSettings((s) => ({ ...s, douban: { ...s.douban, autoRefresh: e.currentTarget.checked } }))} />
+          打开"豆瓣"页、且当前条目的缓存已过期时自动读取（关掉后只在你点"刷新"时读取）
+        </label>
+      </Section>
+
+      <Section title="12. 数据" id="data">
+        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论），但不含 API Key、X Token 与授权令牌。</p>
         <div class="row">
           <button
             class="btn"
@@ -598,7 +615,13 @@ function App() {
             <code>{ENDPOINTS.x}</code>（X 官方 API，只读，填写 Token 后才会连接）
           </li>
           <li>
+            <code>{ENDPOINTS.douban}</code>（豆瓣条目评论的公开 RSS，只读，不带 Cookie）
+          </li>
+          <li>
             <code>https://i.ytimg.com</code>（结果卡缩略图，图片地址来自 API 返回）
+          </li>
+          <li>
+            <code>https://img1–9.doubanio.com</code>（豆瓣条目海报，只作图片加载，地址来自 RSS）
           </li>
         </ul>
         <p class="muted small">Google 登录 / 授权窗口（accounts.google.com）由浏览器自己打开，授权结果回跳到 chromiumapp.org 由浏览器直接截获；云端语音识别由浏览器自己连接 Google 语音服务（侧边栏会明示）。</p>

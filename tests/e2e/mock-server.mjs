@@ -1,11 +1,18 @@
 // @ts-check
-// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI、X。
+// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI、X、豆瓣评论 RSS。
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 
 export const PORT = 47321;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const HOUR = 3_600_000;
+
+/** 豆瓣评论 RSS：35299923 用单测同一份夹具；1084336 是没有评论的图书；其他 ID 返回 404 */
+const DOUBAN_FEEDS = {
+  35299923: readFileSync(new URL('../fixtures/douban-reviews.xml', import.meta.url), 'utf8'),
+  1084336: '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>关于某书的最新评论</title><link>https://book.douban.com/subject/1084336/reviews</link></channel></rss>',
+};
 
 /** @param {number} hoursAgo */
 const ago = (hoursAgo) => new Date(Date.now() - hoursAgo * HOUR).toISOString();
@@ -316,6 +323,13 @@ export function startMockServer() {
           public_metrics: { like_count: 500 - i * 10, repost_count: 80 - i, reply_count: 12, quote_count: 3 },
         }));
         return send(200, { data, meta: { result_count: data.length } });
+      }
+      const douban = /^\/douban\/feed\/subject\/(\d+)\/reviews$/.exec(p);
+      if (douban) {
+        const xml = /** @type {Record<string, string>} */ (DOUBAN_FEEDS)[douban[1] ?? ''];
+        // 真实的豆瓣 RSS 不带 CORS 头：扩展靠 host_permissions 读取，这里也不给
+        res.writeHead(xml ? 200 : 404, { 'content-type': 'text/xml; charset=utf-8' });
+        return res.end(xml ?? '');
       }
       if (p === '/oauth/revoke') return send(200, {});
       // 模拟 Google 授权页：校验后直接 302 回跳 https://<扩展ID>.chromiumapp.org/#access_token=…（隐式授权）

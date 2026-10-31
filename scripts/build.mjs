@@ -2,7 +2,7 @@
 // 构建可直接"加载已解压的扩展程序"的目录。
 //   npm run build      → dist/       （正式版：真实 API 地址，manifest 含固定 key，代码里注入 OAuth Client ID）
 //   npm run build:e2e  → dist-e2e/   （测试版：所有外部服务与 Google 授权页都指向本机 mock）
-// manifest 的 host_permissions 与 CSP connect-src 都由 src/config/endpoints*.ts 生成，保证网络出口只有一个来源。
+// manifest 的 host_permissions、CSP connect-src 与豆瓣图片的 img-src 都由 src/config/endpoints*.ts 生成，保证网络出口只有一个来源。
 import * as esbuild from 'esbuild';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -38,10 +38,10 @@ if (!e2e && existsSync(configPath)) {
 // ── 读取网络出口（把 endpoints.ts 临时编译成 JS 再导入）──
 const endpointsFile = join(root, 'src', 'config', e2e ? 'endpoints.e2e.ts' : 'endpoints.ts');
 const compiled = await esbuild.build({ entryPoints: [endpointsFile], bundle: true, write: false, format: 'esm', platform: 'neutral' });
-const { ENDPOINTS, TRACKED_SITES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 /** @type {string[]} */
 const origins = [...new Set(Object.values(ENDPOINTS).map((u) => new URL(String(u)).origin))];
-const imgOrigins = ['https://i.ytimg.com', ...(e2e ? origins.filter((o) => o.startsWith('http://127.0.0.1')) : [])];
+const imgOrigins = ['https://i.ytimg.com', ...DOUBAN_IMAGE_ORIGINS, ...(e2e ? origins.filter((o) => o.startsWith('http://127.0.0.1')) : [])];
 
 // ── 打包 ──
 rmSync(outdir, { recursive: true, force: true });

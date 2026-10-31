@@ -29,7 +29,7 @@ TubeMuse 是只服务我一个人的 Chrome 扩展，让 YouTube 从"被算法�
 - YouTube 数据只走官方 YouTube Data API v3；不抓取 YouTube 或 X 网页做搜索或数据采集。注入 YouTube 页面的脚本只用于读取本地播放器状态做观看追踪。
 - Google OAuth 只申请 `youtube.readonly`。
 - 不改动 YouTube 页面与首页信息流；不屏蔽广告；不提供下载。
-- 网络出口仅限：Google/YouTube 官方 API（含 OAuth）、我选定的 LLM 提供商、X 官方 API。发给 LLM 的内容遵循数据最小化：只发完成该任务所需的信息，永不发送 Key、Token、账号标识；每类 LLM 调用发送了什么，在 README 中列明。
+- 网络出口仅限：Google/YouTube 官方 API（含 OAuth）、我选定的 LLM 提供商、X 官方 API，以及豆瓣条目评论的公开 RSS（`www.douban.com`，只读、不带 Cookie）与豆瓣条目海报（`img1–9.doubanio.com`，只作图片加载，不绕防盗链）。发给 LLM 的内容遵循数据最小化：只发完成该任务所需的信息，永不发送 Key、Token、账号标识；每类 LLM 调用发送了什么，在 README 中列明。
 - 语音音频的去向对我透明：可用时优先本地识别；若经浏览器的云端语音服务，界面中明示。
 - 测试中不得发出真实网络请求。
 - 不静默降级、不静默绕行：任何失败都用人话告诉我；规格与现实冲突、或某接口实际不可用时，先停下汇报方案。

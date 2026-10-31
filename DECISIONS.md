@@ -258,3 +258,17 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 - 做法：(1) 两者各加一把跨页面的 Web Lock（`run:discovery` / `run:hotspots`，与存储层按键名加的锁区分开，避免重入死锁），同一时间只跑一次；排队的一方若发现另一方在它发起之后刚跑完，直接返回那份结果，不再花 search 或 X 的钱。(2) 发现新博主改为每次 `search.list` 调用前就把本周用量记进账本，而不是整轮结束才记——中途失败或后台被休眠也不会漏记。
 - 测试：并发复现用例（两路同时运行 → search 只花 4 次、X 只读一次、花费不翻倍），在修复前的代码上失败、修复后通过；另有"中途失败仍按实际调用记账"的用例。
 - 已经超出的本周用量（16 次）不回退，下周自动重置。
+
+## 28. 豆瓣评论 RSS 阅读器（2026-10-31，规格外新增）
+
+- 起因：用户要求在侧边栏读豆瓣条目的评论 RSS（示例 `https://www.douban.com/feed/subject/35299923/reviews`），图文并茂、易读。
+- **红线变更（用户 2026-10-31 确认）**：CLAUDE.md §2 的网络出口原本只有 Google/YouTube、LLM、X。新增两项：`https://www.douban.com`（进 `connect-src` 与 `host_permissions`，只读 `/feed/subject/<ID>/reviews`）、`https://img1–9.doubanio.com`（只进 CSP `img-src`，用于条目海报）。两者都在 `src/config/endpoints.ts`，构建脚本生成 manifest；正式版冒烟测试逐项核对白名单。CLAUDE.md §2 的网络出口红线已按用户要求同步（同日）。
+- **外部事实（2026-10-31 实测）**：RSS 免登录可读（HTTP 200，`text/xml; charset=utf-8`），约 8 篇最新评论，不按时间排序；`description` 是"作者评论: 条目 (链接) / 评价: … / Draft.js JSON"，JSON 被豆瓣在服务端截断（常断在 `\uXXXX` 转义或半个代理对中间，末尾加 `...`），实际只剩几个字；"评价"常为空。海报在 `img3.doubanio.com`：干净浏览器直接打开返回 **418**，带外站 Referer 返回 403——即防盗链。
+- **解析：手写的 RSS 2.0 取值器（`core/douban.ts`），不用 DOMParser、不加依赖。** 只取 title/link/description/content:encoded/dc:creator/pubDate/guid 这些不会同名嵌套的元素；CDATA 原样、其余解码实体。截断的 Draft.js 逐个提取 `"text"` 字段，自己解 JSON 转义、遇到不完整的转义就停、去掉末尾半个 emoji。纯函数，Node 里直接单测。放弃 DOMParser：服务层单测跑在 Node，要额外引入 jsdom（XML 支持完整的那个依赖多）；放弃 fast-xml-parser：多一个运行时依赖只为 7 个字段。替换：格式变复杂时把 `parseDoubanFeed` 的内部换成 DOMParser（侧边栏可用），单测加 `// @vitest-environment jsdom`。
+- **安全**：订阅源里的 HTML 一律不渲染，只从 `content:encoded` 取海报地址与作者主页；链接只接受 https 的 `*.douban.com`，海报只接受 `DOUBAN_IMAGE_ORIGINS`，其余丢弃（夹具里有 `javascript:` 链接和外站图片做反例）。
+- **请求形态**：`credentials: 'omit'`（不带豆瓣 Cookie，不暴露账号）、`referrerPolicy: 'no-referrer'`、`redirect: 'manual'`（被转去验证/登录页时明确报"被转走了"，而不是被 CSP 拦成"网络错误"）；失败不自动重试。HTTP 404 / 403 / 418 / 429 / 3xx / 返回网页 都有各自的人话提示，且保留上一次读到的内容。
+- **海报：照常加载，不绕防盗链。** `<img referrerpolicy="no-referrer">`；被拒时换成本地生成的封面（色相取自条目名），并在海报下写明原因。放弃用 declarativeNetRequest 伪造 Referer：那是冒充豆瓣页面绕过对方的限制，也违背"不静默绕行"。
+- **缓存与自动行为**：每个条目缓存 30 分钟（可调）；只在打开"豆瓣"页且当前条目缓存过期时自动读一次（可关），每次打开侧边栏每个条目最多自动读一次；后台 service worker 从不读取。同一条目一把 Web Lock（`run:douban:<ID>`），自动与手动刷新撞车时只请求一次。
+- **存储**：`douban` 键（订阅列表、每个条目最近一次的解析结果、上次选中的条目），随导出全部数据一起导出、随清空一起删除。首次使用预置示例条目（可取消订阅）；最多 20 个条目。
+- **界面**：侧边栏新增"豆瓣"标签（找片 / 发现 / 豆瓣 / 记录 / 画像 / 改进记录）。条目以小胶囊切换；顶部是海报（或生成的封面）+ 条目名 + 篇数 + 刷新 / 在豆瓣打开 / 取消订阅；评论卡：首字头像（色相取自用户名）、作者、相对时间（悬停看绝对时间）、星级（力荐…很差 → 5…1 星）、标题、正文开头（引用块，截断处加"…"）、"读全文 ↗"。豆瓣链接在**新标签页**打开（不同于找片结果的"当前标签页"：读评论时不该把正在看的 YouTube 换掉）。
+- **测试**：`tests/fixtures/douban-reviews.xml` 结构照抄真实订阅源，用户名与正文为虚构，覆盖上面每个边界；单测 40 条（解析 + 服务层：请求形态、缓存、并发、7 种失败、订阅管理、导出）。e2e 用 mock 提供 RSS，海报请求由 Playwright 在本地应答 418，验证回退封面与说明、请求不带 Cookie/Referer、Key/Token 不发往豆瓣。

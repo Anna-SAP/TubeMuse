@@ -10,10 +10,11 @@ import { FindView } from './FindView';
 import { ProfileView } from './ProfileView';
 import { RecordsView } from './RecordsView';
 import { DiscoverView } from './DiscoverView';
+import { DoubanView } from './DoubanView';
 import { ReminderBanner } from './ReminderBanner';
 import { runScheduledJobs } from '../../services/summary-service';
 
-type Tab = 'find' | 'discover' | 'records' | 'profile' | 'changes';
+type Tab = 'find' | 'discover' | 'douban' | 'records' | 'profile' | 'changes';
 
 function SetupBanner() {
   const ctx = appCtx();
@@ -103,6 +104,7 @@ function App() {
           [
             ['find', '找片'],
             ['discover', '发现'],
+            ['douban', '豆瓣'],
             ['records', '记录'],
             ['profile', '画像'],
             ['changes', '改进记录'],
@@ -125,6 +127,7 @@ function App() {
             }}
           />
         )}
+        {tab === 'douban' && <DoubanView />}
         {tab === 'records' && <RecordsView />}
         {tab === 'profile' && <ProfileView />}
         {tab === 'changes' && <ChangesView />}

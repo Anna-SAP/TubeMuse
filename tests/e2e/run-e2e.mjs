@@ -1,6 +1,7 @@
 // @ts-check
 // 在 Playwright 自带的 Chromium 里加载 dist-e2e/，用本机 mock 服务跑通 Phase 1 主流程：
 // 设置 Key → 连接 YouTube → 同步画像 → 生成兴趣簇 → 口令 → 回显 → 结果 → 打 3 分（归因）与 10 分 → 可见调整 → 重排 → 多约束口令。
+// 之后是 Phase 2 / 3 与豆瓣评论 RSS 阅读器。
 // 任何发往 mock 以外地址的请求都会被拦截并判失败（测试中不得发出真实网络请求）。
 import { chromium } from 'playwright';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -46,11 +47,18 @@ const context = await chromium.launchPersistentContext(userDataDir, {
 
 /** @type {string[]} */
 const blocked = [];
+/** @type {{ url: string; referer: string | undefined }[]} */
+const doubanImages = [];
 await context.route('**/*', (route) => {
   const url = route.request().url();
   if (url.startsWith('chrome-extension://') || url.startsWith(MOCK) || url.startsWith('data:') || url.startsWith('blob:')) return route.continue();
   // 授权回跳地址由浏览器截获；万一真的发起加载，也在本地应答，绝不出网
   if (/^https:\/\/[a-p]{32}\.chromiumapp\.org\//.test(url)) return route.fulfill({ status: 200, body: '' });
+  // 豆瓣海报：在本地应答 418，模拟豆瓣对外站加载图片的防盗链（实测真实浏览器直接打开也是 418），绝不出网
+  if (/^https:\/\/img\d\.doubanio\.com\//.test(url)) {
+    doubanImages.push({ url, referer: route.request().headers().referer });
+    return route.fulfill({ status: 418, body: '' });
+  }
   blocked.push(url);
   return route.abort();
 });
@@ -96,7 +104,9 @@ try {
 
   // ── 侧边栏（以标签页方式打开同一页面）──
   const panel = await context.newPage();
-  panel.on('console', (m) => m.type() === 'error' && consoleErrors.push(`sidepanel: ${m.text()}`));
+  // 豆瓣那段故意制造的两个失败（海报 418、不存在的条目 404）会被浏览器记成资源加载错误，不算页面错误
+  const expectedDoubanFailure = (/** @type {import('playwright').ConsoleMessage} */ m) => /^https:\/\/img\d\.doubanio\.com\/|\/douban\/feed\/subject\/99999999\//.test(m.location().url);
+  panel.on('console', (m) => m.type() === 'error' && !expectedDoubanFailure(m) && consoleErrors.push(`sidepanel: ${m.text()}`));
   panel.on('pageerror', (e) => consoleErrors.push(`sidepanel pageerror: ${e.message}`));
   await panel.goto(`chrome-extension://${extId}/sidepanel.html`);
 
@@ -427,6 +437,58 @@ try {
   await panel.waitForTimeout(500);
   check(!(await panel.getByTestId('creator').allTextContents()).some((t) => t.includes(firstCreator)), `点"不感兴趣"后「${firstCreator}」不再显示`);
   await panel.screenshot({ path: join(shots, '13-creators.png'), fullPage: true });
+
+  // ───────────────────────── 豆瓣评论 RSS ─────────────────────────
+  console.log('\n[豆瓣评论 RSS]');
+  const doubanReqs = () => requests.filter((r) => r.path.startsWith('/douban/'));
+  await panel.getByRole('tab', { name: '豆瓣' }).click();
+  await panel.getByTestId('douban-review').first().waitFor({ timeout: 15000 });
+  const reviews = await panel.getByTestId('douban-review').evaluateAll((els) =>
+    els.map((e) => {
+      const a = e.querySelector('a.db-title');
+      return { title: e.querySelector('.db-title')?.textContent ?? '', href: a?.getAttribute('href') ?? '', target: a?.getAttribute('target') ?? '', excerpt: e.querySelector('.db-excerpt')?.textContent ?? '' };
+    }),
+  );
+  check(reviews.length === 5, `打开"豆瓣"页自动读取预置条目：${reviews.length} 篇评论（重复的已去掉）`);
+  check(reviews[0]?.title === '笑出眼泪', '按发布时间从新到旧排列');
+  check(reviews.some((r) => r.excerpt === '期待上…') && reviews.every((r) => !/�|\\u|&#34;/.test(r.excerpt)), '摘要取自截断的 Draft.js，没有转义残渣或乱码');
+  check(
+    reviews.filter((r) => r.href).every((r) => r.href.startsWith('https://movie.douban.com/review/') && r.target === '_blank') && reviews.some((r) => !r.href),
+    '评论链接只指向豆瓣、在新标签页打开；javascript: 链接被丢弃',
+  );
+  check((await panel.getByTestId('douban-hero').locator('.db-subject').textContent()) === '白衣逆行者', '条目名取自 RSS');
+  await panel.getByTestId('douban-poster-note').waitFor({ timeout: 5000 });
+  check((await panel.locator('.db-cover').count()) === 1, '海报被拒（模拟防盗链 418）：换成本地生成的封面，并说明原因');
+  check(doubanImages.length >= 1 && doubanImages.every((i) => !i.referer), '加载海报不带 Referer（不冒充豆瓣页面）');
+  const dr = doubanReqs();
+  check(dr.length === 1 && dr[0].path === '/douban/feed/subject/35299923/reviews' && dr[0].method === 'GET', `只请求了一次 RSS（${dr.map((r) => r.path).join(', ')}）`);
+  check(dr.every((r) => !r.headers.cookie && !r.headers.referer && !r.headers.authorization), 'RSS 请求不带 Cookie、Referer、Authorization');
+  check(dr.every((r) => ![FAKE_KEY, X_TOKEN, 'e2e-fake-token'].some((s) => JSON.stringify(r).includes(s))), 'Key / Token 从未发往豆瓣');
+  await panel.screenshot({ path: join(shots, '14-douban.png'), fullPage: true });
+  await panel.getByTestId('douban-review').first().screenshot({ path: join(shots, '14a-douban-card.png') });
+
+  await panel.getByRole('tab', { name: '找片' }).click();
+  await panel.getByRole('tab', { name: '豆瓣' }).click();
+  await panel.getByTestId('douban-review').first().waitFor();
+  await panel.waitForTimeout(500);
+  check(doubanReqs().length === 1, '缓存期内重新打开"豆瓣"页不再请求');
+
+  await panel.getByTestId('douban-input').fill('https://book.douban.com/subject/1084336/');
+  await panel.getByRole('button', { name: '订阅', exact: true }).click();
+  await panel.getByText('这个条目暂时没有评论').waitFor({ timeout: 10000 });
+  check(
+    (await panel.locator('.db-chip.on').textContent()) === '某书' && ((await panel.locator('.db-kind').textContent()) ?? '').startsWith('图书'),
+    '粘贴图书链接即可订阅，自动选中并读取',
+  );
+
+  await panel.getByTestId('douban-input').fill('99999999');
+  await panel.getByRole('button', { name: '订阅', exact: true }).click();
+  await panel.locator('.notice-error').waitFor({ timeout: 10000 });
+  check(((await panel.locator('.notice-error').textContent()) ?? '').includes('HTTP 404'), '读不到的条目：用人话报错（HTTP 404），不静默');
+  await panel.screenshot({ path: join(shots, '15-douban-error.png'), fullPage: true });
+  await panel.getByRole('button', { name: '取消订阅' }).click();
+  await panel.waitForFunction(() => document.querySelectorAll('.db-chip').length === 2, null, { timeout: 5000 });
+  check((await panel.locator('.db-chip.on').textContent()) === '白衣逆行者', '取消订阅后回到第一个条目');
 
   console.log('\n[Phase 3：X 网络红线]');
   const xr = requests.filter((r) => r.path.startsWith('/x/'));
