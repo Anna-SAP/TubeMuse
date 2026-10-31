@@ -3,9 +3,10 @@
 import { render } from 'preact';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE, SUBTITLE_LANGS, type SubtitleLang } from '../../config/defaults';
+import { BROWSER_SPEECH_LANGS, DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE, SUBTITLE_LANGS, type BrowserSpeechLang, type SubtitleLang } from '../../config/defaults';
 import { asrPrice, hourlyEstimateUsd, llmPrice } from '../../core/subtitles';
 import { subtitleTranslationModel } from '../../services/subtitle-service';
+import { browserSpeechEnv, detectLocal, installLocal, type LocalAvailability } from '../../services/speech';
 import { ENDPOINTS } from '../../config/endpoints';
 import { oauthClientId, oauthRedirectUrl, type AuthStatus } from '../../services/auth';
 import { clearAll, exportAll } from '../../services/data-service';
@@ -634,8 +635,66 @@ function App() {
         </ul>
         <p class="muted small">Google 登录 / 授权窗口（accounts.google.com）由浏览器自己打开，授权结果回跳到 chromiumapp.org 由浏览器直接截获；云端语音识别由浏览器自己连接 Google 语音服务（侧边栏会明示）。</p>
         <p class="muted small">注入 youtube.com 的观看追踪脚本只读取本地播放器状态（进度、时长、暂停、倍速、是否广告、标签页是否可见），不读取页面内容、不改动页面、不发任何网络请求。</p>
-        <p class="muted small">注入 youtube.com 的自动字幕脚本在视频播放时采集这个视频的声音（不下载、不保存），交给扩展后台发往 <code>{new URL(ENDPOINTS.openai).host}</code> 转写；它在播放器里加一层只读字幕，不改动 YouTube 自己的元素，本身不发任何网络请求。</p>
+        <p class="muted small">
+          注入 youtube.com 的自动字幕脚本在视频播放时拿到这个视频的声音（不下载、不保存）：转写方式是"浏览器识别"时交给浏览器自带的语音识别（装了本地语音包时在本机识别，否则由 Chrome 自己连接 Google 的语音服务）；是"OpenAI"时交给扩展后台发往 <code>{new URL(ENDPOINTS.openai).host}</code>。它在播放器里加一层只读字幕，不改动 YouTube 自己的元素，本身不发任何网络请求。
+        </p>
       </Section>
+    </div>
+  );
+}
+
+/** 浏览器本地语音包：查询是否已装；没装时可以点按钮让浏览器下载（只在你点击时下载） */
+function LocalSpeechPack({ lang }: { lang: string }) {
+  const [state, setState] = useState<LocalAvailability | 'checking'>('checking');
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const env = browserSpeechEnv();
+  const name = (BROWSER_SPEECH_LANGS as Record<string, string>)[lang] ?? lang;
+  useEffect(() => {
+    setState('checking');
+    void detectLocal(env, lang).then(setState);
+  }, [lang]);
+  const install = async () => {
+    setBusy(true);
+    setFailed(false);
+    const ok = await installLocal(env, lang);
+    setFailed(!ok);
+    setState(await detectLocal(env, lang));
+    setBusy(false);
+  };
+  let text: string;
+  switch (state) {
+    case 'checking':
+      text = '正在查询…';
+      break;
+    case 'available':
+      text = `「${name}」本地语音包已安装：在本机识别，声音不离开电脑`;
+      break;
+    case 'downloadable':
+      text = `「${name}」本地语音包还没安装，现在会用 Chrome 云端识别（声音发往 Google）`;
+      break;
+    case 'downloading':
+      text = `「${name}」本地语音包正在下载…`;
+      break;
+    case 'unavailable':
+      text = `这个浏览器没有「${name}」的本地语音包，会用 Chrome 云端识别（声音发往 Google）`;
+      break;
+    default:
+      text = '这个浏览器不支持本地识别，会用 Chrome 云端识别（声音发往 Google）';
+  }
+  return (
+    <div class="field" data-testid="local-speech-pack">
+      <span>本地语音包</span>
+      <span class="small">{text}</span>
+      {state === 'downloadable' && (
+        <div class="row">
+          <button class="btn" disabled={busy} onClick={() => void install()}>
+            {busy ? '下载中…' : `下载「${name}」本地语音包`}
+          </button>
+          <span class="muted small">由浏览器从 Google 下载一次（约几十 MB），之后识别在本机完成</span>
+        </div>
+      )}
+      {failed && <span class="warn-text small">没能下载本地语音包（浏览器拒绝或网络问题），仍会用 Chrome 云端识别</span>}
     </div>
   );
 }
@@ -645,15 +704,16 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
   const set = (patch: Partial<Settings['subtitles']>) => update((x) => ({ ...x, subtitles: { ...x.subtitles, ...patch } }));
   const { provider, model } = subtitleTranslationModel(settings);
   const fast = DEFAULT_SETTINGS.subtitles.translationModels[provider];
-  const perHour = hourlyEstimateUsd(s.asrModel, s.translate ? model : undefined);
-  const priceKnown = asrPrice(s.asrModel).known && (!s.translate || llmPrice(model).known);
+  const openai = s.asrEngine === 'openai';
+  const perHour = hourlyEstimateUsd(openai ? s.asrModel : undefined, s.translate ? model : undefined);
+  const priceKnown = (!openai || asrPrice(s.asrModel).known) && (!s.translate || llmPrice(model).known);
+  const speechLangs = Object.entries(BROWSER_SPEECH_LANGS) as [BrowserSpeechLang, string][];
   const langOptions = Object.entries(SUBTITLE_LANGS) as [SubtitleLang, string][];
   return (
     <Section title="12. 自动字幕" id="subtitles">
       <p class="muted small">
-        为没有原生字幕的 YouTube 视频生成双语字幕：播放时采集这个视频的声音，切成几秒一段发往 OpenAI 转写（音频不保存），再用你的大模型把每句译成第二语言，叠加显示在播放器里。第一次观看时字幕会比说话晚几秒出现；字幕按视频时间存在本机，回看或拖回去时就是对齐的，也不会再花钱。
+        为没有原生字幕的 YouTube 视频生成双语字幕：播放时把这个视频的声音转成文字（音频不保存），再用你的大模型把每句译成第二语言，叠加显示在播放器里。字幕按视频时间存在本机，回看或拖回去时就是对齐的，也不会再花钱。
       </p>
-      {!hasOpenAiKey && <p class="warn-text small">需要 OpenAI API Key（在上面「1. 大模型」填写）：语音转写只能用 OpenAI，Anthropic 没有语音转文字接口。找片等其他功能可以继续用 Anthropic。</p>}
       <label class="inline">
         <input type="checkbox" checked={s.enabled} onChange={(e) => set({ enabled: e.currentTarget.checked })} />
         启用自动字幕
@@ -662,6 +722,36 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
         <input type="checkbox" checked={s.autoStart} onChange={(e) => set({ autoStart: e.currentTarget.checked })} />
         播放器显示"字幕不可用"时自动开始（关掉后只在你从侧边栏"字幕"页或按 Alt+Shift+S 开启时生成）
       </label>
+      <p class="small">
+        <strong>转写方式（声音 → 文字）</strong>
+      </p>
+      <label class="inline">
+        <input type="radio" name="asr-engine" checked={!openai} onChange={() => set({ asrEngine: 'browser' })} />
+        浏览器识别（免费；边说边出字；只有 Google Chrome 能用）
+      </label>
+      <label class="inline">
+        <input type="radio" name="asr-engine" checked={openai} onChange={() => set({ asrEngine: 'openai' })} />
+        OpenAI 转写（{s.asrModel}，约 ${asrPrice(s.asrModel).perMinute}/分钟；需要 OpenAI Key 与预付额度；字幕比说话晚几秒）
+      </label>
+      {openai && !hasOpenAiKey && <p class="warn-text small">需要 OpenAI API Key（在上面「1. 大模型」填写）：Anthropic 没有语音转文字接口。找片等其他功能可以继续用 Anthropic。</p>}
+      {!openai && (
+        <>
+          <label class="field">
+            <span>识别语言</span>
+            <select class="input" data-testid="speech-lang" value={s.browserLang} onChange={(e) => set({ browserLang: e.currentTarget.value as BrowserSpeechLang })}>
+              {speechLangs.map(([code, name]) => (
+                <option value={code}>{name}</option>
+              ))}
+            </select>
+            <span class="muted small">浏览器识别不能自动判断语言。"自动"时按视频的语言（YouTube 数据，每个新视频查一次，1 unit），中文按简体字识别；判断不了时用简体中文。在侧边栏"字幕"页可以给单个视频换语言。</span>
+          </label>
+          <label class="inline">
+            <input type="checkbox" checked={s.browserPreferLocal} onChange={(e) => set({ browserPreferLocal: e.currentTarget.checked })} />
+            装了本地语音包时在本机识别（声音不离开电脑）；没装时用 Chrome 云端识别（声音由 Chrome 发往 Google）
+          </label>
+          {s.browserPreferLocal && <LocalSpeechPack lang={s.browserLang === 'auto' ? 'zh-CN' : s.browserLang} />}
+        </>
+      )}
       <div class="grid">
         <NumField
           label="每日预算（美元，按本地日）"
@@ -672,11 +762,13 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
           hint={`按当前设置，一小时连续说话的视频约 $${perHour.toFixed(2)}${priceKnown ? '' : '（有模型不在价目表里，按保守单价估算）'}`}
           onChange={(v) => set({ dailyBudgetUsd: v })}
         />
-        <label class="field">
-          <span>语音转写模型（OpenAI）</span>
-          <input class="input" value={s.asrModel} onChange={(e) => set({ asrModel: e.currentTarget.value.trim() || DEFAULT_SETTINGS.subtitles.asrModel })} />
-          <span class="muted small">${asrPrice(s.asrModel).perMinute}/分钟{asrPrice(s.asrModel).known ? '' : '（未知模型，按保守单价估算）'}</span>
-        </label>
+        {openai && (
+          <label class="field">
+            <span>语音转写模型（OpenAI）</span>
+            <input class="input" value={s.asrModel} onChange={(e) => set({ asrModel: e.currentTarget.value.trim() || DEFAULT_SETTINGS.subtitles.asrModel })} />
+            <span class="muted small">${asrPrice(s.asrModel).perMinute}/分钟{asrPrice(s.asrModel).known ? '' : '（未知模型，按保守单价估算）'}</span>
+          </label>
+        )}
       </div>
       <label class="inline">
         <input type="checkbox" checked={s.translate} onChange={(e) => set({ translate: e.currentTarget.checked })} />
@@ -729,7 +821,7 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
         显示原文（关掉后只显示译文；没有译文时仍显示原文）
       </label>
       <p class="muted small">
-        发给 OpenAI 的只有这几秒音频与前几句转写文字（帮助连贯）；发给翻译模型的只有当前这句和前三句的文字与目标语言。都不含视频 ID、标题、频道或你的账号信息。花费在侧边栏顶部"字幕 $"实时显示，到每日预算立即停止并提示。
+        浏览器识别：声音交给浏览器自带的语音识别，扩展自己不发送音频。OpenAI 转写：发给 OpenAI 的只有这几秒音频与前几句转写文字（帮助连贯）。发给翻译模型的只有当前这句和前三句的文字与目标语言。都不含视频 ID、标题、频道或你的账号信息。花费在侧边栏顶部"字幕 $"实时显示，到每日预算立即停止并提示。
       </p>
     </Section>
   );

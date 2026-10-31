@@ -319,3 +319,20 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 每日总结的补算遇到 `llm_quota` / `llm_rate` 同样停止本轮（以前 429 归在 `llm` 里，行为不变）。
 - **测试**：单测 +12（5 种账单 code 各自的文字与"致命"标记、Key 不进提示；`slow_down` + `Retry-After` 暂停期间零请求、到点恢复；`x-ratelimit-reset-requests` 与指数退避序列 5/10/20/40/60/60 秒；各种等待时间格式与上下限；OpenAI 找片遇额度用完、Anthropic 429 判为限流）。e2e +7：mock 转写返回 `credit_balance_exhausted` 时只发 1 个请求就停并说清原因；返回 `slow_down` + `Retry-After: 3` 时显示倒计时、暂停期间零请求、到点后自动继续出字幕。
 - 无法在这里替你确认的：你的账户具体是哪一种。新版本会在播放器里直接显示 OpenAI 返回的 `error.code`，看一眼就知道。
+
+## 32. 自动字幕：浏览器自带的语音识别（2026-11-01，默认转写方式）
+
+- 起因：用户的 OpenAI API 没有可用额度，希望用 Claude 额度。Claude API 只接受文字和图片，不能转写；翻译本来就用 Claude（`claude-haiku-5-5`）。给出三条路后，用户选"试试浏览器识别"，实测可用后要求做成默认。
+- **外部事实（2026-11-01 核实）**：`SpeechRecognition.start(audioTrack)` 自 [Chrome 135](https://developer.chrome.com/release-notes/135) 起可识别任意音轨。用户的 Chrome 156 实测：传入非音轨参数同步抛 TypeError（据此判断支持，且不会误启动麦克风）；把 `3wP2VCoz3KM` 的音轨交给它，`zh-TW` 云端识别，约 1 秒出第一个字，连续说话时 25 秒只给了一个 final（置信度 0.89，无标点）；`SpeechRecognition.available({langs, processLocally: true})` 对 zh-TW / zh-CN / en-US 返回 `downloadable`。Claude 桌面应用内置的浏览器（Chromium 152）支持音轨参数，但云端识别报 `network`（非 Chrome 构建没有 Google 语音服务）——Comet 等同理。
+- **红线变更（用户 2026-11-01 选择本方案时已知"声音交给 Chrome 的云端识别（Google）"；CLAUDE.md §2 同步）**：转写方式由用户选择，默认浏览器识别；装了本地语音包时在本机识别，否则由 Chrome 自己连接 Google（不是扩展的网络出口，CSP 白名单不变）；去向在设置页、侧边栏、播放器"正在听…"里写明。
+- **做法**
+  - 内容脚本把 `captureStream()` 的音轨直接交给 `SpeechRecognition`（`continuous` + `interimResults`），不再经过 AudioContext。识别器入口单独放在 `content/speech-engine.ts`，e2e 构建换成按脚本出字的假识别器（`speech-engine.e2e.ts`），正式构建自检不得含它。
+  - **断行（`LiveTranscript`，纯函数）**：浏览器的结果边听边改、没有时间戳、连续说话时迟迟不给 final。记下每个字第一次出现时的视频时间（减 0.7 秒识别延迟，按倍速换算）；文字 1.2 秒不再变化算定稿，满 16 个汉字 / 42 个字符交出一行（中文优先断在语气词后，英文断在空格）；停顿 1.6 秒不满一行也交出；final 时交出剩余（超过 24 字再切）。屏幕上一行是"最近定稿的那行 + 还在识别的新字"（只留最后 30 字），下一行是那行的译文（`liveView`）。
+  - 定稿的行以 `{type:'text'}` 送给后台：校验、存成字幕（`asrModel: 'browser-speech'`）、按原有流程用 Claude 翻译；不需要 OpenAI Key，不记转写费，只记翻译费。回看时已有字幕的时段不再存、不再翻译。
+  - **识别语言**：浏览器识别不能自动判断语言。设置默认"自动"：先看缓存的视频元数据，没有就用官方 `videos.list` 查一次（1 unit，单独的 1-unit 预算，记进配额，结果与观看记录共用 `videoMeta` 缓存；`VideoMeta` 新增 `language` = `defaultAudioLanguage` ?? `defaultLanguage`）；中文一律按 `zh-CN` 识别（出简体字），粤语用 `yue-Hant-HK`；没有语言信息时按标题文字推断，再不行用简体中文并在侧边栏说明原因。侧边栏可以给单个视频换语言，立即生效（中止当前识别、按新语言重启）。
+  - **本地 / 云端**：设置"装了本地语音包时在本机识别"（默认开）；设置页显示所选语言的本地语音包状态，没装时有下载按钮（只在用户点击时由浏览器下载）。本地识别是实验特性、对音轨是否支持未验证：本地模式出任何错误都改用云端，并在播放器里说明"声音发往 Google"。
+  - **会话管理**：暂停 / 广告时 `stop()`（让识别器说完再结束），拖动或换语言时 `abort()` 并丢掉未定稿的字（声音属于之前的位置）；会话正常结束立即续上，3 秒内就结束的按 1→2→…→15 秒退避重启；`network`（云端）/ `not-allowed` / `language-not-supported` / `audio-capture` 是致命错误，停下并说明（连不上时提示只有 Google Chrome 能用、可改用 OpenAI）；`no-speech` / `aborted` 不提示。
+  - 修了一个启动竞态：内容脚本读到保存的设置之前不开始采集（否则会按默认转写方式开始，e2e 发现）。
+- **放弃**：把 Claude 用于转写（不支持音频）；同时开两个识别会话交替定稿（Chrome 每页一个会话，互相打断）；定时 `stop()` 强制定稿（重启间隙会丢字）；读页面标题判断语言（违反"注入脚本不读页面内容"，改用官方 API）。
+- **未验证 / 风险**：Google 给浏览器语音输入的免费服务被连续使用几个小时会不会被限制；本地语音包能否识别音轨；识别准确率与断行长度是否合适——都列进了 README 打卡清单。
+- **测试**：单测 +22（断行：连续说话、final 再切、停顿交出、识别器改字、英文断词与倍速、flush/reset；屏幕两行；语言选择与元数据；错误映射；后台：只收文字、不需要 OpenAI Key、回看去重、拒收格式不对、hello 带语言、自动查语言 1 unit 并缓存、没连接 YouTube 时不查）。e2e +13：默认浏览器识别边听边出字、不发音频、Claude 翻译、侧边栏写明去向与默认语言、存下的行、换语言、花费只有翻译、连不上语音服务时停下并说明；之后切到 OpenAI 转写，原有的 OpenAI 场景全部照跑。

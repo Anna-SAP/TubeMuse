@@ -5,7 +5,11 @@ import { DEFAULT_SETTINGS, SUBTITLES } from '../../src/config/defaults';
 import { ENDPOINTS } from '../../src/config/endpoints';
 import {
   DEFAULT_SEGMENTER,
+  LiveTranscript,
   Segmenter,
+  liveView,
+  recognitionLangFor,
+  speechErrorInfo,
   base64ToBytes,
   bytesToBase64,
   encodeWav,
@@ -32,7 +36,8 @@ import { AppError } from '../../src/services/errors';
 import { createLlmClient, retryAfterMs } from '../../src/services/llm';
 import { mergeSettings, stores, subtitleTrackStore } from '../../src/services/repo';
 import { memoryKV, memoryLocker } from '../../src/services/storage';
-import { subtitleSession, subtitleSpend, subtitleTranslationModel, transcribeSegment, translateCue, validateSegment } from '../../src/services/subtitle-service';
+import { recognitionPlan, saveTextCue, subtitleSession, subtitleSpend, subtitleTranslationModel, transcribeSegment, translateCue, validateSegment } from '../../src/services/subtitle-service';
+import { mapVideoMeta } from '../../src/services/youtube-mappers';
 
 const RATE = SUBTITLES.sampleRate;
 const NOW = Date.parse('2026-11-01T04:00:00Z'); // 北京时间 12:00
@@ -280,6 +285,9 @@ function makeCtx(opts: {
   translate?: (system: string, user: string) => { status?: number; body?: unknown };
   secrets?: Record<string, string>;
   settings?: (s: ReturnType<typeof mergeSettings>) => ReturnType<typeof mergeSettings>;
+  /** videos.list 返回的条目 */
+  youtube?: (url: URL) => unknown;
+  authStatus?: string;
 }) {
   const requests: Recorded[] = [];
   const http: typeof fetch = async (input, init) => {
@@ -302,6 +310,7 @@ function makeCtx(opts: {
     }
     const body = await req.text();
     requests.push({ url: req.url, headers, body });
+    if (req.url.startsWith(ENDPOINTS.youtubeApi) && opts.youtube) return reply(200, opts.youtube(new URL(req.url)));
     if (req.url.startsWith(ENDPOINTS.anthropic)) {
       const b = JSON.parse(body);
       const r = opts.translate?.(String(b.system), String(b.messages?.[0]?.content)) ?? { body: { translation: 'Where was I?' } };
@@ -320,7 +329,7 @@ function makeCtx(opts: {
     throw new Error(`未预期的请求 ${req.url}`);
   };
   const kv = memoryKV();
-  const auth = { status: async () => 'connected', getToken: async () => 'tok', disconnect: async () => undefined } as unknown as AuthProvider;
+  const auth = { status: async () => opts.authStatus ?? 'connected', getToken: async () => 'tok', invalidate: async () => undefined, disconnect: async () => undefined } as unknown as AuthProvider;
   const ctx: AppContext = { kv, locker: memoryLocker(), http, now: () => NOW, auth, endpoints: ENDPOINTS, timeZone: 'Asia/Shanghai' };
   const init = async () => {
     await stores.secrets.write(kv, { openaiApiKey: OPENAI_KEY, anthropicApiKey: ANTHROPIC_KEY, ...(opts.secrets ?? {}) });
@@ -620,6 +629,237 @@ describe('其他功能的 429 也分清楚', () => {
     expect(err.message).toBe('Anthropic 限流：请求太快（rate_limit_error）');
     expect(err.hint).toContain('per-minute rate limit');
     expect(err.retryAfterMs).toBe(12_000);
+  });
+});
+
+// ── 浏览器识别 ──
+
+/** 模拟浏览器边听边出字：每 tickMs 多出 per 个字（interim），视频时间同步前进 */
+function speak(t: LiveTranscript, text: string, o: { videoStart?: number; tickMs?: number; per?: number; finalAtEnd?: boolean } = {}) {
+  const tickMs = o.tickMs ?? 250;
+  const per = o.per ?? 1;
+  let video = o.videoStart ?? 0;
+  let now = 1_000_000;
+  const out: ReturnType<LiveTranscript['update']> = [];
+  for (let n = per; n <= text.length + per; n += per) {
+    const shown = text.slice(0, Math.min(n, text.length));
+    const final = !!o.finalAtEnd && n >= text.length;
+    out.push(...t.update(shown, final, video, 1, now));
+    if (final) break;
+    video += tickMs / 1000;
+    now += tickMs;
+  }
+  return { lines: out, video, now };
+}
+
+describe('浏览器识别：把边听边改的文字整理成一行一行（带估算的视频时间）', () => {
+  it('连续说话不停顿（实测 Chrome 会把 25 秒当成一句）：文字稳定后每 16 个字交出一行，时间按出字时刻减去识别延迟', () => {
+    const t = new LiveTranscript();
+    const text = '这是我的吓到耶就是他们说他们的长辈会非常凶的说不要再聊了这个事情没有没有没有得了那就停止这个话';
+    const { lines } = speak(t, text, { videoStart: 300 });
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    for (const l of lines) expect(l.text.length).toBeLessThanOrEqual(16);
+    expect(lines[0]!.start).toBeCloseTo(300 - SUBTITLES.liveLatencySec, 1);
+    expect(lines[1]!.start).toBeGreaterThan(lines[0]!.start);
+    expect(lines.map((l) => l.text).join('')).toBe(text.slice(0, lines.map((l) => l.text).join('').length));
+  });
+
+  it('final 时把剩下的全部交出；太长的再按一行切开，优先断在语气词后面', () => {
+    const t = new LiveTranscript();
+    const sentence = '這是我的嚇到耶就是他們說他們的長輩會非常兇的說不要再聊了這個事情沒有沒有沒有得了那就停止這個話我不知道你遇過嗎';
+    const lines = t.update(sentence, true, 338, 1, 0);
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    expect(lines.map((l) => l.text).join('')).toBe(sentence);
+    for (const l of lines) expect(l.text.length).toBeLessThanOrEqual(SUBTITLES.liveMaxChars.cjk);
+    expect(lines.some((l) => /[了的嗎耶]$/.test(l.text))).toBe(true);
+    expect(t.tail).toBe('');
+  });
+
+  it('说一小句就停：没满一行，停顿够久（poll）也交出', () => {
+    const t = new LiveTranscript();
+    const { video, now } = speak(t, '你好吗', { videoStart: 10 });
+    expect(t.tail).toBe('你好吗');
+    expect(t.poll(video + 0.5, now + 2_000)).toEqual([]);
+    const lines = t.poll(video + SUBTITLES.liveIdleCommitSec + 0.5, now + 3_000);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.text).toBe('你好吗');
+    expect(t.tail).toBe('');
+  });
+
+  it('识别器改了还没定稿的字：按改后的文字算，改动的字重新计时', () => {
+    const t = new LiveTranscript();
+    t.update('今天天器', false, 5, 1, 0);
+    t.update('今天天气很好', false, 6, 1, 500);
+    expect(t.tail).toBe('今天天气很好');
+    const [line] = t.update('今天天气很好', true, 6.5, 1, 900);
+    expect(line!.text).toBe('今天天气很好');
+    expect(line!.start).toBeCloseTo(5 - SUBTITLES.liveLatencySec, 5);
+  });
+
+  it('英文按单词断行，不切半个词；2 倍速时延迟按视频时间放大', () => {
+    const t = new LiveTranscript();
+    const text = 'so the thing about large language models is that they predict the next token and nothing more than that really';
+    const { lines } = speak(t, text, { videoStart: 0, per: 3, tickMs: 150, finalAtEnd: true });
+    expect(lines.map((l) => l.text).join(' ')).toBe(text);
+    for (const l of lines) expect(text.split(' ')).toEqual(expect.arrayContaining(l.text.split(' ')));
+    const fast = new LiveTranscript();
+    const [l2] = fast.update('hello there', true, 20, 2, 0);
+    expect(l2!.start).toBeCloseTo(20 - SUBTITLES.liveLatencySec * 2, 5);
+  });
+
+  it('flush 交出全部；reset 丢掉（拖动后识别器手里的声音属于之前的位置）', () => {
+    const t = new LiveTranscript();
+    t.update('还没说完的一句', false, 3, 1, 0);
+    expect(t.flush(4).map((l) => l.text)).toEqual(['还没说完的一句']);
+    t.update('拖动前的话', false, 3, 1, 0);
+    t.reset();
+    expect(t.tail).toBe('');
+    expect(t.flush(4)).toEqual([]);
+  });
+});
+
+describe('浏览器识别：屏幕上的两行', () => {
+  const c = (start: number, end: number, text: string, translation?: string): SubtitleCue => ({ id: `v:${start}`, start, end, text, ...(translation ? { translation } : {}), createdAt: NOW });
+  it('上一行：最近定稿的那行 + 刚听到的新字；下一行：那行的译文', () => {
+    const v = liveView([c(1, 3, '第一句', 'First'), c(4, 6, '第二句', 'Second')], '正在说', 7);
+    expect(v).toEqual({ source: '第二句正在说', translation: 'Second' });
+  });
+  it('太长只留最后一段，前面加省略号；英文不切半个词', () => {
+    const v = liveView([], '一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三', 1);
+    expect(v!.source.startsWith('…')).toBe(true);
+    expect(v!.source.length).toBe(SUBTITLES.liveTailChars.cjk + 1);
+    const en = liveView([], 'word '.repeat(30).trim(), 1)!;
+    expect(en.source).toMatch(/^…word( word)*$/);
+  });
+  it('很久以前的行不再显示；什么都没有时不显示', () => {
+    expect(liveView([c(1, 3, '老的', 'old')], '', 30)).toBeUndefined();
+    expect(liveView([], '', 1)).toBeUndefined();
+  });
+});
+
+describe('浏览器识别：用哪种语言', () => {
+  it('设置里指定了就用它', () => {
+    expect(recognitionLangFor('en-US', { language: 'zh' })).toEqual({ lang: 'en-US', source: 'setting' });
+  });
+  it('自动：按视频的语言；中文一律按简体识别，粤语单独', () => {
+    expect(recognitionLangFor('auto', { language: 'zh-Hant' })).toEqual({ lang: 'zh-CN', source: 'video' });
+    expect(recognitionLangFor('auto', { language: 'zh-TW' }).lang).toBe('zh-CN');
+    expect(recognitionLangFor('auto', { language: 'yue-HK' }).lang).toBe('yue-Hant-HK');
+    expect(recognitionLangFor('auto', { language: 'en' }).lang).toBe('en-US');
+    expect(recognitionLangFor('auto', { language: 'ja' }).lang).toBe('ja-JP');
+    expect(recognitionLangFor('auto', { language: 'fr' }).lang).toBe('fr');
+  });
+  it('没有语言信息：按标题文字推断；再不行用简体中文并说明', () => {
+    expect(recognitionLangFor('auto', { title: '【康永你OK嗎？】專訪 蔡康永' })).toEqual({ lang: 'zh-CN', source: 'title' });
+    expect(recognitionLangFor('auto', { title: 'こんにちは、世界' }).lang).toBe('ja-JP');
+    const d = recognitionLangFor('auto', { title: 'Hello world' });
+    expect(d.source).toBe('default');
+    expect(d.note).toContain('侧边栏');
+    expect(recognitionLangFor('auto', undefined, '没有连接 YouTube').note).toBe('没有连接 YouTube');
+  });
+  it('YouTube 元数据带上视频的音频语言', () => {
+    expect(mapVideoMeta({ id: 'abc123def45', snippet: { title: 't', defaultAudioLanguage: 'zh-Hant', defaultLanguage: 'en' } }, NOW)!.language).toBe('zh-Hant');
+    expect(mapVideoMeta({ id: 'abc123def45', snippet: { title: 't', defaultLanguage: 'en' } }, NOW)!.language).toBe('en');
+    expect(mapVideoMeta({ id: 'abc123def45', snippet: { title: 't' } }, NOW)!.language).toBeUndefined();
+  });
+});
+
+describe('浏览器识别：出错时怎么说', () => {
+  it('云端连不上：停下，说明只有 Chrome 能用、可以改用 OpenAI', () => {
+    const e = speechErrorInfo('network', 'cloud', 'zh-CN')!;
+    expect(e.fatal).toBe(true);
+    expect(e.hint).toContain('Google Chrome');
+    expect(e.hint).toContain('OpenAI');
+  });
+  it('本地语音包出任何问题：改用云端并说明声音去向', () => {
+    for (const code of ['network', 'language-not-supported', 'service-not-allowed']) {
+      const e = speechErrorInfo(code, 'local', 'zh-CN')!;
+      expect(e.retryCloud).toBe(true);
+      expect(e.fatal).toBe(false);
+      expect(e.message).toContain('发往 Google');
+    }
+  });
+  it('没听到声音、主动中止：不提示；语言不支持：停下并指明在哪换', () => {
+    expect(speechErrorInfo('no-speech', 'cloud', 'zh-CN')).toBeUndefined();
+    expect(speechErrorInfo('aborted', 'cloud', 'zh-CN')).toBeUndefined();
+    const e = speechErrorInfo('language-not-supported', 'cloud', 'yue-Hant-HK')!;
+    expect(e.message).toContain('粤语');
+    expect(e.hint).toContain('侧边栏');
+  });
+});
+
+describe('后台：浏览器识别出的字幕', () => {
+  it('只收文字：存成字幕、翻译（Claude），不发任何转写请求、不花转写费', async () => {
+    const t = makeCtx({});
+    await t.init();
+    const sent: SubtitleDown[] = [];
+    await subtitleSession(t.ctx, (m) => sent.push(m))({ type: 'text', videoId: VID, seq: 1, start: 12, end: 14.5, text: '我说到哪里了', lang: 'zh-CN' });
+    expect(sent.map((m) => (m.type === 'cue' ? `cue:${m.stage}` : m.type))).toEqual(['cue:source', 'cue:translated', 'done']);
+    const cue = (sent[1] as Extract<SubtitleDown, { type: 'cue' }>).cue;
+    expect(cue).toMatchObject({ id: `${VID}:12000`, text: '我说到哪里了', lang: 'zh-CN', translation: 'Where was I?', translationLang: 'en' });
+    expect(t.requests.filter((r) => r.url.includes('/audio/transcriptions'))).toHaveLength(0);
+    const day = Object.values((await stores.subtitleLedger.read(t.ctx.kv)).days)[0]!;
+    expect(day.asrSeconds).toBe(0);
+    expect(day.translations).toBe(1);
+    expect((await subtitleTrackStore(VID).read(t.ctx.kv))!.asrModel).toBe('browser-speech');
+  });
+
+  it('不需要 OpenAI Key', async () => {
+    const t = makeCtx({});
+    await t.init();
+    await stores.secrets.write(t.ctx.kv, { anthropicApiKey: ANTHROPIC_KEY });
+    const cue = await saveTextCue(t.ctx, { videoId: VID, start: 1, end: 2, text: '好' });
+    expect(cue!.text).toBe('好');
+  });
+
+  it('已有字幕的时间段（回看）不再存；格式不对的拒收', async () => {
+    const t = makeCtx({});
+    await t.init();
+    await saveTextCue(t.ctx, { videoId: VID, start: 10, end: 14, text: '一' });
+    expect(await saveTextCue(t.ctx, { videoId: VID, start: 10.5, end: 13, text: '一' })).toBeUndefined();
+    for (const bad of [{ text: '' }, { start: -1 }, { end: 5, start: 6 }, { end: 500 }, { videoId: 'x y' }]) {
+      await expect(saveTextCue(t.ctx, { videoId: VID, start: 20, end: 22, text: '好', ...bad })).rejects.toThrow(AppError);
+    }
+  });
+
+  it('hello：浏览器识别时一并告诉内容脚本用哪种语言', async () => {
+    const t = makeCtx({ youtube: () => ({ items: [{ id: VID, snippet: { title: '【康永你OK嗎？】', defaultAudioLanguage: 'zh-TW' }, contentDetails: { duration: 'PT55M' } }] }) });
+    await t.init();
+    const sent: SubtitleDown[] = [];
+    await subtitleSession(t.ctx, (m) => sent.push(m))({ type: 'hello', videoId: VID });
+    expect((sent[0] as Extract<SubtitleDown, { type: 'track' }>).recognition).toEqual({ lang: 'zh-CN', source: 'video' });
+  });
+
+  it('自动选语言：先用缓存；没有就用官方 API 查一次（1 unit，记进配额并缓存）', async () => {
+    let calls = 0;
+    const t = makeCtx({
+      youtube: (u) => {
+        calls++;
+        expect(u.pathname.endsWith('/videos')).toBe(true);
+        expect(u.searchParams.get('id')).toBe(VID);
+        return { items: [{ id: VID, snippet: { title: 'Talk', defaultAudioLanguage: 'en' }, contentDetails: { duration: 'PT5M' } }] };
+      },
+    });
+    await t.init();
+    expect(await recognitionPlan(t.ctx, VID)).toEqual({ lang: 'en-US', source: 'video' });
+    expect(await recognitionPlan(t.ctx, VID)).toEqual({ lang: 'en-US', source: 'video' });
+    expect(calls).toBe(1);
+    expect((await stores.videoMeta.read(t.ctx.kv))[VID]!.language).toBe('en');
+    const usage = Object.values((await stores.quotaLedger.read(t.ctx.kv)).days)[0]!;
+    expect(usage.generalUnits).toBe(1);
+    expect(usage.byMethod['videos.list']).toBe(1);
+  });
+
+  it('没连接 YouTube：不发请求，用简体中文并说明原因；设置里指定了语言就不查', async () => {
+    const t = makeCtx({ authStatus: 'disconnected' });
+    await t.init();
+    const plan = await recognitionPlan(t.ctx, VID);
+    expect(plan).toMatchObject({ lang: 'zh-CN', source: 'default' });
+    expect(plan.note).toContain('没有连接 YouTube');
+    const u = makeCtx({ settings: (s) => ({ ...s, subtitles: { ...s.subtitles, browserLang: 'ja-JP' } }) });
+    await u.init();
+    expect(await recognitionPlan(u.ctx, VID)).toEqual({ lang: 'ja-JP', source: 'setting' });
+    expect(t.requests.length + u.requests.length).toBe(0);
   });
 });
 

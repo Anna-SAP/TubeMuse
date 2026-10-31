@@ -67,6 +67,9 @@ export const SUBTITLE_VIDEOS = [
   { id: 'subNoCC00003', seconds: 10, captions: 'none' },
   { id: 'subNoCC00004', seconds: 10, captions: 'none' },
   { id: 'subNoCC00005', seconds: 14, captions: 'none' },
+  // 浏览器识别（e2e 里是按脚本出字的假识别器）；speech: 'network' 时它模拟"连不上语音服务"
+  { id: 'subBrowse001', seconds: 14, captions: 'none' },
+  { id: 'subBrowseNet', seconds: 10, captions: 'none', speech: 'network' },
 ];
 
 const WATCH_AS_MOCK = WATCH_VIDEOS.map((w) => ({ id: w.id, title: w.title, channelId: w.channelId, channelTitle: w.channelTitle, hoursAgo: 200, duration: `PT${w.seconds}S`, views: 1000, likes: 10, lang: 'zh', categoryId: w.categoryId }));
@@ -287,7 +290,7 @@ export function startMockServer() {
           const label = sv.captions === 'yes' ? 'Subtitles/closed captions' : 'Subtitles/closed captions unavailable';
           const tooltip = sv.captions === 'yes' ? 'Subtitles/closed captions (c)' : label;
           return res.end(
-            `<!doctype html><html><head><meta charset="utf-8"><title>mock watch</title><style>#movie_player{position:relative;width:640px;height:360px;background:#000}#player{width:100%;height:100%}.ytp-chrome-bottom{position:absolute;left:12px;right:12px;bottom:0;height:48px}</style></head>` +
+            `<!doctype html><html${/** @type {any} */ (sv).speech ? ` data-fake-speech="${/** @type {any} */ (sv).speech}"` : ''}><head><meta charset="utf-8"><title>mock watch</title><style>#movie_player{position:relative;width:640px;height:360px;background:#000}#player{width:100%;height:100%}.ytp-chrome-bottom{position:absolute;left:12px;right:12px;bottom:0;height:48px}</style></head>` +
               `<body><div id="movie_player" class="html5-video-player ytp-autohide"><video id="player" preload="auto" src="/media/${id}.wav"></video>` +
               `<div class="ytp-chrome-bottom"><button class="ytp-subtitles-button ytp-button" aria-keyshortcuts="c" data-tooltip-title="${tooltip}" data-title-no-tooltip="${label}" aria-pressed="false" aria-label="${label}">CC</button></div></div></body></html>`,
           );

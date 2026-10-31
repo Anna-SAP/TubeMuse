@@ -47,14 +47,17 @@ const imgOrigins = ['https://i.ytimg.com', ...DOUBAN_IMAGE_ORIGINS, ...(e2e ? or
 rmSync(outdir, { recursive: true, force: true });
 mkdirSync(outdir, { recursive: true });
 
-/** e2e 构建时整体替换网络出口模块；正式构建不含任何测试代码 */
+/** e2e 构建时整体替换网络出口模块与浏览器语音识别（换成按脚本出字的假识别器）；正式构建不含任何测试代码 */
 const swapPlugin = {
   name: 'tubemuse-e2e-swap',
   /** @param {import('esbuild').PluginBuild} build */
   setup(build) {
     if (!e2e) return;
-    const swaps = { [join(root, 'src', 'config', 'endpoints.ts')]: 'endpoints.e2e.ts' };
-    build.onResolve({ filter: /\/endpoints$/ }, (args) => {
+    const swaps = {
+      [join(root, 'src', 'config', 'endpoints.ts')]: 'endpoints.e2e.ts',
+      [join(root, 'src', 'content', 'speech-engine.ts')]: 'speech-engine.e2e.ts',
+    };
+    build.onResolve({ filter: /\/(endpoints|speech-engine)$/ }, (args) => {
       const resolved = join(args.resolveDir, args.path + '.ts');
       const swap = swaps[resolved];
       return swap ? { path: join(dirname(resolved), swap) } : undefined;
@@ -164,7 +167,7 @@ const forbidden = [
 ];
 if (!e2e) {
   // 只查本项目自己的 mock 地址（SDK 内部有"仅允许 https 或 localhost"之类的无害字符串，不算）
-  forbidden.push({ re: /127\.0\.0\.1:47321/, what: '本机测试地址' }, { re: /e2e-fake-token/, what: 'e2e 测试代码' });
+  forbidden.push({ re: /127\.0\.0\.1:47321/, what: '本机测试地址' }, { re: /e2e-fake-token/, what: 'e2e 测试代码' }, { re: /data-fake-speech|FakeSpeechRecognition/, what: 'e2e 假语音识别器' });
 }
 // 红线：注入 YouTube 的脚本不得发网络请求、不得改动页面
 const tracker = readFileSync(join(outdir, 'content-tracker.js'), 'utf8');

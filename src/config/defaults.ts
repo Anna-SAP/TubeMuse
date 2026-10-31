@@ -138,7 +138,13 @@ export const DEFAULT_SETTINGS = {
     autoStart: true,
     /** 每日字幕花费上限（美元，按本地日计）：语音转写 + 翻译 */
     dailyBudgetUsd: 1,
-    /** OpenAI 语音转写模型（分段上传） */
+    /** 转写方式：浏览器自带的语音识别（免费；用户 2026-11-01 选为默认）或 OpenAI 转写 */
+    asrEngine: 'browser' as SubtitleAsrEngine,
+    /** 浏览器识别的语言：auto = 按视频的语言（中文按简体字识别） */
+    browserLang: 'auto' as BrowserSpeechLang,
+    /** 装了本地语音包时在本机识别（音频不离开电脑）；否则用 Chrome 的云端识别（音频发往 Google） */
+    browserPreferLocal: true,
+    /** OpenAI 语音转写模型（分段上传；转写方式选 OpenAI 时用） */
     asrModel: 'gpt-transcribe',
     translate: true,
     /** 第二行译成的语言 */
@@ -152,6 +158,20 @@ export const DEFAULT_SETTINGS = {
     fontScale: 1,
   },
 };
+
+export type SubtitleAsrEngine = 'browser' | 'openai';
+
+/** 浏览器识别可选的语言（代码 → 显示名）；识别结果的字形跟语言走：zh-CN 出简体，zh-TW 出繁体 */
+export const BROWSER_SPEECH_LANGS = {
+  auto: '自动（按视频的语言）',
+  'zh-CN': '中文（简体字）',
+  'zh-TW': '中文（繁体字，台湾）',
+  'yue-Hant-HK': '粤语（繁体字）',
+  'en-US': 'English',
+  'ja-JP': '日本語',
+  'ko-KR': '한국어',
+} as const;
+export type BrowserSpeechLang = keyof typeof BROWSER_SPEECH_LANGS;
 
 /** 双语字幕可选的翻译目标语言（代码 → 显示名） */
 export const SUBTITLE_LANGS = {
@@ -210,6 +230,24 @@ export const SUBTITLES = {
   translationEstimate: { inputTokens: 700, outputTokens: 400 },
   /** 设置页"一小时约花多少"的估算：一句的典型用量、平均每几秒一句 */
   translationTypical: { inputTokens: 350, outputTokens: 150, secondsPerCue: 5 },
+  // ── 浏览器识别 ──
+  /** 识别结果边听边改：一段文字这么久不再变化才算定稿 */
+  liveStableMs: 1_200,
+  /** 识别结果比说话晚多少秒（据此估算每个字在视频里的时间） */
+  liveLatencySec: 0.7,
+  /** 一行字幕的长度：中日韩按字数，其他按字符数 */
+  liveLineChars: { cjk: 16, latin: 42 },
+  /** 一句定稿后太长时按这个长度再切 */
+  liveMaxChars: { cjk: 24, latin: 72 },
+  /** 停顿这么久（视频秒），不满一行也先定稿 */
+  liveIdleCommitSec: 1.6,
+  /** 屏幕上滚动显示的最近文字最多多长 */
+  liveTailChars: { cjk: 30, latin: 84 },
+  /** 刚定稿的那行在多少秒内仍和后面的新字一起显示 */
+  liveRecentSec: 5,
+  /** 识别会话很快就意外结束时，重启前等待：从这么久开始翻倍，最多 recognitionRestartMaxMs */
+  recognitionRestartBaseMs: 1_000,
+  recognitionRestartMaxMs: 15_000,
 } as const;
 
 /** 语音转写单价（美元/分钟；2026-11 OpenAI 定价页）。没列出的模型按最贵的实时转写价保守估算。 */

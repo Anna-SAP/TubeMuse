@@ -122,6 +122,8 @@ export function mapVideoMeta(it: Json, now: number): VideoMeta | undefined {
     fetchedAt: now,
   };
   if (sn.categoryId) meta.categoryId = String(sn.categoryId);
+  const language = sn.defaultAudioLanguage ?? sn.defaultLanguage;
+  if (language) meta.language = String(language);
   return meta;
 }
 
