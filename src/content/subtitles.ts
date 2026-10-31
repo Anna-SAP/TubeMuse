@@ -41,7 +41,9 @@ let seq = 0;
 /** 你对每个视频的手动选择（只在这个标签页里记住） */
 const manual = new Map<string, 'on' | 'off'>();
 let fatal: { message: string; hint?: string; at: number } | undefined;
-let notice: { text: string; until: number } | undefined;
+let notice: { text: string; hint?: string; until: number } | undefined;
+/** 被限流：到这个时刻之前不再送片段（这期间的句子跳过，拖回去重看时会补上） */
+let backoffUntil = 0;
 let lastState = '';
 
 let port: chrome.runtime.Port | undefined;
@@ -130,7 +132,8 @@ function onDown(raw: unknown): void {
         fatal = { message: m.message, ...(m.hint ? { hint: m.hint } : {}), at: Date.now() };
         stopCapture(false);
       } else {
-        notice = { text: m.message, until: Date.now() + NOTICE_MS };
+        if (m.retryAfterMs) backoffUntil = Math.max(backoffUntil, Date.now() + m.retryAfterMs);
+        notice = { text: m.message, ...(m.hint ? { hint: m.hint } : {}), until: m.retryAfterMs ? backoffUntil : Date.now() + NOTICE_MS }; // 限流提示随暂停结束一起消失
       }
       break;
     case 'done':
@@ -205,7 +208,7 @@ function onAudio(samples: Float32Array): void {
 }
 
 function sendSegment(s: AudioSegment): void {
-  if (!videoId || isCovered(cues, s.start, s.end)) return;
+  if (!videoId || Date.now() < backoffUntil || isCovered(cues, s.start, s.end)) return;
   const n = ++seq;
   pending.add(n);
   post({ type: 'segment', videoId, seq: n, start: s.start, end: s.end, audio: bytesToBase64(encodeWav(s.samples, SUBTITLES.sampleRate)) });
@@ -263,7 +266,10 @@ function removeOverlay(): void {
 function statusLine(active: boolean): { text: string; hint?: string } | undefined {
   if (fatal && videoId && settings.enabled && manual.get(videoId) !== 'off') return { text: `TubeMuse 字幕已停止：${fatal.message}`, ...(fatal.hint ? { hint: fatal.hint } : {}) };
   if (!active) return undefined;
-  if (notice && Date.now() < notice.until) return { text: `TubeMuse 字幕：${notice.text}` };
+  if (Date.now() < backoffUntil && notice) {
+    return { text: `TubeMuse 字幕：${notice.text}（${Math.ceil((backoffUntil - Date.now()) / 1000)} 秒后自动继续）`, hint: '暂停期间不发请求；这期间的句子先跳过，拖回去重看时会补上' };
+  }
+  if (notice && Date.now() < notice.until) return { text: `TubeMuse 字幕：${notice.text}`, ...(notice.hint ? { hint: notice.hint } : {}) };
   if (audio?.ac.state === 'suspended') return { text: 'TubeMuse 字幕：点一下视频即可开始（浏览器要求页面先有一次点击才能处理声音）' };
   const latest = cues.find((c) => c.id === live?.id);
   if (latest?.translationError) return { text: `第二行未翻译：${latest.translationError}` };
@@ -343,6 +349,7 @@ function switchVideo(next: string | null): void {
   pending.clear();
   notice = undefined;
   nextCaptureAttempt = 0;
+  backoffUntil = 0;
   if (fatal && Date.now() - fatal.at >= FATAL_RETRY_MS) fatal = undefined;
 }
 

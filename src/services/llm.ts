@@ -71,6 +71,78 @@ function providerMessage(err: unknown): string {
   return String((err as ApiErrorLike)?.message ?? err);
 }
 
+/**
+ * OpenAI 的额度 / 账单问题也返回 HTTP 429，只能靠 error.code 区分（developers.openai.com/api/docs/guides/error-codes，2026-11 核实）。
+ * 这一类重试不会恢复，要去充值或调上限；和"请求太快"的限流分开处理。
+ */
+const OPENAI_BILLING_429: Record<string, { what: string; fix: string }> = {
+  credit_balance_exhausted: { what: '预付额度已用完', fix: '到 platform.openai.com → Settings → Billing 充值（ChatGPT 会员不含 API 额度）；充值后通常几分钟内生效' },
+  organization_spend_limit_exceeded: { what: '组织达到了你设置的花费上限', fix: '到 platform.openai.com → Settings → Limits 调高或取消组织的花费上限' },
+  project_spend_limit_exceeded: { what: '这把 Key 所属的项目达到了花费上限', fix: '到 platform.openai.com 打开这把 Key 所属项目的 Settings → Limits，调高花费上限' },
+  organization_usage_limit_exceeded: { what: '组织达到了 OpenAI 分配的月度用量上限', fix: '到 platform.openai.com → Settings → Limits 申请提高用量上限' },
+  insufficient_quota: { what: '额度不足（余额用完，或达到了花费上限）', fix: '到 platform.openai.com → Settings → Billing 查看余额，Settings → Limits 查看上限' },
+};
+
+/** 服务方的 error.code / error.type：OpenAI SDK 直接挂在错误上；Anthropic 的错误体是 {type:'error', error:{type}} */
+function providerCode(err: unknown): { code?: string; type?: string } {
+  const e = err as { code?: unknown; type?: unknown; error?: { code?: unknown; type?: unknown; error?: { type?: unknown } } };
+  const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined);
+  const code = str(e?.code) ?? str(e?.error?.code);
+  const type = str(e?.type) ?? (e?.error?.type === 'error' ? str(e?.error?.error?.type) : str(e?.error?.type));
+  return { ...(code ? { code } : {}), ...(type ? { type } : {}) };
+}
+
+/** "1s"、"6m0s"、"20ms"、"1h2m3.5s" → 毫秒 */
+function parseResetDuration(v: string | null): number | undefined {
+  if (!v) return undefined;
+  const text = v.trim();
+  let ms = 0;
+  let used = '';
+  for (const m of text.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)) {
+    const n = Number(m[1]);
+    ms += m[2] === 'h' ? n * 3_600_000 : m[2] === 'm' ? n * 60_000 : m[2] === 's' ? n * 1000 : n;
+    used += m[0];
+  }
+  return used && used === text ? ms : undefined;
+}
+
+/**
+ * 限流时该等多久：retry-after-ms > Retry-After（秒或 HTTP 日期）> 已用尽的那一项 x-ratelimit-reset-*；都没有返回 undefined。
+ * 结果限制在 1 秒到 10 分钟之间。
+ */
+export function retryAfterMs(headers: { get(name: string): string | null } | undefined, now: number): number | undefined {
+  if (!headers) return undefined;
+  const clamp = (ms: number) => Math.min(600_000, Math.max(1_000, Math.round(ms)));
+  const ms = Number(headers.get('retry-after-ms'));
+  if (headers.get('retry-after-ms') && Number.isFinite(ms)) return clamp(ms);
+  const ra = headers.get('retry-after');
+  if (ra) {
+    const sec = Number(ra);
+    if (Number.isFinite(sec)) return clamp(sec * 1000);
+    const at = Date.parse(ra);
+    if (Number.isFinite(at)) return clamp(at - now);
+  }
+  const resets: number[] = [];
+  for (const kind of ['requests', 'tokens', 'project-tokens']) {
+    const reset = parseResetDuration(headers.get(`x-ratelimit-reset-${kind}`));
+    if (reset === undefined) continue;
+    const remaining = headers.get(`x-ratelimit-remaining-${kind}`);
+    if (remaining === null || Number(remaining) <= 0) resets.push(reset);
+  }
+  return resets.length ? clamp(Math.max(...resets)) : undefined;
+}
+
+function rateOrBillingError(err: unknown, provider: LlmProvider, name: string, full: string, raw: string): AppError {
+  const { code, type } = providerCode(err);
+  const label = code ?? type ?? 'HTTP 429';
+  if (provider === 'openai') {
+    const billing = (code && OPENAI_BILLING_429[code]) || (type === 'insufficient_quota' || /quota|billing|credit balance|spend limit/i.test(full) ? OPENAI_BILLING_429.insufficient_quota : undefined);
+    if (billing) return new AppError('llm_quota', `${name} 账户${billing.what}（${label}）`, billing.fix);
+  }
+  const wait = retryAfterMs((err as { headers?: Headers }).headers, Date.now());
+  return new AppError('llm_rate', `${name} 限流：请求太快（${label}）`, raw ? `服务方原话：${raw}` : '稍后再试', wait);
+}
+
 function mapLlmError(err: unknown, provider: LlmProvider, model: string, apiKey: string): AppError {
   if (err instanceof AppError) return err;
   const name = PROVIDER_NAMES[provider];
@@ -107,7 +179,7 @@ function mapLlmError(err: unknown, provider: LlmProvider, model: string, apiKey:
     case 404:
       return new AppError('llm', `模型「${model}」不存在或你的账户无权使用`, '在设置页检查模型名');
     case 429:
-      return new AppError('llm', `${name} 请求过于频繁或额度不足`, '稍后重试，或检查账户余额');
+      return rateOrBillingError(err, provider, name, full, raw);
     case 400:
       return new AppError('llm', `${name} 拒绝了请求：${raw}`, '按上面的原因处理；如果改过模型名，确认该模型支持结构化输出');
     default:

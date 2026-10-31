@@ -4,6 +4,7 @@
 import { SUBTITLE_LANGS, SUBTITLES } from '../config/defaults';
 import { buildSubtitleTranslationPrompt, SUBTITLE_TRANSLATION_SCHEMA } from '../core/prompts';
 import {
+  backoffMs,
   base64ToBytes,
   estimateSegmentUsd,
   isCovered,
@@ -31,6 +32,12 @@ const PROVIDER_NAMES: Record<LlmProvider, string> = { anthropic: 'Anthropic', op
 
 /** 进行中的请求预留的花费：多个标签页同时出字幕时也守住每日预算（只在后台这一个 service worker 里计数） */
 let reservedUsd = 0;
+
+/**
+ * 被 OpenAI 限流后的暂停：所有标签页共用（限额按组织 / 项目算，不按标签页）。
+ * 官方：被拒的请求也计入每分钟上限，所以暂停期间一个请求都不发，否则会一直被拒。
+ */
+const rateLimitPauses = new WeakMap<AppContext, { until: number; failures: number; reason: string; hint?: string }>();
 
 export async function subtitleSpend(ctx: AppContext): Promise<SubtitleSnapshot> {
   const [settings, ledger] = await Promise.all([stores.settings.read(ctx.kv), stores.subtitleLedger.read(ctx.kv)]);
@@ -131,12 +138,30 @@ export async function transcribeSegment(ctx: AppContext, input: SegmentInput): P
     .join(' ')
     .slice(-SUBTITLES.asrPromptChars);
 
-  const result = await reserve(ctx, estimateSegmentUsd(asrModel, durationSec, translateModel), () =>
-    createTranscriber({ model: asrModel, apiKey: secrets.openaiApiKey!, baseURL: ctx.endpoints.openai, fetch: ctx.http }).transcribe({
-      wav: input.wav,
-      ...(prompt ? { prompt } : {}),
-    }),
-  );
+  const pause = rateLimitPauses.get(ctx);
+  if (pause && ctx.now() < pause.until) {
+    const left = pause.until - ctx.now();
+    throw new AppError('llm_rate', pause.reason, `暂停期间不发请求（被拒的请求也计入每分钟上限），还要等 ${Math.ceil(left / 1000)} 秒；这期间的句子先跳过，拖回去重看时会补上`, left);
+  }
+
+  let result: Awaited<ReturnType<ReturnType<typeof createTranscriber>['transcribe']>>;
+  try {
+    result = await reserve(ctx, estimateSegmentUsd(asrModel, durationSec, translateModel), () =>
+      createTranscriber({ model: asrModel, apiKey: secrets.openaiApiKey!, baseURL: ctx.endpoints.openai, fetch: ctx.http }).transcribe({
+        wav: input.wav,
+        ...(prompt ? { prompt } : {}),
+      }),
+    );
+  } catch (e) {
+    if (e instanceof AppError && e.kind === 'llm_rate') {
+      const failures = (rateLimitPauses.get(ctx)?.failures ?? 0) + 1;
+      const wait = backoffMs(failures, e.retryAfterMs);
+      rateLimitPauses.set(ctx, { until: ctx.now() + wait, failures, reason: e.message });
+      throw new AppError('llm_rate', e.message, `暂停 ${Math.ceil(wait / 1000)} 秒再继续（被拒的请求也计入每分钟上限，连续重发只会一直被拒）。${e.hint ?? ''}`, wait);
+    }
+    throw e;
+  }
+  rateLimitPauses.delete(ctx);
   const now = ctx.now();
   await stores.subtitleLedger.update(ctx.kv, ctx.locker, (l) => recordAsr(l, dayKey(now, ctx.timeZone), asrModel, result.billedSeconds ?? durationSec));
 
@@ -206,7 +231,7 @@ export async function translateCue(ctx: AppContext, videoId: string, cue: Subtit
 
 /** 这些错误不是这一段的问题：再识别下一段也会失败，内容脚本应停下并提示，等你改了设置再继续 */
 function isFatal(e: AppError): boolean {
-  return e.kind === 'subtitles_budget' || e.kind === 'llm_key' || /已在设置中关闭|模型「/.test(e.message);
+  return e.kind === 'subtitles_budget' || e.kind === 'llm_key' || e.kind === 'llm_quota' || /已在设置中关闭|模型「/.test(e.message);
 }
 
 export { SUBTITLE_PORT } from '../core/subtitles';
@@ -239,7 +264,7 @@ export function subtitleSession(ctx: AppContext, send: (m: SubtitleDown) => void
       if (translated !== cue) send({ type: 'cue', videoId, seq, cue: translated, stage: 'translated' });
     } catch (err) {
       const e = toAppError(err, [secrets.openaiApiKey, secrets.anthropicApiKey]);
-      send({ type: 'error', videoId, seq, message: e.message, ...(e.hint ? { hint: e.hint } : {}), fatal: isFatal(e) });
+      send({ type: 'error', videoId, seq, message: e.message, ...(e.hint ? { hint: e.hint } : {}), fatal: isFatal(e), ...(e.retryAfterMs !== undefined ? { retryAfterMs: e.retryAfterMs } : {}) });
     } finally {
       inFlight--;
       send({ type: 'done', videoId, seq });

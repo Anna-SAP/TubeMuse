@@ -65,6 +65,8 @@ export const SUBTITLE_VIDEOS = [
   { id: 'subNoCC00001', seconds: 14, captions: 'none' },
   { id: 'subHasCC0002', seconds: 10, captions: 'yes' },
   { id: 'subNoCC00003', seconds: 10, captions: 'none' },
+  { id: 'subNoCC00004', seconds: 10, captions: 'none' },
+  { id: 'subNoCC00005', seconds: 14, captions: 'none' },
 ];
 
 const WATCH_AS_MOCK = WATCH_VIDEOS.map((w) => ({ id: w.id, title: w.title, channelId: w.channelId, channelTitle: w.channelTitle, hoursAgo: 200, duration: `PT${w.seconds}S`, views: 1000, likes: 10, lang: 'zh', categoryId: w.categoryId }));
@@ -238,6 +240,12 @@ function speechWav(seconds) {
 }
 
 let transcribeCounter = 0;
+/**
+ * 语音转写的模拟故障（只有测试脚本经 /e2e/transcribe-mode 设置，浏览器不会访问）：
+ * ok = 正常；quota = 一直 429 credit_balance_exhausted；slowdown = 接下来 N 次 429 slow_down（带 Retry-After），之后正常
+ */
+/** @type {{ mode: 'ok' | 'quota' | 'slowdown'; remaining: number; retryAfter: number }} */
+const transcribeFault = { mode: 'ok', remaining: 0, retryAfter: 0 };
 
 // 1×1 PNG（缩略图占位）
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8+P9/PQAJ1wN/0KxJWAAAAABJRU5ErkJggg==', 'base64');
@@ -360,7 +368,22 @@ export function startMockServer() {
           usage: { input_tokens: 100, output_tokens: 100 },
         });
       }
+      if (p === '/e2e/transcribe-mode') {
+        transcribeFault.mode = /** @type {any} */ (url.searchParams.get('mode') ?? 'ok');
+        transcribeFault.remaining = Number(url.searchParams.get('times') ?? 1);
+        transcribeFault.retryAfter = Number(url.searchParams.get('retryAfter') ?? 0);
+        return send(200, { ok: true });
+      }
       if (p === '/openai/v1/audio/transcriptions' && req.method === 'POST') {
+        // 错误体与官方 error-codes 页一致：额度 / 账单类也是 429，靠 error.code 区分
+        if (transcribeFault.mode === 'quota') {
+          return send(429, { error: { message: 'Your organization has no prepaid credits remaining.', type: 'insufficient_quota', code: 'credit_balance_exhausted', param: null } });
+        }
+        if (transcribeFault.mode === 'slowdown' && transcribeFault.remaining > 0) {
+          transcribeFault.remaining--;
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(transcribeFault.retryAfter), ...cors });
+          return res.end(JSON.stringify({ error: { message: 'Your request rate increased too quickly.', type: 'rate_limit_error', code: 'slow_down', param: null } }));
+        }
         transcribeCounter++;
         return send(200, { text: `第 ${transcribeCounter} 句：我说到哪里了`, languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 2 } });
       }

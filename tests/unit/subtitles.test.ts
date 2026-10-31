@@ -29,6 +29,7 @@ import type { SubtitleCue } from '../../src/core/types';
 import type { AuthProvider } from '../../src/services/auth';
 import type { AppContext } from '../../src/services/context';
 import { AppError } from '../../src/services/errors';
+import { createLlmClient, retryAfterMs } from '../../src/services/llm';
 import { mergeSettings, stores, subtitleTrackStore } from '../../src/services/repo';
 import { memoryKV, memoryLocker } from '../../src/services/storage';
 import { subtitleSession, subtitleSpend, subtitleTranslationModel, transcribeSegment, translateCue, validateSegment } from '../../src/services/subtitle-service';
@@ -275,7 +276,7 @@ interface Recorded {
 }
 
 function makeCtx(opts: {
-  transcribe?: (form: Record<string, string>) => { status?: number; body: unknown };
+  transcribe?: (form: Record<string, string>) => { status?: number; body: unknown; headers?: Record<string, string> };
   translate?: (system: string, user: string) => { status?: number; body?: unknown };
   secrets?: Record<string, string>;
   settings?: (s: ReturnType<typeof mergeSettings>) => ReturnType<typeof mergeSettings>;
@@ -285,7 +286,8 @@ function makeCtx(opts: {
     const req = input instanceof Request ? input : new Request(String(input), init);
     const headers: Record<string, string> = {};
     req.headers.forEach((v, k) => (headers[k] = v));
-    const reply = (status: number, data: unknown) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
+    const reply = (status: number, data: unknown, extra: Record<string, string> = {}) =>
+      new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json', ...extra } });
     if (req.url === `${ENDPOINTS.openai}/audio/transcriptions`) {
       const fd = await req.formData();
       const form: Record<string, string> = {};
@@ -296,7 +298,7 @@ function makeCtx(opts: {
       });
       requests.push({ url: req.url, headers, form, ...(file ? { file } : {}) });
       const r = opts.transcribe?.(form) ?? { body: { text: '我说到哪里了', languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 4 } } };
-      return reply(r.status ?? 200, r.body);
+      return reply(r.status ?? 200, r.body, r.headers);
     }
     const body = await req.text();
     requests.push({ url: req.url, headers, body });
@@ -480,8 +482,148 @@ describe('字幕翻译模型', () => {
   });
 });
 
+const up = (start: number) => ({ type: 'segment', videoId: VID, seq: Math.round(start), start, end: start + 2, audio: bytesToBase64(encodeWav(tone(2), RATE)) });
+type ErrorDown = Extract<SubtitleDown, { type: 'error' }>;
+const errorsOf = (sent: SubtitleDown[]) => sent.filter((m): m is ErrorDown => m.type === 'error');
+
+describe('OpenAI 返回 429：分清"额度 / 账单"与"限流"（官方：两类都是 HTTP 429，按 error.code 区分）', () => {
+  const billing = (code: string) => ({
+    status: 429,
+    body: { error: { message: 'You exceeded your current quota, please check your plan and billing details.', type: 'insufficient_quota', code, param: null } },
+  });
+
+  it.each([
+    ['credit_balance_exhausted', '预付额度已用完', 'Billing'],
+    ['organization_spend_limit_exceeded', '花费上限', 'Limits'],
+    ['project_spend_limit_exceeded', '项目', 'Limits'],
+    ['organization_usage_limit_exceeded', '用量上限', 'Limits'],
+    ['insufficient_quota', '额度不足', 'Billing'],
+  ])('%s：说清是哪一种、去哪里处理；属于"致命"错误——重试也不会恢复，停下不再发', async (code, words, where) => {
+    const t = makeCtx({ transcribe: () => billing(code) });
+    await t.init();
+    const sent: SubtitleDown[] = [];
+    await subtitleSession(t.ctx, (m) => sent.push(m))(up(5));
+    const [err] = errorsOf(sent);
+    expect(err!.fatal).toBe(true);
+    expect(err!.message).toContain(code);
+    expect(err!.message).toContain(words);
+    expect(err!.hint).toContain(where);
+    expect(err!.message).not.toContain('请求过于频繁');
+    expect(JSON.stringify(sent)).not.toContain(OPENAI_KEY);
+  });
+
+  it('限流（slow_down）：按 Retry-After 暂停；暂停期间的片段不发请求（被拒的请求也算进每分钟上限），到点后自动继续', async () => {
+    let now = NOW;
+    let n = 0;
+    const t = makeCtx({
+      transcribe: () =>
+        ++n === 1
+          ? { status: 429, headers: { 'retry-after': '20' }, body: { error: { message: 'Your request rate increased too quickly.', type: 'rate_limit_error', code: 'slow_down', param: null } } }
+          : { body: { text: '继续', languages: [{ code: 'zh' }] } },
+    });
+    await t.init();
+    t.ctx.now = () => now;
+    const sent: SubtitleDown[] = [];
+    const handle = subtitleSession(t.ctx, (m) => sent.push(m));
+    await handle(up(5));
+    let [err] = errorsOf(sent);
+    expect(err!.fatal).toBe(false);
+    expect(err!.message).toContain('slow_down');
+    expect(err!.message).not.toContain('请求过于频繁或额度不足');
+    expect(err!.hint).toContain('20 秒');
+    expect(err!.hint).toContain('Your request rate increased too quickly');
+    expect(err!.retryAfterMs).toBe(20_000);
+    const calls = () => t.requests.filter((r) => r.url.endsWith('/audio/transcriptions')).length;
+    expect(calls()).toBe(1);
+
+    now += 5_000;
+    sent.length = 0;
+    await handle(up(9));
+    [err] = errorsOf(sent);
+    expect(calls()).toBe(1);
+    expect(err!.retryAfterMs).toBe(15_000);
+    expect(err!.fatal).toBe(false);
+
+    now += 16_000;
+    sent.length = 0;
+    await handle(up(13));
+    expect(calls()).toBe(2);
+    expect(sent.some((m) => m.type === 'cue' && m.cue.text === '继续')).toBe(true);
+  });
+
+  it('限流但没给 Retry-After：按 x-ratelimit-reset-requests；都没有时指数退避（5 秒起，最多 60 秒）', async () => {
+    let now = NOW;
+    const t = makeCtx({
+      transcribe: () => ({ status: 429, headers: { 'x-ratelimit-reset-requests': '1m30s', 'x-ratelimit-remaining-requests': '0' }, body: { error: { message: 'Rate limit reached for requests', type: 'requests', code: 'rate_limit_exceeded', param: null } } }),
+    });
+    await t.init();
+    t.ctx.now = () => now;
+    const sent: SubtitleDown[] = [];
+    await subtitleSession(t.ctx, (m) => sent.push(m))(up(5));
+    expect(errorsOf(sent)[0]!.retryAfterMs).toBe(90_000);
+
+    const u = makeCtx({ transcribe: () => ({ status: 429, body: { error: { message: 'Rate limit reached for requests', type: 'requests', code: 'rate_limit_exceeded' } } }) });
+    await u.init();
+    u.ctx.now = () => now;
+    const got: number[] = [];
+    const handle = subtitleSession(u.ctx, (m) => m.type === 'error' && m.retryAfterMs !== undefined && got.push(m.retryAfterMs));
+    for (let i = 0; i < 6; i++) {
+      await handle(up(5 + i * 4));
+      now += got.at(-1)! + 1; // 等暂停结束再发下一段
+    }
+    expect(got).toEqual([5_000, 10_000, 20_000, 40_000, 60_000, 60_000]);
+  });
+});
+
+describe('限流等待时间的读取', () => {
+  const h = (o: Record<string, string>) => new Headers(o);
+  it('Retry-After（秒 / HTTP 日期）与 retry-after-ms', () => {
+    expect(retryAfterMs(h({ 'retry-after': '56' }), NOW)).toBe(56_000);
+    expect(retryAfterMs(h({ 'retry-after': new Date(NOW + 30_000).toUTCString() }), NOW)).toBe(30_000);
+    expect(retryAfterMs(h({ 'retry-after-ms': '1500', 'retry-after': '9' }), NOW)).toBe(1_500);
+  });
+  it('x-ratelimit-reset-*：只看已经用尽的那一项（"1s"、"6m0s"、"20ms" 都认）', () => {
+    expect(retryAfterMs(h({ 'x-ratelimit-reset-requests': '6m0s', 'x-ratelimit-remaining-requests': '0', 'x-ratelimit-reset-tokens': '1s', 'x-ratelimit-remaining-tokens': '900' }), NOW)).toBe(360_000);
+    expect(retryAfterMs(h({ 'x-ratelimit-reset-tokens': '2.5s', 'x-ratelimit-remaining-tokens': '0' }), NOW)).toBe(2_500);
+    expect(retryAfterMs(h({ 'x-ratelimit-reset-project-tokens': '3s' }), NOW)).toBe(3_000);
+  });
+  it('太短按 1 秒、太长按 10 分钟；没有信息返回 undefined', () => {
+    expect(retryAfterMs(h({ 'x-ratelimit-reset-requests': '20ms' }), NOW)).toBe(1_000);
+    expect(retryAfterMs(h({ 'retry-after': '86400' }), NOW)).toBe(600_000);
+    expect(retryAfterMs(h({ 'x-ratelimit-reset-requests': 'soon' }), NOW)).toBeUndefined();
+    expect(retryAfterMs(h({}), NOW)).toBeUndefined();
+    expect(retryAfterMs(undefined, NOW)).toBeUndefined();
+  });
+});
+
+describe('其他功能的 429 也分清楚', () => {
+  const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+  const req = { system: 's', user: 'u', schema: { type: 'object' }, schemaName: 'x', effort: 'low' as const };
+
+  it('OpenAI 找片 / 翻译遇到额度用完：llm_quota，指明去 Billing', async () => {
+    const llm = createLlmClient({ provider: 'openai', model: 'gpt-6-luna', apiKey: OPENAI_KEY, baseURL: ENDPOINTS.openai, fetch: async () => json(429, { error: { message: 'no credits', type: 'insufficient_quota', code: 'credit_balance_exhausted' } }) });
+    const err = (await llm.generateJson(req).catch((e) => e)) as AppError;
+    expect(err.kind).toBe('llm_quota');
+    expect(err.message).toBe('OpenAI 账户预付额度已用完（credit_balance_exhausted）');
+  });
+
+  it('Anthropic 的 429 是限流（它的余额不足不走 429）：llm_rate，带上等待时间与原话', async () => {
+    const llm = createLlmClient({
+      provider: 'anthropic',
+      model: 'claude-haiku-5-5',
+      apiKey: ANTHROPIC_KEY,
+      baseURL: ENDPOINTS.anthropic,
+      fetch: async () => json(429, { type: 'error', error: { type: 'rate_limit_error', message: 'Number of requests has exceeded your per-minute rate limit' } }, { 'retry-after': '12', 'x-should-retry': 'false' }),
+    });
+    const err = (await llm.generateJson(req).catch((e) => e)) as AppError;
+    expect(err.kind).toBe('llm_rate');
+    expect(err.message).toBe('Anthropic 限流：请求太快（rate_limit_error）');
+    expect(err.hint).toContain('per-minute rate limit');
+    expect(err.retryAfterMs).toBe(12_000);
+  });
+});
+
 describe('与内容脚本的会话', () => {
-  const up = (start: number) => ({ type: 'segment', videoId: VID, seq: Math.round(start), start, end: start + 2, audio: bytesToBase64(encodeWav(tone(2), RATE)) });
 
   it('先回原文、再回译文，最后告知这一段处理完了', async () => {
     const t = makeCtx({});

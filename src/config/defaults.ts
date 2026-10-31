@@ -201,6 +201,9 @@ export const SUBTITLES = {
   cueMaxChars: 400,
   /** 同时在途的识别请求上限（超过时跳过并提示） */
   maxInFlight: 4,
+  /** 被限流且服务方没说等多久时：从这么久开始，每次翻倍，最多等到 backoffMaxMs */
+  backoffBaseMs: 5_000,
+  backoffMaxMs: 60_000,
   /** 本地最多保留多少个视频的字幕 */
   maxVideosKept: 100,
   /** 翻译一句的预估 token：预算护栏按此预留（偏保守），实际按返回的用量记账 */

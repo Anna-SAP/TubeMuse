@@ -307,3 +307,15 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 - **构建检查：** 字幕脚本产物里不得出现 `fetch(`、`XMLHttpRequest`、`WebSocket`、`sendBeacon`、`EventSource`、`innerHTML =`、`outerHTML =`、`insertAdjacentHTML`、`document.cookie`、`.download =`；观看追踪脚本的检查不变。
 - **测试：** 单测 40 条（切段：停顿、合并、长句切分、倍速、拖动、flush；WAV 往返与拒收；按钮判定；双语组合；显示时机；回看去重；记账与保守估价；后台流程：请求形态、Key 只在请求头、不发视频 ID、缺 Key、预算、并发预留、翻译失败、空转写、会话消息与致命错误）。e2e 在 mock 播放页上用"说话"音频跑完整流程：自动开启 → 采音频 → mock 转写 → mock 翻译 → 播放器里出现双语字幕；YouTube 自己的元素逐字不变；转写请求的 Origin 是扩展（不是内容脚本发的）；拖回去按时间轴对齐且不再请求；侧边栏开关；有原生字幕不开启；超预算一个请求都不发并在播放器里说明。
 - **没做 / 留给以后：** 实时流式转写（延迟更低，等浏览器里的鉴权有文档后再评估）；本地 Whisper（音频不出本机，但要内置几百 MB 模型）；导出 SRT（规格外，没做）；Shorts 不出字幕。
+
+## 31. 自动字幕一直提示"OpenAI 请求过于频繁或额度不足"（2026-11-01，上线后修复）
+
+- 现象：用户实测时，播放器左上角反复出现"TubeMuse 字幕：OpenAI 请求过于频繁或额度不足"，一直不出字幕。
+- **外部事实（2026-11-01 核实，[error-codes](https://developers.openai.com/api/docs/guides/error-codes)、[rate-limits](https://developers.openai.com/api/docs/guides/rate-limits)、[gpt-transcribe](https://developers.openai.com/api/docs/models/gpt-transcribe)）**：OpenAI 的 HTTP 429 有两类，只能靠 `error.code` 区分。① 额度 / 账单：`credit_balance_exhausted`（预付额度为 0）、`organization_spend_limit_exceeded`、`project_spend_limit_exceeded`、`organization_usage_limit_exceeded`（`error.type` 可能仍是 `insufficient_quota`），官方原话"重试不会恢复访问"。② 限流："Rate limit reached for requests"、`slow_down`（请求量上升太快，在每分钟上限以内也会出现），要按 `Retry-After` 等待；**被拒的请求也计入每分钟上限**，连续重发会一直被拒。`gpt-transcribe` 最低的付费档每分钟 5,000 次请求，字幕每分钟只发 12–20 次。
+- **根因**：两层。(1) 直接原因在 OpenAI 账户一侧：按上面的请求量，持续不断的 429 几乎只可能是额度 / 账单类（最常见的是 API 没有预付额度——它和 ChatGPT 会员分开计费），或这把 Key 同时被别的程序大量使用。(2) 扩展自身的缺陷让问题看不清也停不下：`mapLlmError` 把所有 429 合成一句"请求过于频繁或额度不足"，不读 `error.code`，你无从判断该充值还是该等；字幕会话把它当成"可恢复"的错误，下一句照发——额度问题时每句都被拒，限流时被拒的请求又不断占用每分钟名额，提示永远不消失。
+- **修复**
+  - `services/llm.ts`：429 按 `error.code` / `error.type` 分成 `llm_quota`（逐个 code 给出原因与 platform.openai.com 上的处理位置）与 `llm_rate`（附服务方原话）；`retryAfterMs()` 读 `retry-after-ms` → `Retry-After`（秒或 HTTP 日期）→ 已用尽那一项的 `x-ratelimit-reset-*`（"1s"、"6m0s"、"20ms"），限制在 1 秒–10 分钟。所有功能（找片、总结、热点、翻译、测试连接）都受益；Anthropic 的 429 只可能是限流（它的余额不足是 400），不会误判成账单问题。
+  - 字幕：`llm_quota` 算"致命"错误——停下，播放器与侧边栏写明原因和去哪里处理；充值后点"为这个视频生成字幕"立即重试（否则 5 分钟后自动再试一次，仍被拒也只多一个请求）。`llm_rate` 时后台对所有标签页统一暂停（服务方给了时间就照办，否则 5 秒起翻倍、最多 60 秒），暂停期间一个请求都不发；内容脚本同时停止送片段，播放器显示原因与实时倒计时，到点自动继续，提示随之消失。成功一次后退避清零。
+  - 每日总结的补算遇到 `llm_quota` / `llm_rate` 同样停止本轮（以前 429 归在 `llm` 里，行为不变）。
+- **测试**：单测 +12（5 种账单 code 各自的文字与"致命"标记、Key 不进提示；`slow_down` + `Retry-After` 暂停期间零请求、到点恢复；`x-ratelimit-reset-requests` 与指数退避序列 5/10/20/40/60/60 秒；各种等待时间格式与上下限；OpenAI 找片遇额度用完、Anthropic 429 判为限流）。e2e +7：mock 转写返回 `credit_balance_exhausted` 时只发 1 个请求就停并说清原因；返回 `slow_down` + `Retry-After: 3` 时显示倒计时、暂停期间零请求、到点后自动继续出字幕。
+- 无法在这里替你确认的：你的账户具体是哪一种。新版本会在播放器里直接显示 OpenAI 返回的 `error.code`，看一眼就知道。
