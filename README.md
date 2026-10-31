@@ -58,7 +58,7 @@
 | **Node.js 20 或更新版本** | 构建扩展 | 在终端运行 `node -v` 确认 |
 | **Git** | 下载代码 | 也可以在 GitHub 页面点 Code → Download ZIP |
 | **Anthropic 或 OpenAI 的 API Key**（二选一） | 理解你的口令、归纳兴趣、写总结 | 按调用量付费，见 [💰 费用与配额](#cost) |
-| （可选）**OpenAI API Key** | 自动字幕的语音转写 | Anthropic 没有语音转文字接口，所以字幕的转写只能用 OpenAI。大模型选 Anthropic 时，也可以另填一把 OpenAI Key 只给字幕用 |
+| （可选）**OpenAI API Key** | 自动字幕的语音转写 | Anthropic 没有语音转文字接口，所以字幕的转写只能用 OpenAI。大模型选 Anthropic 时，也可以另填一把 OpenAI Key 只给字幕用。**API 要先在 platform.openai.com 预付额度**（ChatGPT 会员不含 API 额度），否则每个请求都会被拒 |
 | **Google Cloud 账号** | 创建 OAuth 客户端，让扩展能只读访问你的 YouTube | 免费，用你的 Google 账号登录即可 |
 | （可选）**X 开发者账号**和少量额度 | X 热点 | 按读取的帖子条数付费；不用可以跳过 |
 
@@ -175,7 +175,7 @@ Chrome 的侧边栏没法直接弹出麦克风授权框，所以要单独授权�
 
 **⑥ 自动字幕（可选，需要 OpenAI Key）** —— 设置页 **12. 自动字幕**
 
-1. 在 **1. 大模型** 的 **OpenAI API Key** 框里粘贴 Key → **保存**（"当前使用"可以继续选 Anthropic，不影响找片）。
+1. 在 **1. 大模型** 的 **OpenAI API Key** 框里粘贴 Key → **保存**（"当前使用"可以继续选 Anthropic，不影响找片）。确认 [platform.openai.com → Settings → Billing](https://platform.openai.com/settings/organization/billing) 里有余额：OpenAI API 是预付费的，和 ChatGPT 会员分开计费。
 2. 默认已开启，播放器显示"字幕不可用"时自动开始。每日预算默认 $1。
 3. **字幕翻译模型** 默认是更快更省的 `claude-haiku-5-5`（1. 里选 OpenAI 时是 `gpt-6-luna`），每句字幕都要翻译一次，模型越快字幕出得越早。想要更好的译文可以换成别的模型（清空则跟随 1. 里的主模型），页面上会显示一小时大约花多少。
 4. **刷新已经打开的 YouTube 标签页**（扩展安装或更新后都要刷新，字幕脚本才会生效）。
@@ -480,6 +480,9 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 | "语音转写模型「…」不存在…" | 转写模型名写错，或你的 OpenAI 账户无权使用 | 设置页 **12.** 改回 `gpt-transcribe` |
 | 播放器左上角提示"第二行未翻译：…" | 翻译那一步失败（例如对应提供商的 Key 没填、模型名不对、服务繁忙）；原文照常显示 | 按提示处理；之后的句子会继续尝试翻译 |
 | 播放器左上角提示"点一下视频即可开始" | 页面还没有过任何点击，浏览器不允许处理声音 | 点一下视频即可 |
+| "OpenAI 账户预付额度已用完（credit_balance_exhausted）" | OpenAI API 的预付余额是 0（ChatGPT 会员不含 API 额度）。OpenAI 对这种情况也返回 HTTP 429，以前被笼统显示成"请求过于频繁或额度不足" | 到 platform.openai.com → Settings → Billing 充值，几分钟后生效；然后在侧边栏 **字幕** 页点 **为这个视频生成字幕** 立即重试（不点的话 5 分钟后自动再试一次） |
+| "OpenAI 账户组织 / 项目达到了花费上限"、"…月度用量上限"（`organization_spend_limit_exceeded` / `project_spend_limit_exceeded` / `organization_usage_limit_exceeded`） | 达到了你在 OpenAI 设的花费上限，或 OpenAI 分配的用量上限 | 到 platform.openai.com → Settings → Limits（项目上限在该项目的设置里）调高；同上重试 |
+| "OpenAI 限流：请求太快（slow_down / rate_limit_exceeded）…（N 秒后自动继续）" | 请求太快（`slow_down` 常见于刚开始时请求量突然上升），或同一把 Key 还在被别的程序使用 | 不用操作：TubeMuse 按 OpenAI 给的等待时间暂停，期间不发请求（被拒的请求也算进每分钟上限），到点自动继续；跳过的句子拖回去重看时会补上。经常出现的话，给字幕单独建一把 Key |
 | "识别跟不上播放，跳过了一段" | 网络慢，或倍速太高、同时在途的识别请求超过 4 个 | 降低倍速；被跳过的那段拖回去重看时会补上 |
 | "读不到这个视频的音频（可能是受版权保护的视频）" | 付费电影等受版权保护（DRM）的视频，浏览器不允许读取声音 | 这类视频没法生成字幕 |
 | 出现了提醒横幅但判定不对 | 某些视频被误判成了娱乐 | 在 **记录** 页纠正这些视频；把兴趣簇的 **倾向** 设对 |

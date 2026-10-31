@@ -140,7 +140,7 @@ export async function runScheduledJobs(ctx: AppContext): Promise<JobsResult> {
           await recordFailure(ctx, `daily:${j.day}`, e);
           result.failed.push(j.day);
           const kind = e instanceof AppError ? e.kind : '';
-          if (kind === 'llm_key' || kind === 'network' || kind === 'llm') llmBroken = true;
+          if (kind === 'llm_key' || kind === 'llm_quota' || kind === 'llm_rate' || kind === 'network' || kind === 'llm') llmBroken = true;
         }
       }
     }

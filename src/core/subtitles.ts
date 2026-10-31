@@ -26,9 +26,15 @@ export type SubtitleUp =
 export type SubtitleDown =
   | { type: 'track'; videoId: string; cues: SubtitleCue[] }
   | { type: 'cue'; videoId: string; seq: number; cue: SubtitleCue; stage: 'source' | 'translated' }
-  | { type: 'error'; videoId: string; seq?: number; message: string; hint?: string; fatal: boolean }
+  | { type: 'error'; videoId: string; seq?: number; message: string; hint?: string; fatal: boolean; retryAfterMs?: number }
   /** 这一段处理完了（无论成败、是否已有字幕） */
   | { type: 'done'; videoId: string; seq: number };
+
+/** 被限流后等多久：服务方说了就照办；没说就从 backoffBaseMs 起每次翻倍，最多 backoffMaxMs */
+export function backoffMs(failures: number, retryAfterMs?: number): number {
+  if (retryAfterMs !== undefined) return retryAfterMs;
+  return Math.min(SUBTITLES.backoffMaxMs, SUBTITLES.backoffBaseMs * 2 ** Math.max(0, failures - 1));
+}
 
 /** 内容脚本报给侧边栏的状态 */
 export interface SubtitleTabState {

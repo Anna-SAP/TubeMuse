@@ -689,6 +689,43 @@ try {
   check(((await statusChip.textContent()) ?? '').includes('已停止'), `播放器里用人话说明：${(await statusChip.textContent())?.slice(0, 60)}…`);
   check(((await panel.getByTestId('subtitle-tab').textContent()) ?? '').includes('已到上限'), '侧边栏同步显示停止原因与恢复方法');
   await sub.screenshot({ path: join(shots, '20-subtitle-budget.png') });
+
+  // OpenAI 的 429 有两类：额度 / 账单（重试没用，要停下并说清楚）与限流（按 Retry-After 暂停后自动继续）
+  const setFault = (/** @type {string} */ q) => fetch(`${MOCK}/e2e/transcribe-mode?${q}`);
+  const playFresh = async (/** @type {string} */ id) => {
+    await sub.goto(`${MOCK}/watch?v=${id}`);
+    await sub.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+    await sub.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  };
+  await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.remove('subtitleLedger'));
+
+  console.log('\n[自动字幕：OpenAI 预付额度用完（429 credit_balance_exhausted）→ 停下并说清楚原因]');
+  await setFault('mode=quota');
+  const beforeQuota = transcribeReqs().length;
+  await playFresh('subNoCC00004');
+  await statusChip.filter({ hasText: 'credit_balance_exhausted' }).waitFor({ timeout: 15000 });
+  await sub.waitForTimeout(4000);
+  const quota429Text = (await statusChip.textContent()) ?? '';
+  check(quota429Text.includes('已停止') && quota429Text.includes('预付额度已用完') && quota429Text.includes('Billing'), `播放器里说清是哪一种、去哪里处理：${quota429Text.slice(0, 70)}…`);
+  check(!quota429Text.includes('请求过于频繁'), '不再显示含糊的"请求过于频繁或额度不足"');
+  check(transcribeReqs().length - beforeQuota === 1, `额度问题重试没用：只发了 1 个请求就停下（实际 ${transcribeReqs().length - beforeQuota} 个）`);
+  await sub.screenshot({ path: join(shots, '21-subtitle-quota.png') });
+
+  console.log('\n[自动字幕：被限流（429 slow_down + Retry-After）→ 暂停、倒计时、到点自动继续]');
+  await setFault('mode=slowdown&times=1&retryAfter=3');
+  const beforeRate = transcribeReqs().length;
+  await playFresh('subNoCC00005');
+  await statusChip.filter({ hasText: '秒后自动继续' }).waitFor({ timeout: 15000 });
+  const rateText = (await statusChip.textContent()) ?? '';
+  const afterFirst429 = transcribeReqs().length;
+  await sub.waitForTimeout(1500);
+  check(rateText.includes('slow_down') && /\d+ 秒后自动继续/.test(rateText), `播放器里显示限流原因与倒计时：${rateText.slice(0, 60)}…`);
+  check(transcribeReqs().length === afterFirst429, '暂停期间不再发请求（被拒的请求也计入每分钟上限）');
+  await trLine.filter({ hasText: /Where was I\? \(\d+\)/ }).waitFor({ timeout: 15000 });
+  check(transcribeReqs().length > afterFirst429, `暂停结束后自动继续出字幕（之后又识别了 ${transcribeReqs().length - afterFirst429} 段）`);
+  check(afterFirst429 - beforeRate === 1, '只有第一次被限流的请求失败');
+  await sub.screenshot({ path: join(shots, '22-subtitle-rate-limit.png') });
+  await setFault('mode=ok');
   await sub.close();
   await panel.bringToFront();
 
