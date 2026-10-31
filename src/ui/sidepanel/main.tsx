@@ -3,7 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import type { AuthStatus } from '../../services/auth';
 import { stores } from '../../services/repo';
 import type { AppError } from '../../services/errors';
-import { appCtx, asAppError, useQuota, useStore, useXSpend } from '../shared/app';
+import { appCtx, asAppError, useQuota, useStore, useSubtitleSpend, useXSpend } from '../shared/app';
 import { ErrorBox, Notice, QuotaMeter, QuotaWarning } from '../shared/components';
 import { ChangesView } from './ChangesView';
 import { FindView } from './FindView';
@@ -11,10 +11,11 @@ import { ProfileView } from './ProfileView';
 import { RecordsView } from './RecordsView';
 import { DiscoverView } from './DiscoverView';
 import { DoubanView } from './DoubanView';
+import { SubtitlesView } from './SubtitlesView';
 import { ReminderBanner } from './ReminderBanner';
 import { runScheduledJobs } from '../../services/summary-service';
 
-type Tab = 'find' | 'discover' | 'douban' | 'records' | 'profile' | 'changes';
+type Tab = 'find' | 'discover' | 'douban' | 'subtitles' | 'records' | 'profile' | 'changes';
 
 function SetupBanner() {
   const ctx = appCtx();
@@ -75,6 +76,7 @@ function App() {
   const [prefill, setPrefill] = useState<{ text: string; n: number; autoSubmit?: boolean }>();
   const quota = useQuota();
   const x = useXSpend();
+  const sub = useSubtitleSpend();
   // 打开侧边栏时顺带跑一次例行任务（补元数据、补算总结、评估提醒）；与后台互斥，不会重复执行
   useEffect(() => {
     void runScheduledJobs(appCtx()).catch(() => undefined);
@@ -86,7 +88,7 @@ function App() {
           <img src="icons/icon-32.png" alt="" width={18} height={18} />
           TubeMuse
         </div>
-        <QuotaMeter snap={quota} x={x} />
+        <QuotaMeter snap={quota} x={x} sub={sub} />
         <button class="icon-btn" title="设置" onClick={() => chrome.runtime.openOptionsPage()}>
           ⚙
         </button>
@@ -105,6 +107,7 @@ function App() {
             ['find', '找片'],
             ['discover', '发现'],
             ['douban', '豆瓣'],
+            ['subtitles', '字幕'],
             ['records', '记录'],
             ['profile', '画像'],
             ['changes', '改进记录'],
@@ -128,6 +131,7 @@ function App() {
           />
         )}
         {tab === 'douban' && <DoubanView />}
+        {tab === 'subtitles' && <SubtitlesView />}
         {tab === 'records' && <RecordsView />}
         {tab === 'profile' && <ProfileView />}
         {tab === 'changes' && <ChangesView />}

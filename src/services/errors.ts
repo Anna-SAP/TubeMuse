@@ -16,6 +16,8 @@ export type ErrorKind =
   | 'x_budget' // 达到 X 每日预算或 X 账户余额/花费上限
   | 'x'
   | 'douban' // 豆瓣 RSS 读取失败
+  | 'subtitles' // 自动字幕（转写 / 翻译 / 采集）
+  | 'subtitles_budget' // 达到每日字幕预算
   | 'network'
   | 'input'
   | 'internal';

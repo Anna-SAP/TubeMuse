@@ -132,7 +132,105 @@ export const DEFAULT_SETTINGS = {
     followActiveTab: true,
     cacheMinutes: 30,
   },
+  subtitles: {
+    enabled: true,
+    /** 播放器显示"字幕不可用"时自动开始（关掉后只在你手动开启时生成） */
+    autoStart: true,
+    /** 每日字幕花费上限（美元，按本地日计）：语音转写 + 翻译 */
+    dailyBudgetUsd: 1,
+    /** OpenAI 语音转写模型（分段上传） */
+    asrModel: 'gpt-transcribe',
+    translate: true,
+    /** 第二行译成的语言 */
+    targetLang: 'zh-CN' as SubtitleLang,
+    /** 原文已经是目标语言时，第二行改译成的语言 */
+    altTargetLang: 'en' as SubtitleLang,
+    /** 字幕翻译用的模型：默认用更快更省的小模型（用户 2026-11-01 确认）；留空 = 用"1. 大模型"里当前提供商的模型 */
+    translationModels: { anthropic: 'claude-haiku-5-5', openai: 'gpt-6-luna' },
+    showSource: true,
+    /** 字号倍数 */
+    fontScale: 1,
+  },
 };
+
+/** 双语字幕可选的翻译目标语言（代码 → 显示名） */
+export const SUBTITLE_LANGS = {
+  'zh-CN': '简体中文',
+  'zh-TW': '繁體中文',
+  en: 'English',
+  ja: '日本語',
+  ko: '한국어',
+} as const;
+export type SubtitleLang = keyof typeof SUBTITLE_LANGS;
+
+/** 自动字幕的内部参数 */
+export const SUBTITLES = {
+  /** 采样率：AudioContext 直接重采样到 16 kHz 单声道，上传 16-bit WAV */
+  sampleRate: 16_000,
+  /** VAD 帧长（秒） */
+  frameSec: 0.03,
+  /** 帧能量（RMS）高于该值且高于底噪 noiseFactor 倍才算有人声 */
+  minSpeechRms: 0.008,
+  noiseFactor: 2.5,
+  /** 说话前保留的一小段（秒），避免切掉第一个字 */
+  prerollSec: 0.2,
+  /** 停顿这么久算一句话说完 */
+  pauseSec: 0.45,
+  /** 片段短于该秒数时，再等一会儿看能否和下一句合并 */
+  minSegmentSec: 1.5,
+  /** 停顿超过该秒数时，短片段也直接上传 */
+  longPauseSec: 1.0,
+  /** 片段最长秒数：连续说话时在最安静处切开（决定第一次观看时字幕最多晚多久） */
+  maxSegmentSec: 7,
+  /** 片段里人声少于该秒数视为咳嗽/杂音，不上传、不花钱 */
+  minSpeechSec: 0.3,
+  /** 播放进度与音频节奏偏差超过该秒数，视为拖动/跳转：丢弃当前片段 */
+  seekToleranceSec: 1.2,
+  /** 新片段与已有字幕重叠超过该比例就不再识别（回看不重复花钱） */
+  coveredRatio: 0.5,
+  /** 字幕结束后再停留多久 */
+  lingerSec: 0.8,
+  /** 第一次观看时字幕晚于语音出现：晚到的字幕至少显示这么久 */
+  liveMinShowSec: 2.5,
+  /** 晚到超过该秒数的字幕不再即时显示（回看时仍按时间轴显示） */
+  liveMaxLagSec: 20,
+  /** 发给转写模型的前文（提高连贯性）最多多少字 */
+  asrPromptChars: 200,
+  /** 翻译时附带的前几句原文（只作上下文） */
+  translationContextCues: 3,
+  cueMaxChars: 400,
+  /** 同时在途的识别请求上限（超过时跳过并提示） */
+  maxInFlight: 4,
+  /** 本地最多保留多少个视频的字幕 */
+  maxVideosKept: 100,
+  /** 翻译一句的预估 token：预算护栏按此预留（偏保守），实际按返回的用量记账 */
+  translationEstimate: { inputTokens: 700, outputTokens: 400 },
+  /** 设置页"一小时约花多少"的估算：一句的典型用量、平均每几秒一句 */
+  translationTypical: { inputTokens: 350, outputTokens: 150, secondsPerCue: 5 },
+} as const;
+
+/** 语音转写单价（美元/分钟；2026-11 OpenAI 定价页）。没列出的模型按最贵的实时转写价保守估算。 */
+export const ASR_PRICES_PER_MINUTE: Record<string, number> = {
+  'gpt-transcribe': 0.0045,
+  'gpt-live-transcribe': 0.017,
+  'gpt-4o-transcribe': 0.006,
+  'gpt-4o-mini-transcribe': 0.003,
+  'whisper-1': 0.006,
+};
+export const ASR_UNKNOWN_PRICE_PER_MINUTE = 0.017;
+
+/** 文本模型单价（美元/百万 token，输入/输出；2026-11 官方定价页）。没列出的模型按最贵的一档保守估算。 */
+export const LLM_PRICES_PER_MTOK: Record<string, { input: number; output: number }> = {
+  'claude-fable-5-1': { input: 10, output: 50 },
+  'claude-opus-5-5': { input: 4, output: 20 },
+  'claude-sonnet-5-5': { input: 2, output: 10 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
+  'gpt-6-astra': { input: 10, output: 50 },
+  'gpt-6.1-sol': { input: 2, output: 10 },
+  'gpt-6.1-terra': { input: 1, output: 5 },
+  'gpt-6-luna': { input: 0.1, output: 0.5 },
+};
+export const LLM_UNKNOWN_PRICE_PER_MTOK = { input: 10, output: 50 } as const;
 
 /** X API（2026-10 官方定价页；按返回的资源条数计费，同一资源在同一 UTC 日内只计一次） */
 export const X_API = {
@@ -306,6 +404,8 @@ export const STORAGE_LIMITS = {
 export const LLM_LIMITS = {
   maxTokens: 16_000,
   timeoutMs: 90_000,
+  /** 一段字幕音频的转写请求最长等待（太久的字幕已经没意义） */
+  transcribeTimeoutMs: 30_000,
   maxRetries: 1,
   /** 发给 LLM 做聚类的条目上限（数据最小化 + 控制 token） */
   clusterMaxChannels: 300,

@@ -1,0 +1,534 @@
+// 自动字幕：人声切段、WAV、原生字幕判定、翻译目标、显示时机、回看去重、花费记账，以及后台转写 → 翻译 → 记账的完整流程（mock OpenAI / Anthropic）。
+
+import { describe, expect, it } from 'vitest';
+import { DEFAULT_SETTINGS, SUBTITLES } from '../../src/config/defaults';
+import { ENDPOINTS } from '../../src/config/endpoints';
+import {
+  DEFAULT_SEGMENTER,
+  Segmenter,
+  base64ToBytes,
+  bytesToBase64,
+  encodeWav,
+  formatAudioDuration,
+  formatUsd,
+  hourlyEstimateUsd,
+  isCovered,
+  nativeCaptionsState,
+  pickCue,
+  putCue,
+  tracksToDrop,
+  recordAsr,
+  recordTranslation,
+  subtitleSnapshot,
+  translationTarget,
+  wavInfo,
+  type AudioSegment,
+  type SubtitleDown,
+} from '../../src/core/subtitles';
+import type { SubtitleCue } from '../../src/core/types';
+import type { AuthProvider } from '../../src/services/auth';
+import type { AppContext } from '../../src/services/context';
+import { AppError } from '../../src/services/errors';
+import { mergeSettings, stores, subtitleTrackStore } from '../../src/services/repo';
+import { memoryKV, memoryLocker } from '../../src/services/storage';
+import { subtitleSession, subtitleSpend, subtitleTranslationModel, transcribeSegment, translateCue, validateSegment } from '../../src/services/subtitle-service';
+
+const RATE = SUBTITLES.sampleRate;
+const NOW = Date.parse('2026-11-01T04:00:00Z'); // 北京时间 12:00
+const OPENAI_KEY = 'sk-proj-subtitleTestKey0123456789abcdefghijklmnop';
+const ANTHROPIC_KEY = 'sk-ant-subtitle-test-0123456789abcdefghijklmn';
+
+/** 一段"人声"（带谐波的正弦，能量明显高于阈值）或静音 */
+function tone(sec: number, amp = 0.25): Float32Array {
+  const n = Math.round(sec * RATE);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = amp * (Math.sin((2 * Math.PI * 220 * i) / RATE) * 0.7 + Math.sin((2 * Math.PI * 660 * i) / RATE) * 0.3);
+  return out;
+}
+const silence = (sec: number) => new Float32Array(Math.round(sec * RATE));
+
+/** 像 ScriptProcessor 一样按 4096 个样本一块喂进去；videoStart 是第一块开始时的视频时间 */
+function feed(seg: Segmenter, parts: Float32Array[], videoStart = 0, rate = 1, block = 4096): AudioSegment[] {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const all = new Float32Array(total);
+  let at = 0;
+  for (const p of parts) {
+    all.set(p, at);
+    at += p.length;
+  }
+  const out: AudioSegment[] = [];
+  for (let i = 0; i < all.length; i += block) {
+    const chunk = all.slice(i, i + block);
+    out.push(...seg.push({ samples: chunk, videoTime: videoStart + ((i + chunk.length) / RATE) * rate, rate }));
+  }
+  return out;
+}
+
+describe('人声切段', () => {
+  it('说完一句（停顿）就交出去：时间是视频时间，带一小段前导，末尾只留一小段静音', () => {
+    const segs = feed(new Segmenter(), [silence(1), tone(2), silence(1)]);
+    expect(segs).toHaveLength(1);
+    const s = segs[0]!;
+    expect(s.start).toBeGreaterThan(0.7);
+    expect(s.start).toBeLessThan(1.01);
+    expect(s.end).toBeGreaterThan(2.95);
+    expect(s.end).toBeLessThan(3.35);
+    expect(s.speechSec).toBeGreaterThan(1.9);
+    expect(s.samples.length / RATE).toBeCloseTo(s.end - s.start, 1);
+  });
+
+  it('咳嗽一样的短声音不上传（不花钱）', () => {
+    expect(feed(new Segmenter(), [silence(0.5), tone(0.12), silence(1.5)])).toHaveLength(0);
+  });
+
+  it('两小句之间停顿很短时合并成一段，减少碎片', () => {
+    const segs = feed(new Segmenter(), [silence(0.3), tone(0.6), silence(0.5), tone(0.8), silence(1.2)]);
+    expect(segs).toHaveLength(1);
+    expect(segs[0]!.end - segs[0]!.start).toBeGreaterThan(1.8);
+  });
+
+  it('一直不停顿：每段不超过上限，在最安静处切开，几乎不丢音频', () => {
+    // 20 秒连续说话，中间音量有起伏
+    const parts: Float32Array[] = [];
+    for (let i = 0; i < 20; i++) parts.push(tone(1, i % 3 === 2 ? 0.05 : 0.3));
+    const segs = feed(new Segmenter(), [...parts, silence(1)]);
+    expect(segs.length).toBeGreaterThanOrEqual(3);
+    for (const s of segs) expect(s.samples.length / RATE).toBeLessThanOrEqual(SUBTITLES.maxSegmentSec + 0.05);
+    const covered = segs.reduce((n, s) => n + (s.end - s.start), 0);
+    expect(covered).toBeGreaterThan(19.5);
+    for (let i = 1; i < segs.length; i++) expect(segs[i]!.start).toBeGreaterThanOrEqual(segs[i - 1]!.end - 0.05);
+  });
+
+  it('2 倍速播放：1 秒音频对应 2 秒视频', () => {
+    const segs = feed(new Segmenter(), [silence(1), tone(2), silence(1)], 10, 2);
+    expect(segs).toHaveLength(1);
+    expect(segs[0]!.start).toBeGreaterThan(11.5);
+    expect(segs[0]!.end).toBeGreaterThan(15.9);
+    expect(segs[0]!.end).toBeLessThan(16.7);
+  });
+
+  it('拖动进度条：先交出跳转前说的那部分，再从新位置重新开始', () => {
+    const seg = new Segmenter();
+    const before = feed(seg, [silence(0.5), tone(1.5)], 0);
+    expect(before).toHaveLength(0);
+    // 跳到 100 秒处继续说话
+    const after = feed(seg, [tone(2), silence(1)], 100);
+    expect(after).toHaveLength(2);
+    expect(after[0]!.end).toBeLessThan(2.1);
+    expect(after[1]!.start).toBeGreaterThanOrEqual(99.9);
+  });
+
+  it('暂停、换视频时 flush 交出没说完的一句', () => {
+    const seg = new Segmenter();
+    expect(feed(seg, [tone(1.2)])).toHaveLength(0);
+    const out = seg.flush();
+    expect(out).toHaveLength(1);
+    expect(seg.flush()).toHaveLength(0);
+  });
+
+  it('默认参数来自配置', () => {
+    expect(DEFAULT_SEGMENTER.maxSegmentSec).toBe(SUBTITLES.maxSegmentSec);
+    expect(DEFAULT_SEGMENTER.sampleRate).toBe(16_000);
+  });
+});
+
+describe('WAV 与传输', () => {
+  it('编码出 16 kHz 单声道 16-bit WAV，能读回时长；base64 往返无损', () => {
+    const wav = encodeWav(tone(1.5), RATE);
+    expect(wavInfo(wav)).toEqual({ sampleRate: RATE, durationSec: 1.5 });
+    const back = base64ToBytes(bytesToBase64(wav));
+    expect(back).toEqual(wav);
+  });
+
+  it('拒收不是本扩展编码的数据', () => {
+    expect(wavInfo(new Uint8Array(10))).toBeUndefined();
+    const wav = encodeWav(tone(0.5), RATE);
+    expect(wavInfo(wav.slice(0, wav.length - 2))).toBeUndefined();
+    const fake = new TextEncoder().encode('RIFF....WAVEfmt ' + 'x'.repeat(40));
+    expect(wavInfo(fake)).toBeUndefined();
+  });
+});
+
+describe('原生字幕判定（2026-11 实测的按钮属性，与界面语言无关）', () => {
+  it('没有字幕：提示文字与按钮名完全相同', () => {
+    expect(nativeCaptionsState({ tooltip: 'Subtitles/closed captions unavailable', title: 'Subtitles/closed captions unavailable', pressed: 'false' })).toBe('unavailable');
+    expect(nativeCaptionsState({ tooltip: '字幕不可用', title: '字幕不可用', pressed: 'false' })).toBe('unavailable');
+  });
+  it('有字幕：提示文字带快捷键后缀，或正在显示字幕', () => {
+    expect(nativeCaptionsState({ tooltip: 'Subtitles/closed captions (c)', title: 'Subtitles/closed captions', pressed: 'false' })).toBe('available');
+    expect(nativeCaptionsState({ tooltip: '字幕 (c)', title: '字幕', pressed: 'false' })).toBe('available');
+    // 实测：有字幕的视频上 aria-label 可能残留 "unavailable"，以提示文字与 aria-pressed 为准
+    expect(nativeCaptionsState({ tooltip: 'Subtitles/closed captions (c)', title: 'Subtitles/closed captions', pressed: 'true' })).toBe('available');
+  });
+  it('判断不了就不自动开启', () => {
+    expect(nativeCaptionsState(null)).toBe('unknown');
+    expect(nativeCaptionsState({ tooltip: null, title: 'x' })).toBe('unknown');
+    expect(nativeCaptionsState({ tooltip: 'A', title: 'B' })).toBe('unknown');
+  });
+});
+
+describe('双语组合：中文视频配英文，其他配简体中文', () => {
+  const { targetLang, altTargetLang } = DEFAULT_SETTINGS.subtitles;
+  it('按转写模型给的语言判断', () => {
+    expect(translationTarget('zh', '大家好', targetLang, altTargetLang)).toBe('en');
+    expect(translationTarget('zh-TW', '大家好', targetLang, altTargetLang)).toBe('en');
+    expect(translationTarget('yue', '大家好', targetLang, altTargetLang)).toBe('en');
+    expect(translationTarget('en', 'hello', targetLang, altTargetLang)).toBe('zh-CN');
+    expect(translationTarget('ja', 'こんにちは', targetLang, altTargetLang)).toBe('zh-CN');
+  });
+  it('没给语言时按文字推断', () => {
+    expect(translationTarget(undefined, '我说到哪里了', targetLang, altTargetLang)).toBe('en');
+    expect(translationTarget(undefined, 'where was I', targetLang, altTargetLang)).toBe('zh-CN');
+  });
+  it('两种目标语言都和原文一样：不翻译', () => {
+    expect(translationTarget('zh', '你好', 'zh-CN', 'zh-TW')).toBeUndefined();
+  });
+});
+
+const cue = (id: string, start: number, end: number, text = `句子${id}`): SubtitleCue => ({ id, start, end, text, createdAt: NOW });
+
+describe('显示时机', () => {
+  const cues = [cue('a', 1, 3), cue('b', 4, 6), cue('c', 6.2, 8, ''), cue('d', 9, 11)];
+  it('回看：按时间轴精确显示，句尾停留一小会儿但不压住下一句', () => {
+    expect(pickCue(cues, 2, undefined)?.cue.id).toBe('a');
+    expect(pickCue(cues, 3.5, undefined)?.cue.id).toBe('a');
+    expect(pickCue(cues, 4.1, undefined)?.cue.id).toBe('b');
+    expect(pickCue(cues, 0.5, undefined)).toBeUndefined();
+  });
+  it('没有人声的段（空文字）不显示', () => {
+    expect(pickCue(cues, 7.5, undefined)).toBeUndefined();
+  });
+  it('第一次观看：字幕晚到也会立刻显示一会儿，并标为"晚到"', () => {
+    const live = { id: 'b', arrivedAt: 9.5 };
+    const v = pickCue([cue('b', 4, 6)], 10, live);
+    expect(v).toEqual({ cue: expect.objectContaining({ id: 'b' }), late: true });
+    expect(pickCue([cue('b', 4, 6)], 9.5 + SUBTITLES.liveMinShowSec + 0.1, live)).toBeUndefined();
+  });
+  it('晚太多（例如后台标签页积压）就不即时显示了', () => {
+    expect(pickCue([cue('b', 4, 6)], 40, { id: 'b', arrivedAt: 39.5 })).toBeUndefined();
+  });
+});
+
+describe('回看不重复花钱', () => {
+  it('新片段与已有字幕重叠过半就跳过', () => {
+    const cues = [cue('a', 10, 15), cue('b', 15.2, 20)];
+    expect(isCovered(cues, 11, 14)).toBe(true);
+    expect(isCovered(cues, 14, 19)).toBe(true);
+    expect(isCovered(cues, 19, 26)).toBe(false);
+    expect(isCovered([], 1, 2)).toBe(false);
+  });
+  it('字幕按开始时间有序存放；最多保留 N 个视频', () => {
+    let t = putCue(null, 'vidA00000001', cue('2', 5, 6), 'gpt-transcribe', NOW);
+    t = putCue(t, 'vidA00000001', cue('1', 1, 2), 'gpt-transcribe', NOW + 1);
+    t = putCue(t, 'vidA00000001', { ...cue('2', 5, 6), translation: 'two' }, 'gpt-transcribe', NOW + 2);
+    expect(t.cues.map((c) => c.id)).toEqual(['1', '2']);
+    expect(t.cues[1]!.translation).toBe('two');
+    expect(t.updatedAt).toBe(NOW + 2);
+    expect(tracksToDrop({ a: 3, b: 1, c: 2 }, 2)).toEqual(['b']);
+    expect(tracksToDrop({ a: 3 }, 2)).toEqual([]);
+  });
+});
+
+describe('花费记账', () => {
+  it('转写按分钟计价，翻译按 token 计价；预留的花费也算进剩余预算', () => {
+    let l = recordAsr({ days: {} }, '2026-11-01', 'gpt-transcribe', 60);
+    l = recordTranslation(l, '2026-11-01', 'claude-haiku-5-5', 1_000_000, 0);
+    const snap = subtitleSnapshot(l, 1, 0.8, '2026-11-01', NOW, 0.5);
+    expect(snap.spentUsd).toBeCloseTo(0.0045 + 0.1, 6);
+    expect(snap.remainingUsd).toBeCloseTo(1 - 0.1045 - 0.5, 6);
+    expect(snap.asrSeconds).toBe(60);
+    expect(snap.translations).toBe(1);
+    expect(snap.estimatedPrice).toBe(false);
+  });
+  it('不在价目表里的模型按最贵一档保守估算，并注明', () => {
+    const l = recordTranslation({ days: {} }, '2026-11-01', 'some-new-model', 1_000_000, 0);
+    const snap = subtitleSnapshot(l, 100, 0.8, '2026-11-01', NOW);
+    expect(snap.spentUsd).toBe(10);
+    expect(snap.estimatedPrice).toBe(true);
+  });
+  it('只保留最近 7 天', () => {
+    let l = { days: {} };
+    for (let d = 1; d <= 9; d++) l = recordAsr(l, `2026-11-0${d}`, 'gpt-transcribe', 1);
+    expect(Object.keys(l.days)).toHaveLength(7);
+  });
+  it('一小时估算：快模型远比默认主模型便宜', () => {
+    expect(hourlyEstimateUsd('gpt-transcribe', 'claude-opus-5-5')).toBeGreaterThan(hourlyEstimateUsd('gpt-transcribe', 'claude-haiku-5-5') * 5);
+    expect(hourlyEstimateUsd('gpt-transcribe', undefined)).toBeCloseTo(0.27, 6);
+  });
+  it('小额花费与时长的显示', () => {
+    expect(formatUsd(0.00016)).toBe('$0.0002');
+    expect(formatUsd(0)).toBe('$0.000');
+    expect(formatUsd(0.25)).toBe('$0.250');
+    expect(formatAudioDuration(8)).toBe('8 秒');
+    expect(formatAudioDuration(90)).toBe('1.5 分钟');
+  });
+});
+
+// ── 后台流程 ──
+
+interface Recorded {
+  url: string;
+  headers: Record<string, string>;
+  form?: Record<string, string>;
+  file?: { name: string; type: string; size: number };
+  body?: string;
+}
+
+function makeCtx(opts: {
+  transcribe?: (form: Record<string, string>) => { status?: number; body: unknown };
+  translate?: (system: string, user: string) => { status?: number; body?: unknown };
+  secrets?: Record<string, string>;
+  settings?: (s: ReturnType<typeof mergeSettings>) => ReturnType<typeof mergeSettings>;
+}) {
+  const requests: Recorded[] = [];
+  const http: typeof fetch = async (input, init) => {
+    const req = input instanceof Request ? input : new Request(String(input), init);
+    const headers: Record<string, string> = {};
+    req.headers.forEach((v, k) => (headers[k] = v));
+    const reply = (status: number, data: unknown) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
+    if (req.url === `${ENDPOINTS.openai}/audio/transcriptions`) {
+      const fd = await req.formData();
+      const form: Record<string, string> = {};
+      let file: Recorded['file'];
+      fd.forEach((v, k) => {
+        if (typeof v === 'string') form[k] = v;
+        else file = { name: v.name, type: v.type, size: v.size };
+      });
+      requests.push({ url: req.url, headers, form, ...(file ? { file } : {}) });
+      const r = opts.transcribe?.(form) ?? { body: { text: '我说到哪里了', languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 4 } } };
+      return reply(r.status ?? 200, r.body);
+    }
+    const body = await req.text();
+    requests.push({ url: req.url, headers, body });
+    if (req.url.startsWith(ENDPOINTS.anthropic)) {
+      const b = JSON.parse(body);
+      const r = opts.translate?.(String(b.system), String(b.messages?.[0]?.content)) ?? { body: { translation: 'Where was I?' } };
+      if ((r.status ?? 200) !== 200) return reply(r.status!, { type: 'error', error: { type: 'api_error', message: 'overloaded' } });
+      return reply(200, {
+        id: 'msg_sub',
+        type: 'message',
+        role: 'assistant',
+        model: b.model,
+        content: [{ type: 'text', text: JSON.stringify(r.body) }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 300, output_tokens: 40 },
+      });
+    }
+    throw new Error(`未预期的请求 ${req.url}`);
+  };
+  const kv = memoryKV();
+  const auth = { status: async () => 'connected', getToken: async () => 'tok', disconnect: async () => undefined } as unknown as AuthProvider;
+  const ctx: AppContext = { kv, locker: memoryLocker(), http, now: () => NOW, auth, endpoints: ENDPOINTS, timeZone: 'Asia/Shanghai' };
+  const init = async () => {
+    await stores.secrets.write(kv, { openaiApiKey: OPENAI_KEY, anthropicApiKey: ANTHROPIC_KEY, ...(opts.secrets ?? {}) });
+    const s = mergeSettings(undefined);
+    await stores.settings.write(kv, opts.settings ? opts.settings(s) : s);
+  };
+  return { ctx, requests, init };
+}
+
+const VID = '3wP2VCoz3KM';
+const segment = (start = 12, sec = 3) => ({ videoId: VID, start, end: start + sec, wav: encodeWav(tone(sec), RATE) });
+
+describe('后台：转写 → 存字幕 → 翻译 → 记账', () => {
+  it('音频只发往 OpenAI 转写接口：带模型名与前文，Key 只在请求头里', async () => {
+    const t = makeCtx({});
+    await t.init();
+    const first = await transcribeSegment(t.ctx, segment(12));
+    expect(first).toMatchObject({ id: `${VID}:12000`, start: 12, end: 15, text: '我说到哪里了', lang: 'zh' });
+    await transcribeSegment(t.ctx, segment(16));
+    expect(t.requests).toHaveLength(2);
+    const [r1, r2] = t.requests;
+    expect(r1!.form).toEqual({ model: 'gpt-transcribe', response_format: 'json' });
+    expect(r1!.file).toMatchObject({ name: 'segment.wav', type: 'audio/wav' });
+    expect(r1!.headers.authorization).toBe(`Bearer ${OPENAI_KEY}`);
+    // 第二段带上前文（提高连贯性），不带视频 ID
+    expect(r2!.form!.prompt).toBe('我说到哪里了');
+    expect(JSON.stringify(t.requests)).not.toContain(VID);
+    const track = (await subtitleTrackStore(VID).read(t.ctx.kv))!;
+    expect(track.cues.map((c) => c.start)).toEqual([12, 16]);
+    // 按服务方报告的计费时长记账：两段各 4 秒
+    const spend = await subtitleSpend(t.ctx);
+    expect(spend.asrSeconds).toBe(8);
+    expect(spend.spentUsd).toBeCloseTo((8 / 60) * 0.0045, 6);
+  });
+
+  it('中文视频译成英文：只发这句与前几句的文字，默认用 claude-haiku-5-5，按返回用量记账', async () => {
+    const seen: { system: string; user: string }[] = [];
+    const t = makeCtx({
+      translate: (system, user) => {
+        seen.push({ system, user });
+        return { body: { translation: 'Where was I?' } };
+      },
+    });
+    await t.init();
+    const prev = await transcribeSegment(t.ctx, segment(2));
+    await translateCue(t.ctx, VID, prev!);
+    const c = await transcribeSegment(t.ctx, segment(12));
+    const out = await translateCue(t.ctx, VID, c!);
+    expect(out).toMatchObject({ translation: 'Where was I?', translationLang: 'en' });
+    expect(seen[1]!.system).toContain('English');
+    expect(seen[1]!.user).toContain('前文：\n- 我说到哪里了');
+    expect(seen[1]!.user).toContain('当前字幕：\n我说到哪里了');
+    const llmReq = t.requests.filter((r) => r.url.startsWith(ENDPOINTS.anthropic));
+    expect(JSON.parse(llmReq[0]!.body!).model).toBe('claude-haiku-5-5');
+    expect(llmReq[0]!.body).not.toContain(VID);
+    expect(llmReq[0]!.headers['x-api-key'] ?? llmReq[0]!.headers.authorization).toContain(ANTHROPIC_KEY);
+    const stored = (await subtitleTrackStore(VID).read(t.ctx.kv))!.cues.find((x) => x.id === c!.id)!;
+    expect(await stores.subtitleIndex.read(t.ctx.kv)).toEqual({ [VID]: NOW });
+    expect(stored.translation).toBe('Where was I?');
+    const ledger = await stores.subtitleLedger.read(t.ctx.kv);
+    const day = Object.values(ledger.days)[0]!;
+    expect(day.translations).toBe(2);
+    expect(day.inputTokens).toBe(600);
+    expect(day.translateUsd).toBeCloseTo(2 * ((300 * 0.1 + 40 * 0.5) / 1e6), 9);
+  });
+
+  it('没有填 OpenAI Key：说清楚为什么、怎么办，且不发任何请求', async () => {
+    const t = makeCtx({ secrets: { openaiApiKey: '' } });
+    await t.init();
+    await stores.secrets.write(t.ctx.kv, { anthropicApiKey: ANTHROPIC_KEY });
+    const err = await transcribeSegment(t.ctx, segment()).catch((e) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).kind).toBe('llm_key');
+    expect((err as AppError).message).toContain('Anthropic 没有语音转文字接口');
+    expect(t.requests).toHaveLength(0);
+  });
+
+  it('到每日预算立即停止：不发请求，告诉你已用多少、怎么恢复', async () => {
+    const t = makeCtx({ settings: (s) => ({ ...s, subtitles: { ...s.subtitles, dailyBudgetUsd: 0.05 } }) });
+    await t.init();
+    await stores.subtitleLedger.write(t.ctx.kv, recordAsr({ days: {} }, '2026-11-01', 'gpt-transcribe', 667)); // $0.0500，已到上限
+    const err = (await transcribeSegment(t.ctx, segment()).catch((e) => e)) as AppError;
+    expect(err.kind).toBe('subtitles_budget');
+    expect(err.message).toContain('$0.050');
+    expect(err.hint).toContain('0 点自动恢复');
+    expect(t.requests).toHaveLength(0);
+  });
+
+  it('并发时也守住预算：在途请求先预留', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const t = makeCtx({ settings: (s) => ({ ...s, subtitles: { ...s.subtitles, dailyBudgetUsd: 0.06, translate: false } }) });
+    await t.init();
+    // 第一段卡在转写途中时，第二段看到的剩余预算已扣掉第一段的预留
+    const slowHttp = t.ctx.http;
+    t.ctx.http = async (input, init) => {
+      await gate;
+      return slowHttp(input, init);
+    };
+    await stores.subtitleLedger.write(t.ctx.kv, recordAsr({ days: {} }, '2026-11-01', 'gpt-transcribe', 60 * 13)); // $0.0585，剩 $0.0015
+    const a = transcribeSegment(t.ctx, segment(1, 7)); // 预留约 $0.000525
+    await new Promise((r) => setTimeout(r, 0));
+    const snap = await subtitleSpend(t.ctx);
+    expect(snap.remainingUsd).toBeLessThan(0.0015);
+    release();
+    await a;
+  });
+
+  it('翻译失败不影响原文：原文照常保存，第二行写明原因（不含 Key）', async () => {
+    const t = makeCtx({ translate: () => ({ status: 401 }) });
+    await t.init();
+    const c = await transcribeSegment(t.ctx, segment());
+    const out = await translateCue(t.ctx, VID, c!);
+    expect(out.text).toBe('我说到哪里了');
+    expect(out.translation).toBeUndefined();
+    expect(out.translationError).toContain('Anthropic API Key 无效');
+    expect(out.translationError).not.toContain(ANTHROPIC_KEY);
+  });
+
+  it('这段已有字幕（回看）：不再识别、不花钱', async () => {
+    const t = makeCtx({});
+    await t.init();
+    await transcribeSegment(t.ctx, segment(12, 4));
+    expect(await transcribeSegment(t.ctx, segment(12.5, 3))).toBeUndefined();
+    expect(t.requests).toHaveLength(1);
+  });
+
+  it('只有音乐/杂音（转写为空）：记成空字幕，不翻译、不显示，回看时也不再花钱', async () => {
+    const t = makeCtx({ transcribe: () => ({ body: { text: '', languages: [] } }) });
+    await t.init();
+    const c = await transcribeSegment(t.ctx, segment(30));
+    expect(c!.text).toBe('');
+    expect(await translateCue(t.ctx, VID, c!)).toBe(c);
+    expect(t.requests.filter((r) => r.url.startsWith(ENDPOINTS.anthropic))).toHaveLength(0);
+    expect(await transcribeSegment(t.ctx, segment(30))).toBeUndefined();
+  });
+
+  it('拒收格式不对或过长的音频', () => {
+    expect(() => validateSegment({ videoId: VID, start: 0, end: 1, wav: new Uint8Array(50) })).toThrow(AppError);
+    expect(() => validateSegment({ videoId: 'bad id!', start: 0, end: 1, wav: encodeWav(tone(1), RATE) })).toThrow(AppError);
+    expect(() => validateSegment({ videoId: VID, start: 0, end: 30, wav: encodeWav(tone(SUBTITLES.maxSegmentSec + 2), RATE) })).toThrow(AppError);
+    expect(() => validateSegment({ videoId: VID, start: 0, end: 30, wav: encodeWav(tone(1), 44_100) })).toThrow(AppError);
+    expect(validateSegment({ videoId: VID, start: 0, end: 1, wav: encodeWav(tone(1), RATE) }).durationSec).toBe(1);
+  });
+});
+
+describe('字幕翻译模型', () => {
+  it('默认用更快更省的小模型，随"1. 大模型"的提供商切换', () => {
+    const s = mergeSettings(undefined);
+    expect(subtitleTranslationModel(s)).toEqual({ provider: 'anthropic', model: 'claude-haiku-5-5' });
+    expect(subtitleTranslationModel({ ...s, llm: { ...s.llm, provider: 'openai' } })).toEqual({ provider: 'openai', model: 'gpt-6-luna' });
+  });
+  it('清空 = 跟随主模型；填了别的就用它', () => {
+    const s = mergeSettings({ subtitles: { translationModels: { anthropic: '' } } });
+    expect(subtitleTranslationModel(s).model).toBe(s.llm.models.anthropic);
+    expect(s.subtitles.translationModels.openai).toBe('gpt-6-luna');
+    const t = mergeSettings({ subtitles: { translationModels: { anthropic: 'claude-sonnet-5-5' } } });
+    expect(subtitleTranslationModel(t).model).toBe('claude-sonnet-5-5');
+  });
+});
+
+describe('与内容脚本的会话', () => {
+  const up = (start: number) => ({ type: 'segment', videoId: VID, seq: Math.round(start), start, end: start + 2, audio: bytesToBase64(encodeWav(tone(2), RATE)) });
+
+  it('先回原文、再回译文，最后告知这一段处理完了', async () => {
+    const t = makeCtx({});
+    await t.init();
+    const sent: SubtitleDown[] = [];
+    const handle = subtitleSession(t.ctx, (m) => sent.push(m));
+    await handle(up(5));
+    expect(sent.map((m) => (m.type === 'cue' ? `cue:${m.stage}` : m.type))).toEqual(['cue:source', 'cue:translated', 'done']);
+    await handle({ type: 'hello', videoId: VID });
+    const track = sent.at(-1) as Extract<SubtitleDown, { type: 'track' }>;
+    expect(track.type).toBe('track');
+    expect(track.cues[0]!.translation).toBe('Where was I?');
+  });
+
+  it('没有 Key、预算用完是"致命"错误：内容脚本应停下；错误文字不含 Key', async () => {
+    const t = makeCtx({ transcribe: () => ({ status: 401, body: { error: { message: `Incorrect API key provided: ${OPENAI_KEY}`, type: 'invalid_request_error' } } }) });
+    await t.init();
+    const sent: SubtitleDown[] = [];
+    await subtitleSession(t.ctx, (m) => sent.push(m))(up(5));
+    const err = sent.find((m) => m.type === 'error') as Extract<SubtitleDown, { type: 'error' }>;
+    expect(err.fatal).toBe(true);
+    expect(err.message).toContain('OpenAI API Key 无效');
+    expect(JSON.stringify(sent)).not.toContain(OPENAI_KEY);
+  });
+
+  it('服务暂时不可用不是致命错误：跳过这一段，下一段照常', async () => {
+    let n = 0;
+    const t = makeCtx({ transcribe: () => (++n === 1 ? { status: 503, body: { error: { message: 'busy' } } } : { body: { text: '好', languages: [{ code: 'zh' }] } }) });
+    await t.init();
+    const sent: SubtitleDown[] = [];
+    const handle = subtitleSession(t.ctx, (m) => sent.push(m));
+    await handle(up(5));
+    await handle(up(9));
+    const err = sent.find((m) => m.type === 'error') as Extract<SubtitleDown, { type: 'error' }>;
+    expect(err.fatal).toBe(false);
+    expect(sent.some((m) => m.type === 'cue' && m.cue.text === '好')).toBe(true);
+  });
+
+  it('忽略来路不明的消息', async () => {
+    const t = makeCtx({});
+    await t.init();
+    const sent: SubtitleDown[] = [];
+    const handle = subtitleSession(t.ctx, (m) => sent.push(m));
+    await handle({ type: 'segment', videoId: '<script>', audio: '' });
+    await handle(null);
+    await handle({ type: 'hello', videoId: 42 });
+    expect(sent).toHaveLength(0);
+    expect(t.requests).toHaveLength(0);
+  });
+});

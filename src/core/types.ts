@@ -696,3 +696,32 @@ export interface DoubanState {
   /** 上次看的条目 */
   selected?: string;
 }
+
+// ── 自动字幕 ──
+
+/** 一句字幕。时间是视频时间（秒），不是墙钟。 */
+export interface SubtitleCue {
+  id: string;
+  start: number;
+  end: number;
+  /** 原文（语音转写结果）；空串表示这段只有音乐/杂音，记下来是为了回看时不再花钱识别 */
+  text: string;
+  /** 转写模型识别出的语言（ISO 639-1，可能缺失） */
+  lang?: string;
+  translation?: string;
+  translationLang?: string;
+  /** 翻译失败的原因（原文照常显示，界面说明为什么没有第二行） */
+  translationError?: string;
+  createdAt: number;
+}
+
+export interface SubtitleTrack {
+  videoId: string;
+  /** 按 start 升序 */
+  cues: SubtitleCue[];
+  asrModel: string;
+  updatedAt: number;
+}
+
+/** 有字幕的视频 → 最近一次更新时间（每个视频的字幕单独存一个键，这里只用来淘汰最旧的） */
+export type SubtitleIndex = Record<string, number>;

@@ -2,6 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { formatClock } from '../../core/time';
 import type { QuotaSnapshot } from '../../core/quota';
 import type { XSnapshot } from '../../core/x-budget';
+import { formatAudioDuration, formatUsd, type SubtitleSnapshot } from '../../core/subtitles';
 import type { AppError } from '../../services/errors';
 
 export function ErrorBox({ error, onClose }: { error: AppError; onClose?: () => void }) {
@@ -63,8 +64,24 @@ function XBar({ x }: { x: XSnapshot }) {
   );
 }
 
+function SubBar({ sub }: { sub: SubtitleSnapshot }) {
+  const pct = Math.min(100, Math.round(sub.ratio * 100));
+  const title = `今日自动字幕花费${formatUsd(sub.spentUsd)}（本地估算${sub.estimatedPrice ? '，含按保守单价估算的部分' : ''}）：语音转写 ${formatAudioDuration(sub.asrSeconds)}、翻译 ${sub.translations} 句。你的本地时间 ${formatClock(sub.resetAt)} 重置`;
+  return (
+    <div class={`quota-bar${sub.warn || sub.exhausted ? ' warn' : ''}`} title={title} data-testid="subtitle-spend">
+      <span class="quota-label">字幕 $</span>
+      <span class="quota-track">
+        <span class="quota-fill" style={{ width: `${pct}%` }} />
+      </span>
+      <span class="quota-num">
+        {sub.spentUsd.toFixed(2)}/{sub.budgetUsd.toFixed(2)}
+      </span>
+    </div>
+  );
+}
+
 /** 配额实时显示（本地估算），接近上限变色 */
-export function QuotaMeter({ snap, x }: { snap: QuotaSnapshot | undefined; x?: XSnapshot | undefined }) {
+export function QuotaMeter({ snap, x, sub }: { snap: QuotaSnapshot | undefined; x?: XSnapshot | undefined; sub?: SubtitleSnapshot | undefined }) {
   if (!snap) return null;
   const reset = `太平洋时间零点重置（你的本地时间 ${formatClock(snap.resetAt)}）；本地估算，仅统计本扩展的调用`;
   return (
@@ -72,6 +89,7 @@ export function QuotaMeter({ snap, x }: { snap: QuotaSnapshot | undefined; x?: X
       <Bar label="search" used={snap.search.used} limit={snap.search.limit} warn={snap.search.warn} title={`今日 search.list 次数。${reset}`} />
       <Bar label="units" used={snap.general.used} limit={snap.general.limit} warn={snap.general.warn} title={`今日其他接口 units。${reset}`} />
       {x && <XBar x={x} />}
+      {sub && <SubBar sub={sub} />}
     </div>
   );
 }
