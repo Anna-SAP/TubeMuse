@@ -160,6 +160,16 @@ export const DEFAULT_SETTINGS = {
     /** 字号倍数 */
     fontScale: 1,
   },
+  /** 视频片段录制（用户 2026-11-01 批准的红线变更，见 DECISIONS §36）：只在你从侧边栏或快捷键开始后录制 */
+  clips: {
+    enabled: true,
+    /** 把播放器里当时显示的字幕（TubeMuse 自动字幕或 YouTube 原生字幕）画进片段 */
+    burnSubtitles: false,
+    /** 停止后直接存进浏览器的下载文件夹；关掉则停止后由你点"保存" */
+    autoSave: true,
+    /** 单段时长上限（分钟）：片段在保存前全部在内存里 */
+    maxMinutes: 10,
+  },
   /** 侧边栏界面偏好 */
   ui: {
     /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
@@ -318,6 +328,44 @@ export const DOUBAN = {
   transientFeedsKept: 5,
   /** 评价词 → 星级（豆瓣五档） */
   ratingStars: { 力荐: 5, 推荐: 4, 还行: 3, 较差: 2, 很差: 1 } as Record<string, number>,
+} as const;
+
+/** 视频片段录制的内部参数 */
+export const CLIPS = {
+  /** 控制循环间隔：判断广告、暂停、时间段终点 */
+  tickMs: 100,
+  /** 画面帧率上限 */
+  fps: 30,
+  /** 输出画面最高多少像素（4K 实时编码太吃力）：更高的视频按比例缩小 */
+  maxHeight: 1080,
+  /** 读不到画面尺寸（例如只有声音）时的输出尺寸 */
+  fallbackSize: { width: 1280, height: 720 },
+  /** 视频码率（按输出高度从高到低，bps） */
+  videoBitrates: [
+    { minHeight: 1080, bps: 8_000_000 },
+    { minHeight: 720, bps: 5_000_000 },
+    { minHeight: 480, bps: 2_500_000 },
+    { minHeight: 0, bps: 1_500_000 },
+  ],
+  audioBitrate: 128_000,
+  /** 编码器每隔多久交出一块数据（毫秒）：已录大小实时可见 */
+  timesliceMs: 1000,
+  /** 单段最大体积（字节）：保存前全部在内存里，超过就自动结束 */
+  maxBytes: 1_500_000_000,
+  /** 时间段截取最短多少秒 */
+  minRangeSec: 1,
+  /** 拖动定位的误差：比起点早这么多也算到了起点 */
+  rangeToleranceSec: 0.05,
+  /** "录过的片段"记录保留条数（只有标题、时间段、大小，没有视频本身） */
+  logMax: 100,
+  /** 编码格式，按优先级：MP4 通用性最好，浏览器不支持时退回 WebM */
+  formats: [
+    { mimeType: 'video/mp4;codecs=avc1.640028,mp4a.40.2', ext: 'mp4', label: 'MP4（H.264 + AAC）' },
+    { mimeType: 'video/mp4;codecs=avc1,mp4a.40.2', ext: 'mp4', label: 'MP4（H.264 + AAC）' },
+    { mimeType: 'video/webm;codecs=vp9,opus', ext: 'webm', label: 'WebM（VP9 + Opus）' },
+    { mimeType: 'video/webm;codecs=vp8,opus', ext: 'webm', label: 'WebM（VP8 + Opus）' },
+    { mimeType: 'video/webm', ext: 'webm', label: 'WebM' },
+  ],
 } as const;
 
 /** 观看追踪的内部参数 */

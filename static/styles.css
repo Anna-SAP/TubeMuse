@@ -140,6 +140,7 @@ code {
 }
 .tab-list {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   flex: 1;
   min-width: 0;
@@ -1371,4 +1372,111 @@ a.db-title:hover {
 .subtitles details > summary {
   cursor: pointer;
   font-weight: 600;
+}
+
+/* ── 片段录制 ── */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin: 4px 0 6px;
+}
+.seg-btn {
+  font: inherit;
+  border: 0;
+  background: var(--surface);
+  color: var(--text);
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.seg-btn + .seg-btn {
+  border-left: 1px solid var(--border);
+}
+.seg-btn.on {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.clip-range {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0 12px;
+}
+.clip-range .row .input {
+  flex: 1;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+.clip-live,
+.clip-ready {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 10px;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.clip-timer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.clip-timer .muted {
+  font-size: 13px;
+  font-weight: 400;
+}
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--no);
+  flex: none;
+  animation: rec-pulse 1.2s ease-in-out infinite;
+}
+.rec-dot.paused {
+  background: var(--muted);
+  animation: none;
+}
+@keyframes rec-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rec-dot {
+    animation: none;
+  }
+}
+.clip-progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.clip-file {
+  overflow-wrap: anywhere;
+}
+.clip-log {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.clip-log li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.clip-log .btn.link {
+  text-align: left;
+  padding: 0;
+}
+.clips p.small,
+.clips .muted.small {
+  margin: 4px 0;
 }

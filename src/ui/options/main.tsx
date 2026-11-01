@@ -551,8 +551,36 @@ function App() {
 
       <SubtitleSection settings={settings} hasOpenAiKey={!!secrets.openaiApiKey} update={updateSettings} />
 
-      <Section title="13. 数据" id="data">
-        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费），但不含 API Key、X Token 与授权令牌（也从不保存任何音频）。</p>
+      <Section title="13. 片段录制" id="clips">
+        <p class="muted small">
+          在侧边栏"片段"页（或按 Alt+Shift+R）录下正在看的 YouTube 视频的一段：画面和声音都来自这个视频本身，在本机编码，由浏览器存进下载文件夹。不经过网络，TubeMuse 不保留视频副本，只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
+        </p>
+        <label class="inline">
+          <input type="checkbox" data-testid="clips-enabled" checked={settings.clips.enabled} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, enabled: e.currentTarget.checked } }))} />
+          启用片段录制
+        </label>
+        <label class="inline">
+          <input type="checkbox" checked={settings.clips.autoSave} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, autoSave: e.currentTarget.checked } }))} />
+          停止后直接保存到下载文件夹（关掉后，停止时先留在内存里，由你点"保存"或"丢弃"）
+        </label>
+        <label class="inline">
+          <input type="checkbox" checked={settings.clips.burnSubtitles} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, burnSubtitles: e.currentTarget.checked } }))} />
+          把字幕烧进画面：录的是播放器里当时显示的字幕（TubeMuse 自动字幕或 YouTube 原生字幕），字号跟"12. 自动字幕"的字号倍数；更费电脑
+        </label>
+        <div class="grid">
+          <NumField
+            label="单段时长上限（分钟）"
+            value={settings.clips.maxMinutes}
+            min={1}
+            max={60}
+            hint="保存前片段全部在内存里：1080p 约每分钟 60 MB，720p 约 40 MB"
+            onChange={(v) => updateSettings((s) => ({ ...s, clips: { ...s.clips, maxMinutes: v } }))}
+          />
+        </div>
+      </Section>
+
+      <Section title="14. 数据" id="data">
+        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
         <div class="row">
           <button
             class="btn"
@@ -644,6 +672,9 @@ function App() {
         <p class="muted small">注入 youtube.com 的观看追踪脚本只读取本地播放器状态（进度、时长、暂停、倍速、是否广告、标签页是否可见），不读取页面内容、不改动页面、不发任何网络请求。</p>
         <p class="muted small">
           注入 youtube.com 的自动字幕脚本在视频播放时拿到这个视频的声音（不下载、不保存）：转写方式是"浏览器识别"时交给浏览器自带的语音识别（装了本地语音包时在本机识别，否则由 Chrome 自己连接 Google 的语音服务）；是"OpenAI"时交给扩展后台发往 <code>{new URL(ENDPOINTS.openai).host}</code>。它在播放器里加一层只读字幕，不改动 YouTube 自己的元素，本身不发任何网络请求。
+        </p>
+        <p class="muted small">
+          注入 youtube.com 的片段录制脚本只在你开始录制后工作：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字。
         </p>
       </Section>
     </div>

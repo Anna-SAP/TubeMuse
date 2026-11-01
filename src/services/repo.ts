@@ -6,6 +6,7 @@ import type { SearchCache } from '../core/cache';
 import type { XLedger } from '../core/x-budget';
 import type { DiscoveryState, DoubanState, HotspotState, SubtitleIndex, SubtitleTrack } from '../core/types';
 import type { SubtitleLedger } from '../core/subtitles';
+import type { ClipRecord } from '../core/clips';
 import type {
   Adjustment,
   ClusterState,
@@ -70,6 +71,7 @@ export function mergeSettings(stored: unknown): Settings {
       ...withoutLegacySubtitleKeys(s.subtitles),
       translationModels: { ...d.subtitles.translationModels, ...((s.subtitles?.translationModels as object) ?? {}) },
     },
+    clips: { ...d.clips, ...(s.clips as object) },
     ui: { ...d.ui, ...(s.ui as object) },
   } as Settings;
 }
@@ -140,6 +142,8 @@ export const stores = {
   subtitleIndex: new Store<SubtitleIndex>('subtitleIndex', () => ({})),
   /** 自动字幕花费记账（按本地日） */
   subtitleLedger: new Store<SubtitleLedger>('subtitleLedger', () => ({ days: {} })),
+  /** 录过并保存的视频片段（只有标题、时间段、大小、文件名；视频文件在浏览器的下载文件夹，不在这里） */
+  clipLog: new Store<ClipRecord[]>('clipLog', () => []),
   /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
   /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */

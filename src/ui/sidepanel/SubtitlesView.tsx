@@ -1,7 +1,7 @@
 // 自动字幕：当前标签页这个视频的字幕状态与开关、今日花费、已生成的字幕。
 // 状态来自注入 YouTube 页面的字幕脚本（只在本扩展内部传递）；字幕文字来自本机存储。
 
-import { useEffect, useMemo, useState } from 'preact/hooks';
+import { useMemo, useState } from 'preact/hooks';
 import { BROWSER_SPEECH_LANGS, SUBTITLE_LANGS } from '../../config/defaults';
 import { RECOGNITION_MODE_LABELS, formatAudioDuration, formatCueTime, formatUsd, speechLangName, type SubtitleTabState } from '../../core/subtitles';
 import { formatClock } from '../../core/time';
@@ -9,59 +9,18 @@ import { stores, subtitleTrackStore } from '../../services/repo';
 import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { useStore, useSubtitleSpend } from '../shared/app';
 import { Notice } from '../shared/components';
+import { useActiveTabState } from '../shared/tab-state';
 
 const CAPTION_LABELS = { available: '有', unavailable: '没有', unknown: '还没判断出来' } as const;
 
 /** 识别语言是怎么定的 */
 const LANG_SOURCE_LABELS = { setting: '设置里指定', video: '按视频的语言', title: '按标题文字推断', default: '默认', manual: '你选的' } as const;
 
-/** 跟踪本窗口的当前标签页，向它的字幕脚本要状态，并接收它主动推送的变化 */
-function useTabSubtitleState(): { tabId?: number; state?: SubtitleTabState | null } {
-  const [tabId, setTabId] = useState<number>();
-  const [state, setState] = useState<SubtitleTabState | null>();
-  useEffect(() => {
-    let windowId: number | undefined;
-    let current: number | undefined;
-    const ask = (id: number | undefined) => {
-      current = id;
-      setTabId(id);
-      if (id === undefined) return setState(null);
-      chrome.tabs.sendMessage(id, { type: 'tubemuse:subtitles:get-state' }).then(
-        (s: SubtitleTabState | undefined) => current === id && setState(s ?? null),
-        () => current === id && setState(null), // 不是 YouTube 页面（没有字幕脚本）
-      );
-    };
-    const onActivated = (info: chrome.tabs.OnActivatedInfo) => info.windowId === windowId && ask(info.tabId);
-    const onUpdated = (id: number, change: chrome.tabs.OnUpdatedInfo, tab: chrome.tabs.Tab) => {
-      if (tab.active && tab.windowId === windowId && (change.status === 'complete' || change.url)) ask(id);
-    };
-    const onMessage = (msg: unknown, sender: chrome.runtime.MessageSender) => {
-      const m = msg as { type?: string; state?: SubtitleTabState };
-      if (m?.type === 'tubemuse:subtitles:state' && sender.tab?.id === current && m.state) setState(m.state);
-      return false;
-    };
-    chrome.tabs.onActivated.addListener(onActivated);
-    chrome.tabs.onUpdated.addListener(onUpdated);
-    chrome.runtime.onMessage.addListener(onMessage);
-    void chrome.windows.getCurrent().then(async (w) => {
-      windowId = w.id;
-      const [tab] = await chrome.tabs.query({ active: true, windowId });
-      ask(tab?.id);
-    });
-    return () => {
-      chrome.tabs.onActivated.removeListener(onActivated);
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-      chrome.runtime.onMessage.removeListener(onMessage);
-    };
-  }, []);
-  return { ...(tabId !== undefined ? { tabId } : {}), state };
-}
-
 export function SubtitlesView() {
   const settings = useStore(stores.settings);
   const secrets = useStore(stores.secrets);
   const spend = useSubtitleSpend();
-  const { tabId, state } = useTabSubtitleState();
+  const { tabId, state } = useActiveTabState<SubtitleTabState>('tubemuse:subtitles:get-state', 'tubemuse:subtitles:state');
   const videoId = state?.videoId;
   const trackStore = useMemo(() => (videoId ? subtitleTrackStore(videoId) : undefined), [videoId]);
   const track = useStore(trackStore);

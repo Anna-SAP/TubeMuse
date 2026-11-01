@@ -11,6 +11,8 @@ import { runScheduledJobs } from './services/summary-service';
 import { checkReminder } from './services/reminder-service';
 import { ingestSession } from './services/watch-service';
 import { SUBTITLE_PORT, subtitleSession } from './services/subtitle-service';
+import { CLIP_MSG, type ClipTabState } from './core/clips';
+import { recordSavedClip } from './services/clip-service';
 
 const ctx = createBrowserContext();
 const TICK = 'tubemuse-tick';
@@ -108,8 +110,31 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
     });
     return false;
   }
+  // 片段录制：录制脚本存好了一个片段，记一笔（只有元数据；视频文件由浏览器存进下载文件夹，不经过这里）
+  if (m?.type === CLIP_MSG.saved) {
+    if (!fromTrackedSite(sender)) return false;
+    void recordSavedClip(ctx, (m as { record?: unknown }).record).catch(() => undefined);
+    return false;
+  }
+  // 片段录制状态：在工具栏图标上标出正在录（用快捷键录制时不打开侧边栏也看得见）
+  if (m?.type === CLIP_MSG.state) {
+    if (!fromTrackedSite(sender) || sender.tab?.id === undefined) return false;
+    showClipBadge(sender.tab.id, (m as { state?: ClipTabState }).state);
+    return false;
+  }
   return false;
 });
+
+/** 正在录：红色 REC；自动暂停中：灰色 REC；录制失败（例如快捷键在 Shorts 上按下）：橙色 !；其余不显示 */
+function showClipBadge(tabId: number, state: ClipTabState | undefined): void {
+  const recording = state?.phase === 'recording';
+  const text = recording ? 'REC' : state?.error && state.phase === 'idle' ? '!' : '';
+  const color = recording ? (state?.waiting ? '#6d6862' : '#c8364a') : '#c77700';
+  void chrome.action.setBadgeText({ tabId, text }).catch(() => undefined);
+  if (text) void chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(() => undefined);
+  const title = recording ? `TubeMuse · 正在录制片段（${state?.status ?? ''}）` : state?.error && state.phase === 'idle' ? `TubeMuse · ${state.error.message}` : 'TubeMuse';
+  void chrome.action.setTitle({ tabId, title }).catch(() => undefined);
+}
 
 // 自动字幕：YouTube 播放页里的字幕脚本经长连接送来切好的音频片段，这里转写、翻译后回传
 chrome.runtime.onConnect.addListener((port) => {
@@ -128,10 +153,11 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((m) => void keepAlive(() => handle(m)).catch((e) => console.warn('[TubeMuse] 字幕处理失败', e instanceof Error ? e.message : e)));
 });
 
-// 快捷键：开关当前标签页这个视频的字幕（只发给本扩展的字幕脚本；不是 YouTube 页面时什么也不做）
+// 快捷键：开关当前标签页这个视频的字幕 / 开始或停止录制片段（只发给本扩展的内容脚本；不是 YouTube 页面时什么也不做）
 chrome.commands.onCommand.addListener((command, tab) => {
-  if (command !== 'toggle-subtitles' || tab?.id === undefined) return;
-  void chrome.tabs.sendMessage(tab.id, { type: 'tubemuse:subtitles:toggle' }).catch(() => undefined);
+  if (tab?.id === undefined) return;
+  if (command === 'toggle-subtitles') void chrome.tabs.sendMessage(tab.id, { type: 'tubemuse:subtitles:toggle' }).catch(() => undefined);
+  else if (command === 'toggle-clip-recording') void chrome.tabs.sendMessage(tab.id, { type: CLIP_MSG.toggle }).catch(() => undefined);
 });
 
 void ensureAlarms();

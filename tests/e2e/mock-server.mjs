@@ -70,6 +70,11 @@ export const SUBTITLE_VIDEOS = [
   // 浏览器识别（e2e 里是按脚本出字的假识别器）；speech: 'network' 时它模拟"连不上语音服务"
   { id: 'subBrowse001', seconds: 14, captions: 'none' },
   { id: 'subBrowseNet', seconds: 10, captions: 'none', speech: 'network' },
+  // 片段录制：有原生字幕（自动字幕不会自己开启，互不干扰）；带人声，便于检查录到的声音
+  { id: 'clipFree0001', seconds: 20, captions: 'yes' },
+  { id: 'clipRange001', seconds: 14, captions: 'yes' },
+  { id: 'clipManual01', seconds: 14, captions: 'yes' },
+  { id: 'clipSpa00001', seconds: 20, captions: 'yes' },
 ];
 
 const WATCH_AS_MOCK = WATCH_VIDEOS.map((w) => ({ id: w.id, title: w.title, channelId: w.channelId, channelTitle: w.channelTitle, hoursAgo: 200, duration: `PT${w.seconds}S`, views: 1000, likes: 10, lang: 'zh', categoryId: w.categoryId }));

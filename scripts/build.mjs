@@ -90,9 +90,13 @@ await esbuild.build({
   logLevel: 'warning',
 });
 
-// 内容脚本不能是 ES 模块：单独打成 IIFE（观看追踪、自动字幕各一个文件，互不依赖）
+// 内容脚本不能是 ES 模块：单独打成 IIFE（观看追踪、自动字幕、片段录制各一个文件，互不依赖）
 await esbuild.build({
-  entryPoints: { 'content-tracker': join(root, 'src', 'content', 'tracker.ts'), 'content-subtitles': join(root, 'src', 'content', 'subtitles.ts') },
+  entryPoints: {
+    'content-tracker': join(root, 'src', 'content', 'tracker.ts'),
+    'content-subtitles': join(root, 'src', 'content', 'subtitles.ts'),
+    'content-clipper': join(root, 'src', 'content', 'clipper.ts'),
+  },
   outdir,
   bundle: true,
   format: 'iife',
@@ -136,13 +140,16 @@ const manifest = {
   background: { service_worker: 'background.js', type: 'module' },
   side_panel: { default_path: 'sidepanel.html' },
   options_page: 'options.html',
-  // 观看追踪：只读取本地播放器状态。自动字幕：播放时采集该视频音频交给后台转写，并在播放器内叠加只读字幕层
+  // 观看追踪：只读取本地播放器状态。自动字幕：播放时采集该视频音频交给后台转写，并在播放器内叠加只读字幕层。
+  // 片段录制：你开始录制后才把这个视频的画面与声音录进内存，保存时交给浏览器存进下载文件夹
   content_scripts: [
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
+    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-clipper.js'], run_at: 'document_idle' },
   ],
   commands: {
     'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕' },
+    'toggle-clip-recording': { suggested_key: { default: 'Alt+Shift+R' }, description: '开始 / 停止录制当前视频的片段' },
   },
   action: { default_title: 'TubeMuse', default_icon: icons },
   icons,
@@ -179,6 +186,30 @@ for (const bad of [/\bfetch\(/, /XMLHttpRequest/, /\.innerHTML\s*=/, /appendChil
 const subtitles = readFileSync(join(outdir, 'content-subtitles.js'), 'utf8');
 for (const bad of [/\bfetch\(/, /XMLHttpRequest/, /\bWebSocket\b/, /sendBeacon/, /\bEventSource\b/, /\.innerHTML\s*=/, /outerHTML\s*=/, /insertAdjacentHTML/, /document\.cookie/, /\.download\s*=/]) {
   if (bad.test(subtitles)) fail(`字幕脚本里出现了不允许的操作（${bad}）：它只能采音频、交给后台、画字幕层。`);
+}
+// 红线（2026-11-01 变更，DECISIONS §36）：片段录制脚本可以录这个视频的画面与声音、交给浏览器保存，
+// 但不得发网络请求、不得往页面里插入任何元素（画布和下载链接都不放进页面）、不得用 HTML 字符串写页面、不得读写 Cookie
+const clipper = readFileSync(join(outdir, 'content-clipper.js'), 'utf8');
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /\.innerHTML\s*=/,
+  /outerHTML\s*=/,
+  /insertAdjacent/,
+  /appendChild\(/,
+  /\.append\(/,
+  /\.prepend\(/,
+  /insertBefore\(/,
+  /replaceChildren\(/,
+  /replaceWith\(/,
+  /attachShadow\(/,
+  /document\.cookie/,
+  /getUserMedia|getDisplayMedia/,
+]) {
+  if (bad.test(clipper)) fail(`片段录制脚本里出现了不允许的操作（${bad}）：它只能录这个视频、交给浏览器保存。`);
 }
 
 for (const file of walk(outdir)) {
