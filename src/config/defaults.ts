@@ -160,6 +160,11 @@ export const DEFAULT_SETTINGS = {
     /** 字号倍数 */
     fontScale: 1,
   },
+  /** 侧边栏界面偏好 */
+  ui: {
+    /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
+    pinNav: false,
+  },
 };
 
 export type SubtitleAsrEngine = 'browser' | 'openai';

@@ -70,6 +70,7 @@ export function mergeSettings(stored: unknown): Settings {
       ...withoutLegacySubtitleKeys(s.subtitles),
       translationModels: { ...d.subtitles.translationModels, ...((s.subtitles?.translationModels as object) ?? {}) },
     },
+    ui: { ...d.ui, ...(s.ui as object) },
   } as Settings;
 }
 
