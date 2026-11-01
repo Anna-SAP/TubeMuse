@@ -141,6 +141,8 @@ export const stores = {
   subtitleLedger: new Store<SubtitleLedger>('subtitleLedger', () => ({ days: {} })),
   /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
+  /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */
+  authAttempt: new Store<AuthAttempt | null>('authAttempt', () => null),
 };
 
 /** 一个视频的字幕（按视频时间），回看时直接用、不再花钱。每个视频一个键：写入时不必把所有视频的字幕都重写一遍 */
@@ -154,9 +156,17 @@ export interface YouTubeAuthState {
   scope?: string;
   /** 首次交互授权的时间；有这条记录就算"已连接过"，断开时删除整条 */
   connectedAt: number;
-  /** 最近一次静默续期失败的时间与原因（成功或重新授权后清除） */
+  /** 最近一次静默续期失败的时间（成功或重新授权后清除） */
   renewFailedAt?: number;
-  renewError?: string;
+  /** 那次失败的具体原因（Google 的错误码或浏览器的报错），显示给你，便于判断为什么续不上 */
+  renewReason?: string;
+}
+
+/** 交互授权由后台执行，发起的页面可能已经关了：开始、结束与失败原因记在这里，界面重新打开后照样看得到 */
+export interface AuthAttempt {
+  startedAt: number;
+  finishedAt?: number;
+  error?: { message: string; hint?: string };
 }
 
 /** 后台任务状态：首次运行的日期（补算不早于它）、最近一次检查、失败记录（展示给用户，不静默） */
@@ -168,7 +178,7 @@ export interface JobState {
 }
 
 /** 导出时排除的键：API Key 与授权相关信息不进入导出文件。 */
-export const EXPORT_EXCLUDED_KEYS = new Set<string>([stores.secrets.key, stores.youtubeAuth.key]);
+export const EXPORT_EXCLUDED_KEYS = new Set<string>([stores.secrets.key, stores.youtubeAuth.key, stores.authAttempt.key]);
 
 export function newId(prefix: string): string {
   const rand = crypto.getRandomValues(new Uint32Array(2));
