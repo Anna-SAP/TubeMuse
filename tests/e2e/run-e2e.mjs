@@ -170,6 +170,53 @@ try {
   await panel.locator('textarea.query').fill('帮我找两天内最新的 AI 技术科普视频');
   await panel.getByRole('button', { name: '找片' }).click();
   await panel.locator('.card').first().waitFor({ timeout: 20000 });
+
+  // ── 导航栏图钉：固定后往下滚动仍可见（吸附在头部下沿、不透明、盖在正文之上），再点恢复随页面滚动 ──
+  {
+    const box = (/** @type {string} */ sel) =>
+      panel.locator(sel).first().evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom };
+      });
+    const pinBtn = panel.getByTestId('pin-nav');
+    check((await pinBtn.getAttribute('aria-pressed')) === 'false', '导航栏默认随页面滚动（图钉未按下）');
+    await panel.evaluate(() => window.scrollTo(0, 600));
+    check((await box('[data-testid=nav]')).bottom < 0, '未固定时往下滚动，导航栏滚出视野');
+    await panel.evaluate(() => window.scrollTo(0, 0));
+    // 固定时外边距换成等量内边距：导航栏的框会变，但标签按钮和下面的正文都不应移动
+    const tabBefore = await box('.tab');
+    const mainBefore = await box('main');
+    await pinBtn.click();
+    await panel.getByTestId('nav').and(panel.locator('.pinned')).waitFor();
+    const tabPinned = await box('.tab');
+    const mainPinned = await box('main');
+    check(
+      Math.abs(tabPinned.top - tabBefore.top) < 1 && Math.abs(mainPinned.top - mainBefore.top) < 1 && (await pinBtn.getAttribute('aria-pressed')) === 'true',
+      '点图钉固定：标签与正文位置不跳，图钉显示为按下',
+    );
+    await panel.evaluate(() => window.scrollTo(0, 600));
+    await panel.getByTestId('nav').and(panel.locator('.stuck')).waitFor();
+    const header = await box('header.top');
+    const nav = await box('[data-testid=nav]');
+    const onTop = await panel.evaluate((y) => !!document.elementFromPoint(200, y)?.closest('[data-testid=nav]'), (nav.top + nav.bottom) / 2);
+    check(Math.abs(nav.top - header.bottom) < 1 && onTop, '固定后往下滚动：导航栏吸附在头部下沿，盖在滚过的正文之上');
+    await panel.getByRole('tab', { name: '画像' }).click();
+    const content = await box('main > :not([hidden])');
+    check(content.top >= nav.bottom - 1 && content.top - nav.bottom < 30, '固定时切换标签页：回到新页面开头，紧贴导航栏下方、不被挡住');
+    await panel.getByRole('tab', { name: '找片' }).click();
+    // 另一个侧边栏（另一个窗口）同步这项设置
+    const other = await context.newPage();
+    await other.goto(`chrome-extension://${extId}/sidepanel.html`);
+    await other.getByTestId('nav').and(other.locator('.pinned')).waitFor();
+    check(true, '固定状态保存在本地设置里：重新打开侧边栏仍是固定的');
+    await other.close();
+    await pinBtn.click();
+    await panel.getByTestId('nav').and(panel.locator('.pinned')).waitFor({ state: 'detached' });
+    await panel.evaluate(() => window.scrollTo(0, 600));
+    check((await box('[data-testid=nav]')).bottom < 0 && (await pinBtn.getAttribute('aria-pressed')) === 'false', '再点图钉取消固定：恢复随页面滚动');
+    await panel.evaluate(() => window.scrollTo(0, 0));
+  }
+
   const echoKinds = await panel.locator('.echo-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
   check(['recency', 'sort', 'topic', 'format'].every((k) => echoKinds.includes(k)), `回显包含全部约束：${echoKinds.join(', ')}`);
   const statuses = await panel.locator('.echo-row .status').allTextContents();

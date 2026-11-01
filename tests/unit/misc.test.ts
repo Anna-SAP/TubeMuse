@@ -6,6 +6,7 @@ import { buildClusterPrompt, buildIntentPrompt } from '../../src/core/prompts';
 import { mergeClusterOutput, moveChannel, editCluster } from '../../src/core/clusters';
 import { containsTerm, dominantScript } from '../../src/core/text';
 import { NOW, makeCluster } from './helpers';
+import { mergeSettings } from '../../src/services/repo';
 
 describe('时间与格式', () => {
   it('ISO 8601 时长', () => {
@@ -97,5 +98,13 @@ describe('兴趣簇', () => {
     expect(moved.find((c) => c.id === 'b')!.channelIds).toEqual(['X']);
     expect(moved.every((c) => c.locked)).toBe(true);
     expect(editCluster(cs, 'a', { name: '新名字' }, NOW)[0]).toMatchObject({ name: '新名字', locked: true });
+  });
+});
+
+describe('侧边栏导航栏图钉', () => {
+  it('默认随页面滚动；固定后的选择保存在设置里，旧设置（没有 ui 分区）也能读', () => {
+    expect(mergeSettings(undefined).ui.pinNav).toBe(false);
+    expect(mergeSettings({ quota: { searchDailyCalls: 50 } }).ui.pinNav).toBe(false);
+    expect(mergeSettings({ ui: { pinNav: true } }).ui.pinNav).toBe(true);
   });
 });

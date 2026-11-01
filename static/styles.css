@@ -118,16 +118,63 @@ code {
 }
 .tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
   margin: 8px 0;
 }
-.tab {
+/* 固定（图钉）：吸附在吸顶头部的下沿。外边距换成等量内边距，固定前后高度不变、页面不跳；
+   不透明背景挡住从下面滚过的内容；z-index 低于头部（5），高于正文里的定位元素（时长角标等，没有设 z-index） */
+.tabs.pinned {
+  position: sticky;
+  top: var(--top-h, 0px);
+  z-index: 4;
+  margin: 0;
+  padding: 8px 0;
+  background: var(--bg);
+}
+/* 真正吸附住（原位置已滚出）时才加分隔线与阴影；用阴影而不是边框，避免高度变化 */
+.tabs.pinned.stuck {
+  box-shadow:
+    0 1px 0 var(--border),
+    0 6px 8px -6px rgb(0 0 0 / 0.18);
+}
+.tab-list {
+  display: flex;
+  gap: 4px;
   flex: 1;
+  min-width: 0;
+}
+.pin-btn {
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 5px;
+  border-radius: 6px;
+}
+.pin-btn svg {
+  transform: rotate(45deg);
+  transition: transform 0.15s;
+}
+.pin-btn.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.pin-btn.on svg {
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pin-btn svg {
+    transition: none;
+  }
+}
+.tab {
+  /* 按文字宽度分配、余下平分：给图钉腾出位置后，"改进记录"这样的长标签也不被截断 */
+  flex: 1 1 auto;
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
   border-radius: var(--radius);
-  padding: 6px 0;
+  padding: 6px 4px;
   cursor: pointer;
   font: inherit;
   white-space: nowrap;
