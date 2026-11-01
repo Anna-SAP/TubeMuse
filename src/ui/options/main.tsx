@@ -9,6 +9,7 @@ import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { browserSpeechEnv, detectLocal, installLocal, type LocalAvailability } from '../../services/speech';
 import { ENDPOINTS } from '../../config/endpoints';
 import { oauthClientId, oauthRedirectUrl, type AuthStatus } from '../../services/auth';
+import { attemptView } from '../../services/auth-service';
 import { clearAll, exportAll } from '../../services/data-service';
 import type { AppError } from '../../services/errors';
 import { isAnthropicWorkspaceId } from '../../services/llm';
@@ -16,8 +17,8 @@ import { pingLlm } from '../../services/llm-factory';
 import { mutedDaysLeft, reminderActions } from '../../services/reminder-service';
 import { reclassifyRecords } from '../../services/watch-service';
 import { stores, type Secrets, type Settings } from '../../services/repo';
-import { appCtx, asAppError, useQuota, useStore } from '../shared/app';
-import { ErrorBox, Notice, QuotaMeter } from '../shared/components';
+import { appCtx, asAppError, requestYouTubeConnect, useQuota, useStore } from '../shared/app';
+import { AuthAttemptNote, ErrorBox, Notice, QuotaMeter } from '../shared/components';
 
 function Section({ title, children, id }: { title: string; children: ComponentChildren; id?: string }) {
   return (
@@ -132,6 +133,7 @@ function App() {
   const secrets = useStore(stores.secrets);
   const reminder = useStore(stores.reminderState);
   const ytAuth = useStore(stores.youtubeAuth);
+  const authAttempt = useStore(stores.authAttempt);
   const quota = useQuota();
   const [auth, setAuth] = useState<AuthStatus>();
   const [error, setError] = useState<AppError>();
@@ -180,7 +182,7 @@ function App() {
     auth === 'not_configured'
       ? '未配置 OAuth 客户端'
       : auth === 'expired'
-        ? '授权已过期，自动续期没有成功，请重新授权'
+        ? `授权已过期，自动续期没有成功${ytAuth?.renewReason ? `（${ytAuth.renewReason}）` : ''}，请重新授权`
         : auth === 'connected'
           ? ytAuth?.expiresAt && ytAuth.expiresAt > Date.now()
             ? `已连接（访问令牌有效至 ${hhmm(ytAuth.expiresAt)}，过期后自动续期）`
@@ -262,8 +264,13 @@ function App() {
         <p class="muted small">
           在 Google Cloud 创建"Web 应用"类型的 OAuth 客户端，"已获授权的重定向 URI"填上面的回跳地址（整段复制，含结尾的 /）。点"连接 YouTube"会弹出 Google 登录窗口，在窗口里登录你加进测试用户的 Google 账号即可，不需要登录浏览器本身。
         </p>
+        <AuthAttemptNote attempt={authAttempt} hideFailure={!!error} />
         <div class="row">
-          <button class="btn primary" disabled={busy || auth === 'not_configured'} onClick={() => act(async () => (await ctx.auth.getToken(true), 'YouTube 已连接'))}>
+          <button
+            class="btn primary"
+            disabled={busy || auth === 'not_configured' || attemptView(authAttempt, Date.now()).state === 'pending'}
+            onClick={() => act(async () => (await requestYouTubeConnect(), 'YouTube 已连接'))}
+          >
             {auth === 'expired' ? '重新授权' : '连接 YouTube'}
           </button>
           {(auth === 'connected' || auth === 'expired') && (

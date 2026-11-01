@@ -478,4 +478,6 @@ export const GOOGLE_OAUTH = {
   silentRetryAfterMs: 15 * 60_000,
   /** 静默续期（prompt=none）最长等待 */
   silentTimeoutMs: 10_000,
+  /** 交互授权窗口最多等这么久（在窗口里登录、选账号）；超过后后台不再保活，界面说明"窗口没有交回结果" */
+  interactiveMaxMs: 10 * 60_000,
 } as const;

@@ -3,8 +3,9 @@ import { useEffect, useState } from 'preact/hooks';
 import type { AuthStatus } from '../../services/auth';
 import { stores } from '../../services/repo';
 import type { AppError } from '../../services/errors';
-import { appCtx, asAppError, useQuota, useStore, useSubtitleSpend, useXSpend } from '../shared/app';
-import { ErrorBox, Notice, QuotaMeter, QuotaWarning } from '../shared/components';
+import { attemptView } from '../../services/auth-service';
+import { appCtx, asAppError, requestYouTubeConnect, useQuota, useStore, useSubtitleSpend, useXSpend } from '../shared/app';
+import { AuthAttemptNote, ErrorBox, Notice, QuotaMeter, QuotaWarning } from '../shared/components';
 import { ChangesView } from './ChangesView';
 import { FindView } from './FindView';
 import { ProfileView } from './ProfileView';
@@ -22,6 +23,7 @@ function SetupBanner() {
   const settings = useStore(stores.settings);
   const secrets = useStore(stores.secrets);
   const ytAuth = useStore(stores.youtubeAuth);
+  const attempt = useStore(stores.authAttempt);
   const [auth, setAuth] = useState<AuthStatus>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<AppError>();
@@ -30,26 +32,29 @@ function SetupBanner() {
   }, [secrets, ytAuth]);
   if (!settings || !secrets || !auth) return null;
   if (auth === 'expired') {
-    // 静默续期失败：就地重新授权（弹出 Google 登录窗口），不用跳去设置页
+    // 静默续期失败：就地重新授权（后台弹出 Google 登录窗口、保存令牌），不用跳去设置页；授权成功后横幅随存储变化自动消失
     const reauth = async () => {
       setBusy(true);
       setError(undefined);
       try {
-        await ctx.auth.getToken(true);
+        await requestYouTubeConnect();
       } catch (e) {
         setError(await asAppError(e));
       } finally {
         setBusy(false);
       }
     };
+    const pending = busy || attemptView(attempt, Date.now()).state === 'pending';
     return (
       <>
         <Notice kind="warn">
           YouTube 授权已过期，自动续期没有成功。
-          <button class="btn link small" disabled={busy} onClick={() => void reauth()}>
+          <button class="btn link small" disabled={pending} onClick={() => void reauth()}>
             重新授权
           </button>
+          {ytAuth?.renewReason && <div class="muted small" data-testid="renew-reason">自动续期失败原因：{ytAuth.renewReason}</div>}
         </Notice>
+        <AuthAttemptNote attempt={attempt} hideFailure={!!error} />
         {error && <ErrorBox error={error} onClose={() => setError(undefined)} />}
       </>
     );

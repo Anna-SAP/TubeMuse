@@ -1,6 +1,7 @@
 // YouTube 授权：chrome.identity.launchWebAuthFlow + Google"Web 应用"类型客户端的隐式授权（只申请 youtube.readonly）。
 // 不依赖浏览器级 Google 登录，Comet 等非 Chrome 的 Chromium 浏览器同样可用：授权窗口里登录哪个 Google 账号就用哪个。
 // 访问令牌约 1 小时有效、没有刷新令牌：过期后先静默续期（prompt=none），不成功就明确请用户重新授权。
+// 交互授权（连接 / 重新授权）由后台发起，见 auth-service.ts。
 
 import { GOOGLE_OAUTH, GOOGLE_OAUTH_SCOPE } from '../config/defaults';
 import { ENDPOINTS, GOOGLE_OAUTH_AUTHORIZE_URL } from '../config/endpoints';
@@ -43,12 +44,22 @@ export function oauthRedirectUrl(): string {
 
 const NOT_CONNECTED = () => new AppError('auth', '尚未连接 YouTube 账号', '在设置页点"连接 YouTube"');
 
-function expiredError(): AppError {
-  return new AppError(
+/** 静默续期失败；reason 是具体原因（Google 的错误码或浏览器的报错），一并显示，不笼统地说"没有成功" */
+function expiredError(reason?: string): AppError & { reason?: string } {
+  const e = new AppError(
     'auth',
-    'YouTube 授权已过期，自动续期没有成功',
-    '点"重新授权"（设置页「2. YouTube 账号」或侧边栏顶部）。Google 的访问令牌约 1 小时有效；在这个浏览器里保持网页版 Google 账号登录，TubeMuse 通常能自动续期',
+    `YouTube 授权已过期，自动续期没有成功${reason ? `（${reason}）` : ''}`,
+    '点"重新授权"（设置页「2. YouTube 账号」或侧边栏顶部）。Google 的访问令牌约 1 小时有效；自动续期要求这个浏览器里的网页版 Google 账号保持登录',
   );
+  return reason ? Object.assign(e, { reason }) : e;
+}
+
+/** prompt=none 时 Google 回跳里的错误 → 简短原因 */
+export function silentReason(code: string): string {
+  if (code === 'login_required') return 'Google 要求重新登录（login_required）';
+  if (SILENT_NEEDS_USER.has(code)) return `Google 要求你在授权窗口里确认或选择账号（${code}）`;
+  if (code === 'state_mismatch') return '回跳校验失败（state 不匹配）';
+  return `Google 返回 ${code.slice(0, 60)}`;
 }
 
 /** 交互授权时 launchWebAuthFlow 抛出的错误 → 人话。浏览器报错原文不保证稳定，按关键词宽松匹配。 */
@@ -100,6 +111,8 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
   const configured = () => !!d.clientId;
   /** 同一页面里多个请求同时发现令牌过期时，只续期一次 */
   let renewing: Promise<string> | undefined;
+  /** 交互授权同一时间只开一个窗口：重复点击等同一个结果 */
+  let connecting: Promise<string> | undefined;
 
   async function runFlow(interactive: boolean): Promise<string> {
     const state = d.randomState();
@@ -115,12 +128,15 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
     try {
       redirect = await d.launch(url, interactive);
     } catch (e) {
-      if (!interactive) throw expiredError();
-      throw authError(e instanceof Error ? e.message : String(e));
+      // 浏览器的报错只有固定文案（不含回跳地址），可以原样记下
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!interactive) throw expiredError(`浏览器报告：${msg.slice(0, 120)}`);
+      throw authError(msg);
     }
-    if (!redirect) throw interactive ? authError('empty redirect') : expiredError();
+    if (!redirect) throw interactive ? authError('empty redirect') : expiredError('授权窗口没有返回结果');
     const r = parseAuthRedirect(redirect, state, GOOGLE_OAUTH_SCOPE, d.now());
-    if (!r.ok) throw interactive && !SILENT_NEEDS_USER.has(r.error) ? redirectError(r.error) : expiredError();
+    // 交互授权失败要说交互授权的原因：不能报成"自动续期没有成功"（和横幅一字不差，看起来像什么都没发生）
+    if (!r.ok) throw interactive ? redirectError(r.error) : expiredError(silentReason(r.error));
     const now = d.now();
     await store.update(d.kv, d.locker, (prev) => ({
       accessToken: r.token.accessToken,
@@ -141,16 +157,24 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
           '按 README「Google Cloud 配置」创建"Web 应用"类型的 OAuth 客户端，把 Client ID 写进 local/config.json 后重新构建',
         );
       }
-      if (interactive) return runFlow(true);
+      if (interactive) {
+        connecting ??= runFlow(true).finally(() => {
+          connecting = undefined;
+        });
+        return connecting;
+      }
       const st = await store.read(d.kv);
       if (!st) throw NOT_CONNECTED();
       if (tokenUsable(st, d.now())) return st.accessToken!;
-      if (st.renewFailedAt && d.now() - st.renewFailedAt < GOOGLE_OAUTH.silentRetryAfterMs) throw expiredError();
+      if (st.renewFailedAt && d.now() - st.renewFailedAt < GOOGLE_OAUTH.silentRetryAfterMs) throw expiredError(st.renewReason);
       renewing ??= runFlow(false)
         .catch(async (e: unknown) => {
-          const err = e instanceof AppError ? e : expiredError();
-          // 只有仍是"已连接"状态才记失败（用户可能刚好断开了）
-          await store.update(d.kv, d.locker, (s) => (s ? { ...s, renewFailedAt: d.now(), renewError: err.message } : s));
+          const reason = (e as { reason?: unknown }).reason;
+          const err = typeof reason === 'string' ? e : expiredError(`意外错误：${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`);
+          // 只有仍是"已连接"状态才记失败（用户可能刚好断开了）；同时有交互授权刚写入的新令牌时不记（那不算过期）
+          await store.update(d.kv, d.locker, (s) =>
+            s && !tokenUsable(s, d.now()) ? { ...s, renewFailedAt: d.now(), renewReason: (err as { reason: string }).reason } : s,
+          );
           throw err;
         })
         .finally(() => {
@@ -188,6 +212,7 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
         revoked = !!res?.ok;
       }
       await d.kv.remove(store.key);
+      await d.kv.remove(stores.authAttempt.key);
       return { revoked };
     },
   };

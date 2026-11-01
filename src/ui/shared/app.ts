@@ -1,6 +1,7 @@
 // 页面共用：运行时上下文单例、存储订阅 hook、错误展示格式。
 
 import { useEffect, useState } from 'preact/hooks';
+import { AUTH_CONNECT_MESSAGE, fromAuthReply, type AuthConnectReply } from '../../services/auth-service';
 import { createBrowserContext, type AppContext } from '../../services/context';
 import { toAppError, type AppError } from '../../services/errors';
 import { quotaSnapshot } from '../../services/quota-service';
@@ -55,6 +56,11 @@ export function useQuota(): QuotaSnapshot | undefined {
 export async function secretsList(): Promise<string[]> {
   const s = await stores.secrets.read(appCtx().kv);
   return [s.anthropicApiKey, s.openaiApiKey, s.xBearerToken].filter((x): x is string => !!x);
+}
+
+/** 连接 / 重新授权 YouTube：交给后台打开授权窗口、保存令牌（这个页面中途被关掉也不丢结果）。失败时抛出人话错误 */
+export async function requestYouTubeConnect(): Promise<void> {
+  fromAuthReply((await chrome.runtime.sendMessage({ type: AUTH_CONNECT_MESSAGE })) as AuthConnectReply | undefined);
 }
 
 /** 统一把异常转成可展示的错误（已脱敏） */

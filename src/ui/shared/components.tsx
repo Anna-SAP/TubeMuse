@@ -3,7 +3,9 @@ import { formatClock } from '../../core/time';
 import type { QuotaSnapshot } from '../../core/quota';
 import type { XSnapshot } from '../../core/x-budget';
 import { formatAudioDuration, formatUsd, type SubtitleSnapshot } from '../../core/subtitles';
-import type { AppError } from '../../services/errors';
+import { AppError } from '../../services/errors';
+import { attemptView } from '../../services/auth-service';
+import type { AuthAttempt } from '../../services/repo';
 
 export function ErrorBox({ error, onClose }: { error: AppError; onClose?: () => void }) {
   return (
@@ -19,6 +21,28 @@ export function ErrorBox({ error, onClose }: { error: AppError; onClose?: () => 
       )}
     </div>
   );
+}
+
+/**
+ * 最近一次连接 / 重新授权的进展。授权在后台执行，发起的页面关掉再打开也能看到：窗口还开着、失败原因、或窗口没交回结果。
+ * hideFailure：这个页面刚才自己发起、已经在别处显示了同一个错误时不重复
+ */
+export function AuthAttemptNote({ attempt, hideFailure }: { attempt: AuthAttempt | null | undefined; hideFailure?: boolean }) {
+  const v = attemptView(attempt, Date.now());
+  if (v.state === 'pending') {
+    return (
+      <p class="muted small" data-testid="auth-pending">
+        授权窗口已打开（{formatClock(v.startedAt)} 起）：在窗口里登录并选择账号，完成后这里会自动更新。关掉这个页面也没关系，结果会保存。
+      </p>
+    );
+  }
+  if (v.state === 'lost') {
+    return <ErrorBox error={new AppError('auth', `${formatClock(v.startedAt)} 打开的授权窗口没有把结果交回扩展`, '再点一次"重新授权"，在弹出的窗口里完成登录、选择账号，结束前不要关闭它')} />;
+  }
+  if (v.state === 'failed' && !hideFailure) {
+    return <ErrorBox error={new AppError('auth', `上次授权（${formatClock(v.at)}）没有完成：${v.message}`, v.hint)} />;
+  }
+  return null;
 }
 
 export function Notice({ kind = 'info', children, onClose }: { kind?: 'info' | 'warn' | 'ok'; children: ComponentChildren; onClose?: () => void }) {

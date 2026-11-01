@@ -1,9 +1,10 @@
 // MV3 service worker：点图标开侧边栏；接收观看上报；自动字幕（转写、翻译、记账）；定时任务（每日总结、周报、补元数据、导师提醒）。
 // service worker 会休眠、浏览器可能在到点时没开：闹钟设为跨会话保留，并且每次醒来都检查闹钟是否还在、按"应该已完成但还没有"补算。
 
-import { SUMMARY } from './config/defaults';
+import { GOOGLE_OAUTH, SUMMARY } from './config/defaults';
 import { TRACKED_SITES } from './config/endpoints';
 import { nextDailyRun } from './core/schedule';
+import { AUTH_CONNECT_MESSAGE, connectYouTube, toAuthReply, type AuthConnectReply } from './services/auth-service';
 import { createBrowserContext } from './services/context';
 import { stores } from './services/repo';
 import { runScheduledJobs } from './services/summary-service';
@@ -17,13 +18,15 @@ const DAILY = 'tubemuse-daily';
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
 
-/** 长任务期间每 20 秒调一次扩展 API，避免 service worker 在等待 LLM 响应时被回收 */
-async function keepAlive<T>(fn: () => Promise<T>): Promise<T> {
+/** 长任务期间每 20 秒调一次扩展 API，避免 service worker 在等待 LLM 响应时被回收；给了 maxMs 就最多保活这么久 */
+async function keepAlive<T>(fn: () => Promise<T>, maxMs?: number): Promise<T> {
   const t = setInterval(() => void chrome.runtime.getPlatformInfo(), 20_000);
+  const cap = maxMs === undefined ? undefined : setTimeout(() => clearInterval(t), maxMs);
   try {
     return await fn();
   } finally {
     clearInterval(t);
+    if (cap !== undefined) clearTimeout(cap);
   }
 }
 
@@ -75,9 +78,27 @@ function fromTrackedSite(sender: chrome.runtime.MessageSender): boolean {
   }
 }
 
+/** 本扩展自己的页面（设置页、侧边栏），不是注入网页的脚本 */
+function fromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
+  return sender.id === chrome.runtime.id && !!sender.url && sender.url.startsWith(chrome.runtime.getURL(''));
+}
+
+// 连接 / 重新授权：授权窗口由后台打开、令牌由后台保存，发起的页面中途被关掉也不丢结果（见 auth-service.ts）
+let connecting: Promise<void> | undefined;
+
 let reminderTimer: ReturnType<typeof setTimeout> | undefined;
-chrome.runtime.onMessage.addListener((msg: unknown, sender) => {
+chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply) => void) => {
   const m = msg as { type?: string; session?: unknown } | undefined;
+  if (m?.type === AUTH_CONNECT_MESSAGE) {
+    if (!fromExtensionPage(sender)) return false;
+    // 在窗口里登录、选账号可能要几分钟：期间保活，免得 service worker 被回收、结果没人接
+    connecting ??= keepAlive(() => connectYouTube(ctx), GOOGLE_OAUTH.interactiveMaxMs).finally(() => (connecting = undefined));
+    connecting.then(
+      () => sendResponse({ ok: true }),
+      (e: unknown) => sendResponse(toAuthReply(e)),
+    );
+    return true;
+  }
   if (m?.type === 'tubemuse:watch') {
     if (!fromTrackedSite(sender)) return false;
     void ingestSession(ctx, m.session).then(() => {

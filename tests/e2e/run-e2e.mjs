@@ -102,6 +102,46 @@ try {
   check((await options.getByTestId('redirect-url').textContent()) === `https://${extId}.chromiumapp.org/`, '设置页显示授权回跳地址');
   await options.screenshot({ path: join(shots, '01-options.png'), fullPage: true });
 
+  // ── 授权过期 → 侧边栏"重新授权"，授权窗口还开着时把侧边栏关掉：令牌照样由后台存下（以前会静默丢失，横幅一直显示"已过期"）──
+  console.log('\n[重新授权]');
+  {
+    const readAuth = async () => /** @type {any} */ (await sw.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('youtubeAuth'))).youtubeAuth;
+    const before = await readAuth();
+    await sw.evaluate((st) => /** @type {any} */ (globalThis).chrome.storage.local.set({ youtubeAuth: st }), {
+      ...before,
+      expiresAt: Date.now() - 60_000,
+      renewFailedAt: Date.now(),
+      renewReason: 'Google 要求重新登录（login_required）',
+    });
+    const reauthPanel = await context.newPage();
+    reauthPanel.on('pageerror', (e) => consoleErrors.push(`reauth pageerror: ${e.message}`));
+    await reauthPanel.goto(`chrome-extension://${extId}/sidepanel.html`);
+    await reauthPanel.getByText('YouTube 授权已过期').waitFor();
+    check(((await reauthPanel.getByTestId('renew-reason').textContent()) ?? '').includes('login_required'), '横幅写明自动续期失败的具体原因');
+    // 授权页像真实的 Google 一样停留几秒（用户在窗口里登录、选账号）
+    await fetch(`${MOCK}/e2e/authorize-mode?mode=slow&delayMs=2500`);
+    const authorizeBefore = requests.filter((r) => r.path === '/oauth/authorize').length;
+    await reauthPanel.getByRole('button', { name: '重新授权' }).click();
+    await reauthPanel.getByTestId('auth-pending').waitFor({ timeout: 5000 });
+    check(true, '点"重新授权"后显示"授权窗口已打开"');
+    await reauthPanel.close();
+    let renewed;
+    for (const end = Date.now() + 15000; Date.now() < end && !renewed; ) {
+      const a = await readAuth();
+      if (a?.expiresAt > Date.now() + 30 * 60_000 && !a.renewFailedAt) renewed = a;
+      else await new Promise((r) => setTimeout(r, 300));
+    }
+    check(!!renewed, '授权窗口开着时关掉侧边栏：新令牌照样由后台存下，"已过期"标记清除');
+    check(requests.filter((r) => r.path === '/oauth/authorize').length === authorizeBefore + 1, '只打开了一次授权窗口');
+    await fetch(`${MOCK}/e2e/authorize-mode?mode=instant`);
+    const reopened = await context.newPage();
+    await reopened.goto(`chrome-extension://${extId}/sidepanel.html`);
+    await reopened.getByRole('tab', { name: '找片' }).waitFor();
+    await reopened.waitForTimeout(500);
+    check((await reopened.getByText('YouTube 授权已过期').count()) === 0 && (await reopened.getByTestId('auth-pending').count()) === 0, '重新打开侧边栏：不再显示"已过期"');
+    await reopened.close();
+  }
+
   // ── 侧边栏（以标签页方式打开同一页面）──
   const panel = await context.newPage();
   // 豆瓣那段故意制造的两个失败（海报 418、不存在的条目 404）会被浏览器记成资源加载错误，不算页面错误

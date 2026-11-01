@@ -250,6 +250,13 @@ let transcribeCounter = 0;
 /** @type {{ mode: 'ok' | 'quota' | 'slowdown'; remaining: number; retryAfter: number }} */
 const transcribeFault = { mode: 'ok', remaining: 0, retryAfter: 0 };
 
+/**
+ * 模拟授权页的节奏（只有测试脚本经 /e2e/authorize-mode 设置）：
+ * instant = 直接 302 回跳；slow = 像真实的 Google 一样先显示页面，过 delayMs 才回跳（用户在窗口里登录、选账号的时间）
+ */
+/** @type {{ mode: 'instant' | 'slow'; delayMs: number }} */
+const authorizePace = { mode: 'instant', delayMs: 0 };
+
 // 1×1 PNG（缩略图占位）
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8+P9/PQAJ1wN/0KxJWAAAAABJRU5ErkJggg==', 'base64');
 
@@ -371,6 +378,11 @@ export function startMockServer() {
           usage: { input_tokens: 100, output_tokens: 100 },
         });
       }
+      if (p === '/e2e/authorize-mode') {
+        authorizePace.mode = /** @type {any} */ (url.searchParams.get('mode') ?? 'instant');
+        authorizePace.delayMs = Number(url.searchParams.get('delayMs') ?? 0);
+        return send(200, { ok: true });
+      }
       if (p === '/e2e/transcribe-mode') {
         transcribeFault.mode = /** @type {any} */ (url.searchParams.get('mode') ?? 'ok');
         transcribeFault.remaining = Number(url.searchParams.get('times') ?? 1);
@@ -430,7 +442,12 @@ export function startMockServer() {
         const redirect = q.get('redirect_uri') ?? '';
         if (!/^https:\/\/[a-p]{32}\.chromiumapp\.org\/$/.test(redirect) || q.get('response_type') !== 'token') return send(400, { error: 'invalid_request' });
         const frag = new URLSearchParams({ access_token: 'e2e-fake-token', token_type: 'Bearer', expires_in: '3599', scope: q.get('scope') ?? '', state: q.get('state') ?? '' });
-        res.writeHead(302, { location: `${redirect}#${frag.toString()}` });
+        const target = `${redirect}#${frag.toString()}`;
+        if (authorizePace.mode === 'slow') {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          return res.end(`<!doctype html><title>mock Google</title><p>mock sign-in</p><script>setTimeout(() => location.replace(${JSON.stringify(target)}), ${authorizePace.delayMs});</script>`);
+        }
+        res.writeHead(302, { location: target });
         return res.end();
       }
       send(404, { error: { code: 404, message: `mock: no route ${p}` } });
