@@ -886,6 +886,206 @@ try {
   await sub.close();
   await panel.bringToFront();
 
+  // ───────────────────────── 片段录制 ─────────────────────────
+  console.log('\n[片段录制：设置]');
+  await options.bringToFront();
+  await options.reload();
+  await options.locator('#clips').waitFor();
+  check(((await options.locator('#clips').textContent()) ?? '').includes('13. 片段录制') && (await options.getByTestId('clips-enabled').isChecked()), '设置页有"片段录制"一节，默认启用');
+  check(((await options.locator('#data').textContent()) ?? '').includes('14. 数据'), '"数据"一节顺延为 14');
+  const sw2 = context.serviceWorkers()[0] ?? sw;
+  const manifest2 = await sw2.evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());
+  check(manifest2.commands?.['toggle-clip-recording']?.suggested_key?.default === 'Alt+Shift+R', '快捷键 Alt+Shift+R 开始 / 停止录制');
+  check(!['downloads', 'tabCapture', 'offscreen', 'desktopCapture'].some((p) => manifest2.permissions.includes(p)), `片段录制没有新增权限：${manifest2.permissions.join(', ')}`);
+
+  /** 在页面里解析录到的片段：文件头、时长、画面尺寸、声音响度、画面底部（字幕处）与上部的亮像素数 */
+  const analyzeClip = async (/** @type {import('playwright').Page} */ page, /** @type {string} */ file) => {
+    const b64 = readFileSync(file).toString('base64');
+    return page.evaluate(async (b64) => {
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes]);
+      const url = URL.createObjectURL(blob);
+      const v = document.createElement('video');
+      v.muted = true;
+      v.src = url;
+      await new Promise((resolve, reject) => {
+        v.onloadedmetadata = resolve;
+        v.onerror = () => reject(new Error('片段无法播放'));
+      });
+      // MediaRecorder 录的 WebM 不写总时长：跳到末尾让浏览器算出来
+      if (!Number.isFinite(v.duration)) {
+        v.currentTime = 1e9;
+        await new Promise((r) => (v.onseeked = r));
+      }
+      const duration = v.duration;
+      v.currentTime = Math.min(duration / 2, 1);
+      await new Promise((r) => (v.onseeked = r));
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      const g = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+      g.drawImage(v, 0, 0);
+      const bright = (/** @type {number} */ y0, /** @type {number} */ y1) => {
+        const d = g.getImageData(0, Math.floor(c.height * y0), c.width, Math.floor(c.height * (y1 - y0))).data;
+        let n = 0;
+        for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 600) n++;
+        return n;
+      };
+      const ac = new AudioContext();
+      const buf = await ac.decodeAudioData(await blob.arrayBuffer());
+      const ch = buf.getChannelData(0);
+      let s = 0;
+      for (let i = 0; i < ch.length; i++) s += ch[i] * ch[i];
+      URL.revokeObjectURL(url);
+      void ac.close();
+      return { head: Array.from(bytes.slice(0, 12)), duration, width: v.videoWidth, height: v.videoHeight, rms: Math.sqrt(s / ch.length), bottomBright: bright(0.8, 0.95), topBright: bright(0.05, 0.6) };
+    }, b64);
+  };
+  /** MP4（第 4–8 字节是 ftyp）或 WebM（EBML 头 1A 45 DF A3） */
+  const container = (/** @type {number[]} */ head) => (String.fromCharCode(...head.slice(4, 8)) === 'ftyp' ? 'mp4' : head.slice(0, 4).join(',') === '26,69,223,163' ? 'webm' : 'unknown');
+  const clipLog = () => panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('clipLog').then((/** @type {any} */ r) => r.clipLog ?? []));
+  const clipStatus = panel.getByTestId('clip-status');
+  const recordedSec = async () => parseTimecodeText((await panel.getByTestId('clip-recorded').textContent()) ?? '');
+  const parseTimecodeText = (/** @type {string} */ t) => t.split(':').reduce((a, x) => a * 60 + Number(x), 0);
+
+  console.log('\n[片段录制：自由录制 → 暂停 / 广告时自动暂停 → 停止并保存 → 浏览器存进下载文件夹 → 记一笔]');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '片段', exact: true }).click();
+  const [clipPage] = await Promise.all([
+    context.waitForEvent('page'),
+    panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/watch?v=clipFree0001`),
+  ]);
+  clipPage.on('pageerror', (e) => consoleErrors.push(`clip watch pageerror: ${e.message}`));
+  clipPage.on('console', (m) => m.type() === 'error' && consoleErrors.push(`clip watch: ${m.text()}`));
+  await clipPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await clipPage.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  const clipPlayerHtml = () => clipPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).outerHTML.replace(/ class="[^"]*"/, ''));
+  const playerBefore = await clipPlayerHtml();
+  const requestsBeforeClip = requests.length;
+  const freeStartedAt = Date.now();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  const badge = await sw2.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('clipFree0001'));
+    return c.action.getBadgeText({ tabId: t.id });
+  });
+  check(badge === 'REC', `录制中工具栏图标显示 REC（实际："${badge}"）`);
+  await clipPage.waitForTimeout(2500);
+  await clipPage.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).pause());
+  await clipStatus.filter({ hasText: '视频已暂停' }).waitFor({ timeout: 5000 });
+  const atPause = await recordedSec();
+  await clipPage.waitForTimeout(1500);
+  check((await recordedSec()) === atPause, `视频暂停时录制自动暂停、不计时（停在 ${atPause} 秒）`);
+  // 模拟广告：YouTube 播广告时给播放器加 ad-showing
+  await clipPage.evaluate(() => {
+    /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.add('ad-showing');
+    return /** @type {HTMLVideoElement} */ (document.querySelector('video')).play();
+  });
+  await clipStatus.filter({ hasText: '广告中' }).waitFor({ timeout: 5000 });
+  await clipPage.waitForTimeout(1500);
+  check((await recordedSec()) === atPause, '广告期间自动暂停，不录广告');
+  await clipPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ad-showing'));
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 5000 });
+  await clipPage.waitForTimeout(1500);
+  await panel.screenshot({ path: join(shots, '23-clip-recording.png'), fullPage: true });
+  const [freeDl] = await Promise.all([clipPage.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const freeWall = (Date.now() - freeStartedAt) / 1000;
+  const freeName = freeDl.suggestedFilename();
+  check(/^mock watch_00m0\ds-00m\d\ds\.(mp4|webm)$/.test(freeName), `停止后直接交给浏览器保存，文件名带标题与起止时间：${freeName}`);
+  const free = await analyzeClip(clipPage, /** @type {string} */ (await freeDl.path()));
+  check(container(free.head) === freeName.split('.').pop(), `文件格式与扩展名一致（${container(free.head)}）`);
+  check(free.duration > 2.5 && free.duration < freeWall - 2, `片段 ${free.duration.toFixed(1)} 秒：只含播放的部分，暂停与广告的 ${(freeWall - free.duration).toFixed(1)} 秒没有录进去`);
+  check(free.width === 1280 && free.height === 720, `有画面轨（只有声音的视频按默认 1280×720 输出：${free.width}×${free.height}）`);
+  check(free.rms > 0.02, `录到了这个视频的声音（响度 ${free.rms.toFixed(3)}）`);
+  check(free.bottomBright === 0, '没开字幕烧录：画面里没有多出字幕');
+  await panel.getByTestId('clip-saved').waitFor({ timeout: 5000 });
+  check(((await panel.getByTestId('clip-ready').textContent()) ?? '').includes(freeName), '侧边栏显示存好的文件名，可以再存一次');
+  await panel.getByTestId('clip-log').waitFor({ timeout: 5000 });
+  const log1 = await clipLog();
+  check(log1.length === 1 && log1[0].fileName === freeName && log1[0].videoId === 'clipFree0001' && log1[0].mode === 'free' && !('blob' in log1[0]), '"最近录过的片段"记下文件名、时间段与大小（不存视频本身）');
+  check(JSON.stringify(await clipPlayerHtml()) === JSON.stringify(playerBefore), '录制没有往页面里加任何元素，播放器原样未动');
+  check(requests.slice(requestsBeforeClip).every((r) => r.path.startsWith('/media/')), '录制与保存不发任何网络请求（只有播放器自己加载媒体）');
+
+  console.log('\n[片段录制：按时间段截取 → 自动跳到起点、到终点自动停；字幕烧进画面]');
+  await clipPage.goto(`${MOCK}/watch?v=clipRange001`);
+  await clipPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  // 播放器里显示着一行原生字幕（YouTube 的字幕结构）
+  await clipPage.evaluate(() => {
+    const win = document.createElement('div');
+    win.className = 'caption-window';
+    win.style.cssText = 'position:absolute;left:0;right:0;bottom:60px;text-align:center';
+    const line = document.createElement('span');
+    line.className = 'caption-visual-line';
+    line.textContent = 'WWWW MMMM 字幕烧录测试';
+    win.append(line);
+    /** @type {HTMLElement} */ (document.getElementById('movie_player')).append(win);
+  });
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-burn').check();
+  await panel.getByTestId('clip-mode-range').click();
+  await panel.getByTestId('clip-start-at').fill('0:02');
+  await panel.getByTestId('clip-end-at').fill('0:05');
+  const [rangeDl] = await Promise.all([clipPage.waitForEvent('download', { timeout: 20000 }), panel.getByTestId('clip-start').click()]);
+  const rangeName = rangeDl.suggestedFilename();
+  check(/_00m02s-00m05s\.(mp4|webm)$/.test(rangeName), `到终点自动停止并保存：${rangeName}`);
+  const range = await analyzeClip(clipPage, /** @type {string} */ (await rangeDl.path()));
+  check(range.duration > 2.5 && range.duration < 3.8, `片段 ${range.duration.toFixed(2)} 秒（截取 0:02–0:05）`);
+  check(range.rms > 0.02, '时间段片段也有声音');
+  check(range.bottomBright > 200 && range.topBright === 0, `字幕烧进了画面底部（亮像素 ${range.bottomBright}），画面其他地方没有多出东西`);
+  const log2 = await clipLog();
+  check(log2.length === 2 && log2[0].mode === 'range' && log2[0].burned === true && log2[0].start === 2 && log2[0].end === 5, '记录里写明是时间段、带字幕');
+  await panel.getByTestId('clip-burn').uncheck();
+
+  console.log('\n[片段录制：关掉"停止后直接保存" → 先留在内存里，点保存才存；可以丢弃]');
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const { settings } = await c.storage.local.get('settings');
+    await c.storage.local.set({ settings: { ...settings, clips: { ...settings.clips, autoSave: false } } });
+  });
+  await clipPage.goto(`${MOCK}/watch?v=clipManual01`);
+  await clipPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await clipPage.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByRole('radio', { name: '自由录制' }).click();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await clipPage.waitForTimeout(1500);
+  /** @type {import('playwright').Download[]} */
+  const stray = [];
+  clipPage.on('download', (d) => stray.push(d));
+  await panel.getByRole('button', { name: '■ 停止', exact: true }).click();
+  await clipStatus.filter({ hasText: '还没保存' }).waitFor({ timeout: 5000 });
+  await clipPage.waitForTimeout(1000);
+  check(stray.length === 0, '停止后没有自动保存，侧边栏提示"还没保存"');
+  const [manualDl] = await Promise.all([clipPage.waitForEvent('download', { timeout: 5000 }), panel.getByTestId('clip-save').click()]);
+  check(/^mock watch_.*\.(mp4|webm)$/.test(manualDl.suggestedFilename()), `点"保存到本地"才交给浏览器保存：${manualDl.suggestedFilename()}`);
+  await panel.getByRole('button', { name: '释放内存' }).click();
+  await panel.getByTestId('clip-ready').waitFor({ state: 'detached', timeout: 5000 });
+  check(true, '"释放内存"后片段从内存里清掉');
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const { settings } = await c.storage.local.get('settings');
+    await c.storage.local.set({ settings: { ...settings, clips: { ...settings.clips, autoSave: true } } });
+  });
+
+  console.log('\n[片段录制：站内换视频（YouTube 是单页应用）→ 这一段自动结束并保存]');
+  await clipPage.goto(`${MOCK}/watch?v=clipSpa00001`);
+  await clipPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await clipPage.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await clipPage.waitForTimeout(1500);
+  const [spaDl] = await Promise.all([clipPage.waitForEvent('download', { timeout: 10000 }), clipPage.evaluate(() => history.pushState(null, '', '/watch?v=clipOther001'))]);
+  check(/^mock watch_.*\.(mp4|webm)$/.test(spaDl.suggestedFilename()), `换到别的视频时自动结束这一段并保存：${spaDl.suggestedFilename()}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '切到了别的视频' }).waitFor({ timeout: 5000 });
+  check(true, '侧边栏说明这一段为什么结束');
+  await panel.screenshot({ path: join(shots, '24-clip-panel.png'), fullPage: true });
+  await clipPage.close();
+  await panel.bringToFront();
+
   console.log('\n[Phase 3：X 网络红线]');
   const xr = requests.filter((r) => r.path.startsWith('/x/'));
   check(xr.length > 0 && xr.every((r) => r.headers.authorization === `Bearer ${X_TOKEN}` && !JSON.stringify(r.query).includes(X_TOKEN)), 'X 请求只在请求头里带 Token');

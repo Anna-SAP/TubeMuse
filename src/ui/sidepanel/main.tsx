@@ -13,10 +13,11 @@ import { RecordsView } from './RecordsView';
 import { DiscoverView } from './DiscoverView';
 import { DoubanView } from './DoubanView';
 import { SubtitlesView } from './SubtitlesView';
+import { ClipsView } from './ClipsView';
 import { ReminderBanner } from './ReminderBanner';
 import { runScheduledJobs } from '../../services/summary-service';
 
-type Tab = 'find' | 'discover' | 'douban' | 'subtitles' | 'records' | 'profile' | 'changes';
+type Tab = 'find' | 'discover' | 'douban' | 'subtitles' | 'clips' | 'records' | 'profile' | 'changes';
 
 function SetupBanner() {
   const ctx = appCtx();
@@ -172,6 +173,7 @@ function App() {
               ['discover', '发现'],
               ['douban', '豆瓣'],
               ['subtitles', '字幕'],
+              ['clips', '片段'],
               ['records', '记录'],
               ['profile', '画像'],
               ['changes', '改进记录'],
@@ -206,6 +208,7 @@ function App() {
         )}
         {tab === 'douban' && <DoubanView />}
         {tab === 'subtitles' && <SubtitlesView />}
+        {tab === 'clips' && <ClipsView />}
         {tab === 'records' && <RecordsView />}
         {tab === 'profile' && <ProfileView />}
         {tab === 'changes' && <ChangesView />}
