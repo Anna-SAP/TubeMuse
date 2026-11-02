@@ -582,8 +582,26 @@ function App() {
         </div>
       </Section>
 
-      <Section title="15. 数据" id="data">
-        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
+      <Section title="15. 小红书" id="xhs">
+        <p class="muted small">
+          在小红书网页版（www.xiaohongshu.com，及其国际域名 www.rednote.com）上：笔记卡片作者那一行显示发布时间，笔记详情的日期旁显示精确到分钟的发布时间；页面上的"收藏"按钮把笔记 / 博主收进 TubeMuse 并打标签，在侧边栏"小红书"页管理。发布时间读自页面里已有的数据（个人主页、笔记详情），没有时由笔记 ID 推算（标"≈"，定时发布的笔记实际发布时间会晚一些）。不向小红书发任何请求，不会在小红书上收藏、点赞或关注；收藏只存在本机。
+        </p>
+        <label class="inline">
+          <input type="checkbox" data-testid="xhs-enabled" checked={settings.xhs.enabled} onChange={(e) => updateSettings((s) => ({ ...s, xhs: { ...s.xhs, enabled: e.currentTarget.checked } }))} />
+          启用小红书功能（关掉后页面上不再出现 TubeMuse 的时间与按钮，已有收藏保留）
+        </label>
+        <label class="inline">
+          <input type="checkbox" data-testid="xhs-show-time" checked={settings.xhs.showTime} onChange={(e) => updateSettings((s) => ({ ...s, xhs: { ...s.xhs, showTime: e.currentTarget.checked } }))} />
+          显示笔记发布时间
+        </label>
+        <label class="inline">
+          <input type="checkbox" data-testid="xhs-show-save" checked={settings.xhs.showSave} onChange={(e) => updateSettings((s) => ({ ...s, xhs: { ...s.xhs, showSave: e.currentTarget.checked } }))} />
+          显示"收藏"按钮
+        </label>
+      </Section>
+
+      <Section title="16. 数据" id="data">
+        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
         <div class="row">
           <button
             class="btn"
@@ -678,6 +696,9 @@ function App() {
         </p>
         <p class="muted small">
           注入 youtube.com 的多语字幕脚本只在你开启后工作：页面内助手读取播放器的字幕轨列表、开关播放器自己的字幕（为拿到播放器的字幕请求短暂打开一次；显示期间关掉原生字幕，关闭时恢复）；另一个脚本复用播放器自己的字幕请求，只换语言，向同源的 <code>www.youtube.com/api/timedtext</code> 取你选的语言（与你在字幕菜单里换语言时播放器发的请求相同），字幕只存在这个标签页的内存里。它在播放器里加一层只读字幕，不改动 YouTube 自己的元素。偏好里有"视频原声语言"而字幕轨看不出时，后台用 YouTube Data API 查一次视频语言（1 unit，有缓存）。
+        </p>
+        <p class="muted small">
+          注入小红书网页版（www.xiaohongshu.com、www.rednote.com）的脚本不发任何网络请求：页面内助手只读页面数据里各笔记的发布时间；另一个脚本在笔记卡片作者那一行、笔记详情的日期旁写上发布时间，放"收藏"按钮和弹窗（只用文字写入，不改动小红书自己的元素，不点击小红书的任何按钮）。收藏经扩展后台校验后存在本机。
         </p>
         <p class="muted small">
           注入 youtube.com 的片段录制脚本只在你开始录制后工作：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字。

@@ -38,7 +38,7 @@ if (!e2e && existsSync(configPath)) {
 // ── 读取网络出口（把 endpoints.ts 临时编译成 JS 再导入）──
 const endpointsFile = join(root, 'src', 'config', e2e ? 'endpoints.e2e.ts' : 'endpoints.ts');
 const compiled = await esbuild.build({ entryPoints: [endpointsFile], bundle: true, write: false, format: 'esm', platform: 'neutral' });
-const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XHS_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 /** @type {string[]} */
 const origins = [...new Set(Object.values(ENDPOINTS).map((u) => new URL(String(u)).origin))];
 const imgOrigins = ['https://i.ytimg.com', ...DOUBAN_IMAGE_ORIGINS, ...(e2e ? origins.filter((o) => o.startsWith('http://127.0.0.1')) : [])];
@@ -90,7 +90,7 @@ await esbuild.build({
   logLevel: 'warning',
 });
 
-// 内容脚本不能是 ES 模块：单独打成 IIFE（观看追踪、自动字幕、片段录制、多语字幕及其页面内助手各一个文件，互不依赖）
+// 内容脚本不能是 ES 模块：单独打成 IIFE（观看追踪、自动字幕、片段录制、多语字幕、小红书及各自的页面内助手各一个文件，互不依赖）
 await esbuild.build({
   entryPoints: {
     'content-tracker': join(root, 'src', 'content', 'tracker.ts'),
@@ -98,6 +98,8 @@ await esbuild.build({
     'content-clipper': join(root, 'src', 'content', 'clipper.ts'),
     'content-multicc': join(root, 'src', 'content', 'multi-captions.ts'),
     'content-multicc-bridge': join(root, 'src', 'content', 'multi-captions-bridge.ts'),
+    'content-xhs': join(root, 'src', 'content', 'xhs.ts'),
+    'content-xhs-bridge': join(root, 'src', 'content', 'xhs-bridge.ts'),
   },
   outdir,
   bundle: true,
@@ -145,12 +147,15 @@ const manifest = {
   // 观看追踪：只读取本地播放器状态。自动字幕：播放时采集该视频音频交给后台转写，并在播放器内叠加只读字幕层。
   // 片段录制：你开始录制后才把这个视频的画面与声音录进内存，保存时交给浏览器存进下载文件夹。
   // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
+  // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
   content_scripts: [
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-clipper.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc.js'], run_at: 'document_idle' },
+    { matches: XHS_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
+    { matches: XHS_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-xhs.js'], run_at: 'document_idle' },
   ],
   commands: {
     'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕' },
@@ -252,6 +257,48 @@ for (const bad of [
   /\bchrome\./,
 ]) {
   if (bad.test(bridge)) fail(`多语字幕的页面内助手里出现了不允许的操作（${bad}）：它只能读字幕轨列表、开关播放器的字幕。`);
+}
+
+// 小红书（2026-11-03 新增，DECISIONS §40）：页面脚本可以往笔记卡片里加时间与收藏按钮，但不得发任何网络请求、
+// 不得用 HTML 字符串写页面、不得读写 Cookie / 页面的本地存储、不得点击或模拟点击小红书自己的按钮（不会替你收藏、点赞、关注）、
+// 不得直接写扩展存储（收藏经后台校验后写入）、不得动态执行代码
+const xhs = readFileSync(join(outdir, 'content-xhs.js'), 'utf8');
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /innerHTML/,
+  /outerHTML/,
+  /insertAdjacentHTML/,
+  /document\.cookie/,
+  /localStorage|sessionStorage|indexedDB/,
+  /\.click\(\)/,
+  /dispatchEvent\(/,
+  /chrome\.storage\.local\.(set|remove|clear)\(/,
+  /\beval\(|new Function\(/,
+  /window\.open\(/,
+  /\.download\s*=/,
+]) {
+  if (bad.test(xhs)) fail(`小红书脚本里出现了不允许的操作（${bad}）：它只能在卡片上显示时间、放收藏按钮。`);
+}
+// 小红书的页面内助手跑在小红书页面自己的环境里：只读页面数据里的发布时间；
+// 不得发网络请求、不得碰页面元素（连 document 都不用）、不得读写 Cookie / 本地存储、不得动态执行代码、不得用扩展接口
+const xhsBridge = readFileSync(join(outdir, 'content-xhs-bridge.js'), 'utf8');
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /\bdocument\./,
+  /innerHTML|outerHTML|insertAdjacent/,
+  /localStorage|sessionStorage|indexedDB/,
+  /\beval\(|new Function\(/,
+  /\bchrome\./,
+]) {
+  if (bad.test(xhsBridge)) fail(`小红书的页面内助手里出现了不允许的操作（${bad}）：它只能读页面数据里的发布时间。`);
 }
 
 for (const file of walk(outdir)) {

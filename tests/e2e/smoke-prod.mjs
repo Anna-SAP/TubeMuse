@@ -48,8 +48,10 @@ try {
         { js: 'content-clipper.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
         { js: 'content-multicc-bridge.js', matches: 'https://www.youtube.com/*', world: 'MAIN' },
         { js: 'content-multicc.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
+        { js: 'content-xhs-bridge.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'MAIN' },
+        { js: 'content-xhs.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'ISOLATED' },
       ]),
-    `观看追踪、自动字幕、片段录制、多语字幕脚本只注入 www.youtube.com，只有多语字幕的页面内助手在页面环境（${scripts.map((/** @type {{ js: string; matches: string; world: string }} */ s) => `${s.js} → ${s.matches} ${s.world}`).join('；')}）`,
+    `观看追踪、自动字幕、片段录制、多语字幕脚本只注入 www.youtube.com，小红书脚本只注入小红书网页版，只有两个页面内助手在页面环境（${scripts.map((/** @type {{ js: string; matches: string; world: string }} */ s) => `${s.js} → ${s.matches} ${s.world}`).join('；')}）`,
   );
   check(
     manifest.permissions.includes('alarms') && !['tabs', 'scripting', 'tabCapture', 'offscreen', 'downloads', 'desktopCapture', 'webRequest', 'declarativeNetRequest'].some((p) => manifest.permissions.includes(p)),

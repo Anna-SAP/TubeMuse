@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockServer, PORT } from './mock-server.mjs';
+import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID } from './xhs-pages.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const extDir = join(root, 'dist-e2e');
@@ -1224,7 +1225,12 @@ try {
   await options.reload();
   await options.locator('#clips').waitFor();
   check(((await options.locator('#clips').textContent()) ?? '').includes('14. 片段录制') && (await options.getByTestId('clips-enabled').isChecked()), '设置页有"片段录制"一节（多语字幕之后顺延为 14），默认启用');
-  check(((await options.locator('#data').textContent()) ?? '').includes('15. 数据'), '"数据"一节顺延为 15');
+  const xhsSection = (await options.locator('#xhs').textContent()) ?? '';
+  check(
+    xhsSection.includes('15. 小红书') && (await options.getByTestId('xhs-enabled').isChecked()) && (await options.getByTestId('xhs-show-time').isChecked()) && (await options.getByTestId('xhs-show-save').isChecked()),
+    '设置页有"小红书"一节（片段录制之后为 15），默认启用、显示时间与收藏按钮',
+  );
+  check(((await options.locator('#data').textContent()) ?? '').includes('16. 数据'), '"数据"一节顺延为 16');
   const sw2 = context.serviceWorkers()[0] ?? sw;
   const manifest2 = await sw2.evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());
   check(manifest2.commands?.['toggle-clip-recording']?.suggested_key?.default === 'Alt+Shift+R', '快捷键 Alt+Shift+R 开始 / 停止录制');
@@ -1445,6 +1451,180 @@ try {
   check(true, '侧边栏说明这一段为什么结束');
   await panel.screenshot({ path: join(shots, '24-clip-panel.png'), fullPage: true });
   await clipPage.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── 小红书 ─────────────────────────
+  console.log('\n[小红书：博主主页 → 卡片作者那一行显示发布时间；卡片高度不变，不压住下面那张]');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '小红书' }).click();
+  check(((await panel.getByTestId('xhs-empty').textContent()) ?? '').includes('还没有收藏'), '侧边栏"小红书"页：还没有收藏时说明怎么开始');
+  const xhsReqStart = requests.length;
+  const xhsProfileUrl = `${MOCK}/xhs/user/profile/${XHS_UID}?xsec_token=ABprofile%3D&xsec_source=pc_feed`;
+  const [xhs] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), xhsProfileUrl)]);
+  xhs.on('pageerror', (e) => consoleErrors.push(`xhs pageerror: ${e.message}`));
+  xhs.on('console', (m) => m.type() === 'error' && consoleErrors.push(`xhs: ${m.text()}`));
+  await xhs.waitForFunction(() => document.querySelectorAll('[data-tubemuse="xhs-time"][data-source="page"]').length === 2, null, { timeout: 15000 });
+  const xhsTimes = await xhs.evaluate(() =>
+    [...document.querySelectorAll('section.note-item')].map((s) => {
+      const t = /** @type {HTMLTimeElement} */ (s.querySelector('[data-tubemuse="xhs-time"]'));
+      const d = new Date(t.dateTime);
+      const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
+      const local = `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      return { text: t.textContent, iso: t.dateTime, source: t.dataset.source, hint: t.title, local, between: t.previousElementSibling?.matches('a.author') && t.nextElementSibling?.matches('.like-wrapper') };
+    }),
+  );
+  const [t1, t2, t3] = xhsTimes;
+  check(t1.source === 'page' && t1.iso === new Date(XHS_N1.time).toISOString() && t1.text === t1.local && !t1.hint, `登录后的卡片：显示页面数据里的发布时间 ${t1.text}（比笔记 ID 推算的晚 2 小时，以页面数据为准；本地时区，精确到分钟）`);
+  check(t2.source === 'page' && t2.iso === new Date(XHS_N2.time).toISOString(), `未登录样式的卡片（链接里没有笔记 ID）：按位置 + 标题对上页面数据 ${t2.text}`);
+  check(t3.source === 'id' && t3.iso === new Date(XHS_N3.idTime).toISOString() && t3.text === `≈${t3.local}` && t3.hint.includes('笔记 ID'), `页面数据里没有的笔记：由笔记 ID 推算，显示 ${t3.text} 并在悬停提示里说明`);
+  check(xhsTimes.every((t) => t.between), '时间插在作者名与点赞数之间（红框区域，作者那一行）');
+  const xhsLayout = await xhs.evaluate(() => {
+    const L = /** @type {any} */ (window).__layout;
+    const cards = [...document.querySelectorAll('section.note-item')].map((s) => s.getBoundingClientRect());
+    const sameHeights = L.every((/** @type {any} */ l, /** @type {number} */ i) => Math.abs(cards[i].height - l.height) < 0.5);
+    const noOverlap = L.every((/** @type {any} */ a, /** @type {number} */ i) => L.every((/** @type {any} */ b, /** @type {number} */ j) => i === j || a.col !== b.col || cards[i].bottom <= cards[j].top + 0.5 || cards[j].bottom <= cards[i].top + 0.5));
+    const rows = [...document.querySelectorAll('section.note-item .author-wrapper')].map((r) => r.getBoundingClientRect().height);
+    return { sameHeights, noOverlap, oneLine: rows.every((h) => Math.abs(h - 20) < 0.5) };
+  });
+  check(xhsLayout.sameHeights && xhsLayout.noOverlap && xhsLayout.oneLine, '卡片高度与小红书排版时一样、同一列上下卡片不重叠、作者那一行仍是一行');
+  await panel.getByTestId('xhs-tab-status').filter({ hasText: '找到 3 张笔记卡片' }).waitFor({ timeout: 5000 });
+  const xhsStatus = (await panel.getByTestId('xhs-tab-status').textContent()) ?? '';
+  check(xhsStatus.includes('博主主页') && xhsStatus.includes('2 张显示页面数据里的发布时间') && xhsStatus.includes('1 张由笔记 ID 推算'), `侧边栏说明当前页的情况：${xhsStatus}`);
+  await xhs.screenshot({ path: join(shots, '25-xhs-profile.png') });
+
+  console.log('\n[小红书：卡片上点"收藏" → 弹窗加标签 → 存在本机；不打开笔记、不点小红书自己的元素]');
+  const xhsCard = (/** @type {number} */ i) => xhs.locator('section.note-item').nth(i);
+  const xhsStored = () => panel.evaluate(async () => (await /** @type {any} */ (globalThis).chrome.storage.local.get('xhs')).xhs ?? { notes: {}, users: {} });
+  const saveOpacity = (/** @type {number} */ i) => xhsCard(i).locator('[data-tubemuse="xhs-save"]').evaluate((h) => getComputedStyle(h).opacity);
+  await xhs.mouse.move(400, 10);
+  await xhs.waitForTimeout(300);
+  const hiddenBefore = await saveOpacity(0);
+  await xhsCard(0).hover();
+  await xhs.waitForTimeout(300);
+  check(hiddenBefore === '0' && (await saveOpacity(0)) === '1', '"收藏"平时不显示，鼠标移到卡片上时出现在封面左下角');
+  const coverBox = await xhsCard(0).locator('a.cover').boundingBox();
+  const saveBox = await xhsCard(0).locator('[data-tubemuse="xhs-save"] button').boundingBox();
+  check(!!coverBox && !!saveBox && saveBox.y > coverBox.y && saveBox.y + saveBox.height <= coverBox.y + coverBox.height && saveBox.x >= coverBox.x, '按钮在封面范围内（不占卡片高度）');
+  await xhsCard(0).locator('[data-tubemuse="xhs-save"] button').click();
+  const xhsPop = xhs.locator('[data-tubemuse="xhs-pop"]');
+  await xhsPop.locator('section[data-kind="note"] input').waitFor({ timeout: 5000 });
+  check(((await xhsPop.locator('.pop').textContent()) ?? '').includes('不会在小红书上收藏或关注'), '弹窗写明只存在本机、不会在小红书上收藏或关注');
+  check(((await xhsPop.locator('section[data-kind="user"] .name').textContent()) ?? '') === '李诞小卖部', '弹窗里同时有这篇笔记和它的作者');
+  await xhsPop.locator('section[data-kind="note"] input').fill('书单，AI');
+  await xhsPop.locator('section[data-kind="note"] input').press('Enter');
+  await xhsCard(0).locator('[data-tubemuse="xhs-save"] button').filter({ hasText: '已收藏 · 2' }).waitFor({ timeout: 5000 });
+  const st1 = await xhsStored();
+  const n1 = st1.notes[XHS_N1.id];
+  check(
+    !!n1 &&
+      JSON.stringify(n1.tags) === JSON.stringify(['书单', 'AI']) &&
+      n1.url === `${MOCK}/xhs/user/profile/${XHS_UID}/${XHS_N1.id}?xsec_token=ABtoken1%3D&xsec_source=pc_user` &&
+      n1.publishedAt === XHS_N1.time &&
+      n1.timeSource === 'page' &&
+      n1.title === XHS_N1.title &&
+      n1.authorId === XHS_UID &&
+      n1.authorName === '李诞小卖部',
+    '加标签即收藏：标题、作者、发布时间（页面数据）、带 xsec_token 的链接、两个标签都存进本机',
+  );
+  check(xhs.url() === xhsProfileUrl && (await xhs.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '没有打开笔记，也没有点到小红书自己的任何元素');
+  await xhsPop.getByRole('button', { name: '收藏这位博主' }).click();
+  await xhs.locator('[data-tubemuse="xhs-save-inline"][data-for="profile"] button').filter({ hasText: '已收藏博主' }).waitFor({ timeout: 5000 });
+  const st2 = await xhsStored();
+  check(st2.users[XHS_UID]?.name === '李诞小卖部' && st2.users[XHS_UID]?.url === `${MOCK}/xhs/user/profile/${XHS_UID}?xsec_source=pc_note`, '弹窗里一键收藏这位博主；博主主页名字旁的按钮随之变成"已收藏博主"');
+  await xhsPop.getByRole('button', { name: '去掉标签 AI' }).click();
+  await xhsCard(0).locator('[data-tubemuse="xhs-save"] button').filter({ hasText: '已收藏 · 1' }).waitFor({ timeout: 5000 });
+  check(JSON.stringify((await xhsStored()).notes[XHS_N1.id].tags) === JSON.stringify(['书单']), '在弹窗里去掉一个标签');
+  await xhsPop.locator('section[data-kind="note"] input').press('Escape');
+  await xhsPop.waitFor({ state: 'detached', timeout: 3000 });
+  check(true, '按 Esc 关闭弹窗');
+  await xhs.mouse.move(400, 10);
+  await xhs.waitForTimeout(300);
+  check((await saveOpacity(0)) === '1' && (await saveOpacity(2)) === '0', '收藏过的卡片按钮常驻（"已收藏 · 1"），没收藏的仍然只在悬停时出现');
+
+  console.log('\n[小红书：未登录样式的卡片 → 只能收藏博主；常用标签一键加]');
+  await xhsCard(1).hover();
+  await xhsCard(1).locator('[data-tubemuse="xhs-save"] button').click();
+  await xhsPop.locator('.pop').waitFor({ timeout: 3000 });
+  check(((await xhsPop.locator('section[data-kind="note"]').textContent()) ?? '').includes('登录后才能收藏这篇笔记'), '卡片上没有笔记链接时说明原因（博主照常可以收藏）');
+  await xhsCard(1).locator('[data-tubemuse="xhs-save"] button').click();
+  await xhsPop.waitFor({ state: 'detached', timeout: 3000 });
+  await xhsCard(2).hover();
+  await xhsCard(2).locator('[data-tubemuse="xhs-save"] button').click();
+  await xhsPop.locator('section[data-kind="note"]').getByRole('button', { name: '+书单' }).click();
+  await xhsCard(2).locator('[data-tubemuse="xhs-save"] button').filter({ hasText: '已收藏 · 1' }).waitFor({ timeout: 5000 });
+  const n3 = (await xhsStored()).notes[XHS_N3.id];
+  check(n3?.timeSource === 'id' && n3.publishedAt === XHS_N3.idTime && JSON.stringify(n3.tags) === JSON.stringify(['书单']), '点"常用"里的标签直接收藏；时间记为由笔记 ID 推算');
+  await xhs.keyboard.press('Escape');
+  await xhs.mouse.click(400, 10);
+  await xhsPop.waitFor({ state: 'detached', timeout: 3000 });
+  check(true, '点弹窗外面关闭');
+
+  console.log('\n[小红书：虚拟列表把卡片换成另一篇 → 时间跟着换；设置里关掉时间 / 按钮]');
+  await xhs.evaluate(({ id, title }) => /** @type {any} */ (window).__recycle(2, id, title), { id: XHS_N4.id, title: XHS_N4.title });
+  await xhs.waitForFunction((iso) => /** @type {HTMLTimeElement | null} */ (document.querySelector('section.note-item[data-index="12"] [data-tubemuse="xhs-time"]'))?.dateTime === iso, new Date(XHS_N4.idTime).toISOString(), { timeout: 5000 });
+  check((await xhsCard(2).locator('[data-tubemuse="xhs-save"] button').textContent())?.trim() === '收藏', '换成的那篇没收藏过：按钮回到"收藏"');
+  const setXhs = (/** @type {Record<string, boolean>} */ patch) =>
+    panel.evaluate(async (p) => {
+      const c = /** @type {any} */ (globalThis).chrome;
+      const { settings = {} } = await c.storage.local.get('settings');
+      await c.storage.local.set({ settings: { ...settings, xhs: { ...settings.xhs, ...p } } });
+    }, patch);
+  await setXhs({ showTime: false });
+  await xhs.waitForFunction(() => document.querySelectorAll('[data-tubemuse="xhs-time"]').length === 0, null, { timeout: 5000 });
+  await setXhs({ showTime: true, enabled: false });
+  await xhs.waitForFunction(() => document.querySelectorAll('[data-tubemuse^="xhs"]').length === 0, null, { timeout: 5000 });
+  check(true, '关掉"显示发布时间"、关掉整个小红书功能：页面上 TubeMuse 加的东西全部消失');
+  await setXhs({ enabled: true });
+  await xhs.waitForFunction(() => document.querySelectorAll('[data-tubemuse="xhs-time"]').length === 3, null, { timeout: 5000 });
+  check(true, '重新打开后恢复');
+
+  console.log('\n[小红书：笔记详情 → 日期旁显示精确发布时间；"关注"旁的按钮显示已收藏]');
+  await xhs.goto(`${MOCK}/xhs/explore/${XHS_N1.id}?xsec_token=ABtoken1%3D&xsec_source=pc_user`);
+  await xhs.locator('[data-tubemuse="xhs-detail-time"][data-source="page"]').waitFor({ timeout: 10000 });
+  const detail = await xhs.evaluate(() => {
+    const t = /** @type {HTMLTimeElement} */ (document.querySelector('[data-tubemuse="xhs-detail-time"]'));
+    return { text: t.textContent, iso: t.dateTime, afterDate: t.previousElementSibling?.classList.contains('date') };
+  });
+  check(detail.iso === new Date(XHS_N1.time).toISOString() && /^发布于 \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/.test(detail.text ?? '') && !!detail.afterDate, `详情页日期旁：${detail.text}`);
+  const inline = xhs.locator('[data-tubemuse="xhs-save-inline"][data-for="note"] button');
+  check(((await inline.textContent()) ?? '').includes('已收藏 · 1'), '"关注"旁的按钮显示这篇已收藏');
+  await inline.click();
+  await xhsPop.locator('section[data-kind="user"]').filter({ hasText: '移出收藏' }).waitFor({ timeout: 3000 });
+  check((await xhs.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '弹窗里同时有笔记和作者；没有点到"关注"');
+  await xhs.keyboard.press('Escape');
+
+  console.log('\n[小红书：侧边栏 → 筛选、改名标签、移出与撤销]');
+  await panel.bringToFront();
+  await panel.getByTestId('xhs-list').waitFor({ timeout: 5000 });
+  check((await panel.getByTestId('xhs-item').count()) === 3, '侧边栏列出收藏的 2 篇笔记与 1 位博主');
+  check(((await panel.getByTestId('xhs-item').filter({ hasText: XHS_N1.title }).getByTestId('xhs-item-time').textContent()) ?? '').startsWith('发布 '), '笔记显示发布时间');
+  await panel.getByTestId('xhs-tag-filter').getByRole('button', { name: /#书单/ }).click();
+  check((await panel.getByTestId('xhs-item').count()) === 2, '按标签 #书单 筛选');
+  await panel.getByRole('button', { name: '管理标签' }).click();
+  await panel.getByTestId('xhs-tag-manager').getByRole('button', { name: '改名' }).first().click();
+  await panel.getByRole('textbox', { name: '把 #书单 改名为' }).fill('读书');
+  await panel.getByRole('textbox', { name: '把 #书单 改名为' }).press('Enter');
+  /** 等本机存储里的收藏满足条件（waitForFunction 不等异步判断的结果，所以在这边轮询） */
+  const untilStored = async (/** @type {(s: any) => boolean} */ ok) => {
+    for (let i = 0; i < 50 && !ok(await xhsStored()); i++) await panel.waitForTimeout(100);
+    return ok(await xhsStored());
+  };
+  const renamed = await untilStored((s) => JSON.stringify(s.notes[XHS_N3.id]?.tags) === '["读书"]' && JSON.stringify(s.notes[XHS_N1.id]?.tags) === '["读书"]');
+  check(renamed && (await panel.getByTestId('xhs-item').count()) === 2, '标签改名后两篇笔记都跟着改，筛选跟到新名字');
+  await panel.getByTestId('xhs-item').filter({ hasText: XHS_N3.title }).getByTestId('xhs-remove').click();
+  await panel.getByRole('button', { name: '撤销' }).waitFor({ timeout: 3000 });
+  check(!(await xhsStored()).notes[XHS_N3.id], '移出收藏');
+  await panel.getByRole('button', { name: '撤销' }).click();
+  check(await untilStored((s) => JSON.stringify(s.notes[XHS_N3.id]?.tags) === '["读书"]'), '撤销后原样放回（标签还在）');
+  await panel.screenshot({ path: join(shots, '26-xhs-panel.png'), fullPage: true });
+
+  console.log('\n[小红书：网络红线]');
+  const xhsPageReqs = requests.slice(xhsReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/xhs/`));
+  check(
+    xhsPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/xhs/') || r.path === '/favicon.ico')),
+    `小红书页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${xhsPageReqs.length ? `：${xhsPageReqs.map((r) => r.path).join(', ')}` : ''}`,
+  );
+  await xhs.close();
   await panel.bringToFront();
 
   console.log('\n[Phase 3：X 网络红线]');

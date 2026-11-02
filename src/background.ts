@@ -15,6 +15,9 @@ import { CLIP_MSG, type ClipTabState } from './core/clips';
 import { recordSavedClip } from './services/clip-service';
 import { MULTICC_MSG } from './core/multi-captions';
 import { multiCcVideoLanguage } from './services/multi-captions-service';
+import { XHS_PAGES } from './config/endpoints';
+import { XHS_MSG } from './core/xhs';
+import { applyXhsFromPage, type XhsReply } from './services/xhs-service';
 
 const ctx = createBrowserContext();
 const TICK = 'tubemuse-tick';
@@ -82,6 +85,11 @@ function fromTrackedSite(sender: chrome.runtime.MessageSender): boolean {
   }
 }
 
+/** 注入小红书网页版的脚本（只认 manifest 里注入它的那些网址） */
+function fromXhsPage(sender: chrome.runtime.MessageSender): boolean {
+  return sender.id === chrome.runtime.id && !!sender.tab && !!sender.url && XHS_PAGES.some((p) => sender.url!.startsWith(p));
+}
+
 /** 本扩展自己的页面（设置页、侧边栏），不是注入网页的脚本 */
 function fromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
   return sender.id === chrome.runtime.id && !!sender.url && sender.url.startsWith(chrome.runtime.getURL(''));
@@ -91,7 +99,7 @@ function fromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
 let connecting: Promise<void> | undefined;
 
 let reminderTimer: ReturnType<typeof setTimeout> | undefined;
-chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | { lang?: string; note?: string }) => void) => {
+chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | XhsReply | { lang?: string; note?: string }) => void) => {
   const m = msg as { type?: string; session?: unknown } | undefined;
   if (m?.type === AUTH_CONNECT_MESSAGE) {
     if (!fromExtensionPage(sender)) return false;
@@ -123,6 +131,12 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
     if (!fromTrackedSite(sender)) return false;
     void recordSavedClip(ctx, (m as { record?: unknown }).record).catch(() => undefined);
     return false;
+  }
+  // 小红书：页面上点了收藏 / 移出 / 加减标签。页面内容不可信，校验后写入本机；不向小红书发任何请求
+  if (m?.type === XHS_MSG.op) {
+    if (!fromXhsPage(sender)) return false;
+    applyXhsFromPage(ctx, (m as { op?: unknown }).op).then(sendResponse, () => sendResponse({ ok: false, error: '没有保存：本机存储出错，稍后再试' }));
+    return true;
   }
   // 片段录制状态：在工具栏图标上标出正在录（用快捷键录制时不打开侧边栏也看得见）
   if (m?.type === CLIP_MSG.state) {

@@ -25,3 +25,6 @@ export const GOOGLE_OAUTH_AUTHORIZE_URL = `${MOCK}/oauth/authorize`;
 
 /** e2e：在本机 mock 的"播放页"上注入观看追踪脚本 */
 export const TRACKED_SITES = ['https://www.youtube.com', MOCK] as const;
+
+/** e2e：本机 mock 的 /xhs/ 下是仿小红书网页版的页面（小红书脚本只注入这里，不碰 mock 的 YouTube 播放页） */
+export const XHS_PAGES: readonly string[] = ['https://www.xiaohongshu.com/', 'https://www.rednote.com/', `${MOCK}/xhs/`];

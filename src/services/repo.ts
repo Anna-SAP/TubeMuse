@@ -8,6 +8,7 @@ import type { DiscoveryState, DoubanState, HotspotState, SubtitleIndex, Subtitle
 import type { SubtitleLedger } from '../core/subtitles';
 import type { ClipRecord } from '../core/clips';
 import { sanitizeCcLangs } from '../core/multi-captions';
+import { emptyXhsState, sanitizeXhsState, type XhsState } from '../core/xhs';
 import type {
   Adjustment,
   ClusterState,
@@ -78,6 +79,7 @@ export function mergeSettings(stored: unknown): Settings {
       langs: sanitizeCcLangs(s.multiCaptions?.langs) ?? [...d.multiCaptions.langs],
     },
     clips: { ...d.clips, ...(s.clips as object) },
+    xhs: { ...d.xhs, ...(s.xhs as object) },
     ui: { ...d.ui, ...(s.ui as object) },
   } as Settings;
 }
@@ -150,6 +152,8 @@ export const stores = {
   subtitleLedger: new Store<SubtitleLedger>('subtitleLedger', () => ({ days: {} })),
   /** 录过并保存的视频片段（只有标题、时间段、大小、文件名；视频文件在浏览器的下载文件夹，不在这里） */
   clipLog: new Store<ClipRecord[]>('clipLog', () => []),
+  /** 小红书：收进 TubeMuse 的笔记与博主，各自的标签（只存在本机，与小红书账号里的收藏、关注无关） */
+  xhs: new Store<XhsState>('xhs', emptyXhsState, (v) => sanitizeXhsState(v, Date.now())),
   /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
   /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */

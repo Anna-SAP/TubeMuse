@@ -28,3 +28,10 @@ export const DOUBAN_IMAGE_ORIGINS: readonly string[] = Array.from({ length: 9 },
 
 /** 内容脚本注入、并接受其观看上报的站点（只读本地播放器状态，不抓取页面内容） */
 export const TRACKED_SITES = ['https://www.youtube.com'] as const;
+
+/**
+ * 小红书网页版（2026-11-03 新增，见 DECISIONS §40）：注入笔记发布时间与收藏按钮的页面。
+ * www.rednote.com 是同一个网页版的国际域名（从海外网络打开 xiaohongshu.com 会被转到这里）。
+ * 只用于内容脚本的 matches 与核对消息来源：扩展不向这两个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
+ */
+export const XHS_PAGES: readonly string[] = ['https://www.xiaohongshu.com/', 'https://www.rednote.com/'];

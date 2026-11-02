@@ -185,6 +185,17 @@ export const DEFAULT_SETTINGS = {
     /** 单段时长上限（分钟）：片段在保存前全部在内存里 */
     maxMinutes: 10,
   },
+  /**
+   * 小红书网页版（用户 2026-11-03 要求，见 DECISIONS §40）：笔记卡片上显示发布时间；在页面上把博主 / 笔记收进 TubeMuse 并打标签。
+   * 只读页面里已有的数据，不向小红书发任何请求；收藏只存在本机，不会在小红书上收藏或关注。
+   */
+  xhs: {
+    enabled: true,
+    /** 笔记卡片作者那一行、笔记详情的日期旁显示发布时间 */
+    showTime: true,
+    /** 笔记卡片封面、博主主页名字旁、笔记详情"关注"旁显示"收藏"按钮 */
+    showSave: true,
+  },
   /** 侧边栏界面偏好 */
   ui: {
     /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
@@ -343,6 +354,31 @@ export const DOUBAN = {
   transientFeedsKept: 5,
   /** 评价词 → 星级（豆瓣五档） */
   ratingStars: { 力荐: 5, 推荐: 4, 还行: 3, 较差: 2, 很差: 1 } as Record<string, number>,
+} as const;
+
+/** 小红书：笔记发布时间与收藏 / 标签（见 DECISIONS §40） */
+export const XHS = {
+  /**
+   * 笔记 ID 前 8 位十六进制是创建时刻（Unix 秒）。早于这个时间或晚于"现在 + futureSlackMs"的不认（小红书 2013 年上线）。
+   * 2026-11-03 实测 6 篇：4 篇与页面数据里的发布时间一秒不差，2 篇早 2–3 小时（定时 / 审核后发布），所以界面标"≈"
+   */
+  idTimeMin: Date.UTC(2013, 0, 1),
+  futureSlackMs: 2 * 24 * 3_600_000,
+  /** 每条收藏最多几个标签、每个标签最多几个字 */
+  maxTagsPerItem: 20,
+  maxTagChars: 20,
+  /** 笔记、博主各自最多收藏多少条 */
+  maxItems: 5000,
+  titleMaxChars: 200,
+  nameMaxChars: 60,
+  /** 收藏弹窗里"常用标签"最多列几个 */
+  suggestTags: 12,
+  /** 页面内助手（读页面数据里的发布时间）多久没应答算不可用 */
+  bridgeTimeoutMs: 1500,
+  /** 页面内容变化后多久重新扫一遍卡片（合并虚拟列表滚动时的大量变化） */
+  scanDelayMs: 120,
+  /** 有新卡片时最多多久重读一次页面数据（页面内助手每次最多读多少条见 core/xhs-protocol.ts） */
+  timesRefreshMs: 800,
 } as const;
 
 /**

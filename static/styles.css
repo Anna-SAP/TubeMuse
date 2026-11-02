@@ -1515,3 +1515,132 @@ a.db-title:hover {
 .clips .muted.small {
   margin: 4px 0;
 }
+
+/* ── 小红书收藏 ── */
+.xhs-status {
+  margin: 4px 0 8px;
+}
+.xhs-warn {
+  color: var(--no);
+}
+.xhs-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.xhs-search {
+  flex: 1 1 140px;
+}
+.xhs-tag-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+}
+.xhs-filter-chip {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.xhs-filter-chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.xhs-filter-chip.on .muted {
+  color: inherit;
+  opacity: 0.8;
+}
+.xhs-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.xhs-kind {
+  flex: none;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.xhs-kind.user {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.xhs-title {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.xhs-title:hover {
+  color: var(--accent);
+}
+.xhs-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 10px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.xhs-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.xhs-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+}
+.xhs-chip button {
+  font: inherit;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.xhs-chip-name {
+  padding: 2px 2px 2px 9px;
+}
+.xhs-chip-x {
+  padding: 2px 8px 2px 4px;
+}
+.xhs-tag-input {
+  width: 110px;
+}
+.xhs-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.xhs-tag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.xhs-tag-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.xhs-tag-name {
+  font-weight: 600;
+}
