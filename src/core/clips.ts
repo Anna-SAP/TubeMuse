@@ -253,11 +253,14 @@ export interface BurnLine {
   text: string;
   /** 原文（白色）或译文（浅黄、略小），与播放器里的字幕层一致 */
   tone: 'source' | 'translation';
+  /** 文字颜色（多语字幕每种语言一种颜色）；不给时按 tone */
+  color?: string;
 }
 
 export interface BurnBox {
   text: string;
   tone: BurnLine['tone'];
+  color?: string;
   fontPx: number;
   /** 底框左上角与宽高 */
   x: number;
@@ -315,10 +318,10 @@ export function layoutBurnIn(lines: BurnLine[], opts: { width: number; height: n
   const base = Math.min(48, Math.max(14, height * 0.045)) * (opts.fontScale || 1);
   const padX = base * 0.45;
   const maxText = width * 0.9 - padX * 2;
-  const rows: { text: string; tone: BurnLine['tone']; fontPx: number }[] = [];
+  const rows: { text: string; tone: BurnLine['tone']; color?: string; fontPx: number }[] = [];
   for (const l of lines) {
     const fontPx = l.tone === 'translation' ? base * 0.88 : base;
-    for (const t of wrapText(l.text, maxText, fontPx, measure)) rows.push({ text: t, tone: l.tone, fontPx });
+    for (const t of wrapText(l.text, maxText, fontPx, measure)) rows.push({ text: t, tone: l.tone, ...(l.color ? { color: l.color } : {}), fontPx });
   }
   const boxes: BurnBox[] = [];
   let bottom = height - Math.max(12, height * 0.06);
@@ -328,7 +331,7 @@ export function layoutBurnIn(lines: BurnLine[], opts: { width: number; height: n
     const w = Math.min(width * 0.94, measure(r.text, r.fontPx) + padX * 2);
     const y = bottom - h;
     if (y < 0) break; // 画面放不下的更早的行不画
-    boxes.unshift({ text: r.text, tone: r.tone, fontPx: r.fontPx, x: (width - w) / 2, y, w, h, cx: width / 2, cy: y + h / 2 });
+    boxes.unshift({ text: r.text, tone: r.tone, ...(r.color ? { color: r.color } : {}), fontPx: r.fontPx, x: (width - w) / 2, y, w, h, cx: width / 2, cy: y + h / 2 });
     bottom = y - base * 0.18;
   }
   return boxes;

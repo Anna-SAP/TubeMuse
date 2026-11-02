@@ -886,13 +886,256 @@ try {
   await sub.close();
   await panel.bringToFront();
 
+  // ───────────────────────── 多语字幕 ─────────────────────────
+  console.log('\n[多语字幕：设置]');
+  await options.bringToFront();
+  await options.reload();
+  await options.locator('#multicc').waitFor();
+  const ccSection = (await options.locator('#multicc').textContent()) ?? '';
+  check(
+    ccSection.includes('13. 多语字幕') && !(await options.getByTestId('multicc-autoon').isChecked()) && (await options.getByTestId('multicc-autotranslate').isChecked()),
+    '设置页有"多语字幕"一节：默认不自动开启，没有的语言用 YouTube 自动翻译补',
+  );
+  const ccOrder = await options.getByTestId('multicc-lang-order').locator('li').allTextContents();
+  check(ccOrder.length === 3 && ccOrder[0].includes('视频原声语言') && ccOrder[1].includes('English') && ccOrder[2].includes('简体中文'), `默认语言从上到下：原声、English、简体中文`);
+  const swCc = context.serviceWorkers()[0] ?? sw;
+  const manifestCc = await swCc.evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());
+  check(manifestCc.commands?.['toggle-multi-captions']?.suggested_key?.default === 'Alt+Shift+C', '快捷键 Alt+Shift+C 开关多语字幕');
+  const bridgeEntry = manifestCc.content_scripts.find((/** @type {any} */ c) => c.js.includes('content-multicc-bridge.js'));
+  check(bridgeEntry?.world === 'MAIN' && manifestCc.content_scripts.find((/** @type {any} */ c) => c.js.includes('content-multicc.js'))?.world !== 'MAIN', '页面内助手跑在页面环境（MAIN），取字幕与画字幕层的脚本在隔离环境');
+  check(!['scripting', 'webRequest', 'declarativeNetRequest', 'tabs'].some((p) => manifestCc.permissions.includes(p)), `多语字幕没有新增权限：${manifestCc.permissions.join(', ')}`);
+
+  const timedtextReqs = (/** @type {string} */ v) => requests.filter((r) => r.path === '/api/timedtext' && r.query.v === v);
+  const playerTt = (/** @type {string} */ v) => timedtextReqs(v).filter((r) => r.headers['x-mock-player'] === '1');
+  const ourTt = (/** @type {string} */ v) => timedtextReqs(v).filter((r) => r.headers['x-mock-player'] !== '1');
+  const ccStatus = panel.getByTestId('multicc-status');
+  /** 播放器里多语字幕层每一行：语言、文字、是否标了机翻、是否隐藏、颜色 */
+  const ccLines = (/** @type {import('playwright').Page} */ page) =>
+    page.evaluate(() =>
+      [...(document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelectorAll('.line') ?? [])].map((l) => ({
+        lang: /** @type {HTMLElement} */ (l).dataset.lang,
+        text: l.querySelector('.tx')?.textContent ?? '',
+        mt: !(/** @type {HTMLElement} */ (l.querySelector('.mt')).hidden),
+        hidden: /** @type {HTMLElement} */ (l).hidden,
+        color: getComputedStyle(l).color,
+      })),
+    );
+  const seekPaused = (/** @type {import('playwright').Page} */ page, /** @type {number} */ t) =>
+    page.evaluate((t) => {
+      const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+      v.pause();
+      v.currentTime = t;
+    }, t);
+  /** 等字幕层显示出这几行文字（暂停时由每 250 毫秒一次的主循环刷新） */
+  const waitCcText = (/** @type {import('playwright').Page} */ page, /** @type {string[]} */ texts) =>
+    page.waitForFunction(
+      (texts) =>
+        JSON.stringify([...(document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelectorAll('.line:not([hidden]) .tx') ?? [])].map((x) => x.textContent)) === JSON.stringify(texts),
+      texts,
+      { timeout: 15000 },
+    );
+  const nativeState = (/** @type {import('playwright').Page} */ page) =>
+    page.evaluate(() => {
+      const p = /** @type {any} */ (document.getElementById('movie_player'));
+      const w = /** @type {any} */ (window);
+      return { lang: p.getOption('captions', 'track')?.languageCode ?? null, windows: document.querySelectorAll('.caption-window').length, calls: /** @type {any[]} */ (w.__playerCalls), foreign: /** @type {string[]} */ (w.__foreign) };
+    });
+  /** 只允许调用播放器自己的字幕开关 */
+  const onlyCaptionCalls = (/** @type {any[]} */ calls) => calls.every((c) => (c[0] === 'setOption' && c[1] === 'captions' && c[2] === 'track') || (c[0] === 'loadModule' && c[1] === 'captions'));
+
+  console.log('\n[多语字幕：MV（原生字幕关着）→ 侧边栏开启 → 韩 / 英 / 中三行叠在播放器里，各按自己的时间轴]');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '字幕', exact: true }).click();
+  const [cc] = await Promise.all([
+    context.waitForEvent('page'),
+    panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/watch?v=ccMulti0001`),
+  ]);
+  cc.on('pageerror', (e) => consoleErrors.push(`multicc watch pageerror: ${e.message}`));
+  cc.on('console', (m) => m.type() === 'error' && consoleErrors.push(`multicc watch: ${m.text()}`));
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
+  await cc.waitForTimeout(1500);
+  check((await cc.locator('[data-tubemuse="multicc"]').count()) === 0 && timedtextReqs('ccMulti0001').length === 0, '默认不开启：不取字幕、不加字幕层、不碰原生字幕');
+  const offOpts = (await panel.getByTestId('multicc-langs').textContent()) ?? '';
+  check(['English', 'Chinese (Simplified)', 'Indonesian'].every((x) => offOpts.includes(x)), '侧边栏列出这个视频的 YouTube 字幕');
+  const metaBefore = requests.filter((r) => r.path === '/youtube/v3/videos' && r.query.id === 'ccMulti0001').length;
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await seekPaused(cc, 3.0);
+  await waitCcText(cc, ['내 이름을 불러줘', 'Lead me', '叫我的名字']);
+  const l3 = await ccLines(cc);
+  check(JSON.stringify(l3.map((l) => l.lang)) === JSON.stringify(['ko', 'en', 'zh-Hans']), `从上到下：原声（韩语，查 YouTube 数据得知）、英文、简体中文：${l3.map((l) => l.lang).join(' / ')}`);
+  check(new Set(l3.map((l) => l.color)).size === 3 && l3.every((l) => !l.mt), `三行都是原生字幕、颜色各不相同：${l3.map((l) => l.color).join(' ')}`);
+  // 观看记录补元数据时也可能先查过（共用缓存），所以只要求查过、且没有反复查
+  const metaCalls = requests.filter((r) => r.path === '/youtube/v3/videos' && r.query.id === 'ccMulti0001').length - metaBefore;
+  check(metaCalls >= 0 && metaCalls <= 1 && requests.some((r) => r.path === '/youtube/v3/videos' && r.query.id === 'ccMulti0001'), `原声语言来自官方 videos.list（与观看记录共用缓存，这次查了 ${metaCalls} 次）`);
+  // 第 3 秒：英文已到第二句"Lead me"，中文、韩文仍是第一句——各自的断句与时间戳
+  await seekPaused(cc, 4.25);
+  await waitCcText(cc, ['내 이름을 불러줘', 'Along the lines that connect us', '循着彼此相连的脉络']);
+  check(true, '第 4.25 秒：英文、中文已换到下一句，韩文的上一句到 4.3 秒才结束——各按自己的时间轴，不硬对齐');
+  await seekPaused(cc, 2.25);
+  await waitCcText(cc, ['내 이름을 불러줘', 'Call my name', '叫我的名字']);
+  check(true, '英文两句之间 0.1 秒的空档留着上一句，不闪');
+  await seekPaused(cc, 14.5);
+  await cc.waitForFunction(() => document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelector('.wrap')?.hasAttribute('hidden'), null, { timeout: 5000 });
+  check(true, '所有语言都没有字幕的时段：整层隐藏');
+
+  const pT = playerTt('ccMulti0001');
+  const oT = ourTt('ccMulti0001');
+  check(pT.length === 1 && /^MOCKPOT-ccMulti0001-1$/.test(pT[0]?.query.pot ?? ''), `原生字幕关着：TubeMuse 请播放器选了一次字幕轨，播放器自己发出带令牌的请求（${pT.length} 个）`);
+  check(
+    oT.length === 3 &&
+      JSON.stringify(oT.map((r) => r.query.lang).sort()) === JSON.stringify(['en', 'ko', 'zh-Hans']) &&
+      oT.every((r) => r.query.pot === pT[0]?.query.pot && r.query.signature === 'MOCKSIG' && r.query.fmt === 'json3' && !r.query.tlang && !r.headers.authorization),
+    `复用播放器的请求、只换语言：三种语言各取一次（${oT.map((r) => r.query.lang).join(', ')}），令牌与签名原样`,
+  );
+  const ns1 = await nativeState(cc);
+  check(ns1.lang === null && ns1.windows === 0, '为取字幕打开的原生字幕随即关掉：播放器里不会出现两层');
+  check(onlyCaptionCalls(ns1.calls) && ns1.calls.length >= 2, `只调用了播放器自己的字幕开关：${ns1.calls.map((c) => c.join(' ')).join('；')}`);
+  check(ns1.foreign.length === 0, `YouTube 自己的元素原样未动（播放器自己的字幕窗口除外）${ns1.foreign.length ? `：${ns1.foreign.join(', ')}` : ''}`);
+  check(((await ccStatus.textContent()) ?? '').includes('正在显示 3 种语言'), `侧边栏：${await ccStatus.textContent()}`);
+  const onOpts = (await panel.getByTestId('multicc-langs').textContent()) ?? '';
+  check(onOpts.includes('原生字幕 · 原声') && /3 句/.test(onOpts), '侧边栏写明每一行的来源与读到的句数');
+  await seekPaused(cc, 6.0);
+  await waitCcText(cc, ['서로 이어진 결을 따라', 'Along the lines that connect us', '循着彼此相连的脉络']);
+  await cc.screenshot({ path: join(shots, '30-multicc-overlay.png') });
+  await panel.screenshot({ path: join(shots, '31-multicc-panel.png'), fullPage: true });
+
+  console.log('\n[多语字幕：侧边栏给这个视频加一种语言；YouTube 返回空字幕时说明原因]');
+  await panel.getByTestId('multicc-langs').getByRole('checkbox', { name: /Indonesian/ }).check();
+  await panel.getByTestId('multicc-langs').getByText('YouTube 返回了空字幕').waitFor({ timeout: 10000 });
+  check(ourTt('ccMulti0001').filter((r) => r.query.lang === 'id').length === 1, '加了印尼语：立即用同一个请求取来（这条轨是空的）');
+  check((await ccLines(cc)).filter((l) => !l.hidden).length === 3, '空的那一行不显示，其余三行照常');
+  check(((await panel.getByTestId('multicc-panel').textContent()) ?? '').includes('这个视频改回默认语言'), '这个视频用的是单独选的语言：可以一键改回默认');
+  await panel.getByRole('button', { name: '这个视频改回默认语言' }).click();
+  await cc.waitForFunction(() => document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelectorAll('.line').length === 3, null, { timeout: 5000 });
+
+  console.log('\n[多语字幕：全屏 / 剧场模式字号随播放器变大；控制栏出现时上移]');
+  const ccVars = () => cc.evaluate(() => {
+    const h = /** @type {HTMLElement} */ (document.querySelector('[data-tubemuse="multicc"]'));
+    return { fs: parseFloat(h.style.getPropertyValue('--fs')), bottom: parseFloat(h.style.getPropertyValue('--bottom')) };
+  });
+  const small = await ccVars();
+  await cc.evaluate(() => {
+    const p = /** @type {HTMLElement} */ (document.getElementById('movie_player'));
+    p.style.width = '1280px';
+    p.style.height = '720px';
+  });
+  await cc.waitForTimeout(600);
+  const big = await ccVars();
+  check(big.fs > small.fs * 1.8, `播放器从 360 高变成 720 高：字号 ${small.fs}px → ${big.fs}px`);
+  await cc.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ytp-autohide'));
+  await cc.waitForTimeout(600);
+  const withControls = await ccVars();
+  check(withControls.bottom >= 48 + 12 && withControls.bottom > big.bottom, `控制栏出现时字幕上移：${big.bottom}px → ${withControls.bottom}px`);
+  await cc.evaluate(() => {
+    const p = /** @type {HTMLElement} */ (document.getElementById('movie_player'));
+    p.style.width = '';
+    p.style.height = '';
+    p.classList.add('ytp-autohide');
+  });
+
+  console.log('\n[多语字幕：关闭 → 字幕层移除；原生字幕本来关着，保持关着]');
+  await panel.getByRole('button', { name: '关闭多语字幕' }).click();
+  await cc.waitForFunction(() => !document.querySelector('[data-tubemuse="multicc"]'), null, { timeout: 5000 });
+  await cc.waitForTimeout(1500);
+  const ns2 = await nativeState(cc);
+  check(ns2.lang === null && ns2.calls.length === ns1.calls.length, '关闭后不替你打开原生字幕（它本来就关着）');
+  check(((await ccStatus.textContent()) ?? '').includes('你已关闭'), '侧边栏：你已关闭这个视频的多语字幕');
+
+  console.log('\n[多语字幕：演讲（原生英文字幕开着）→ 开启时关掉原生字幕、英文 + YouTube 机翻中文 → 关闭时恢复原生字幕]');
+  await cc.goto(`${MOCK}/watch?v=ccNative0002`);
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
+  check((await nativeState(cc)).lang === 'en', '页面打开时原生英文字幕开着（播放器自己取了一次字幕）');
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await seekPaused(cc, 3.5);
+  await waitCcText(cc, ['I was a government major,', '[zh-Hans] I was a government major,']);
+  const lt = await ccLines(cc);
+  check(lt[0]?.lang === 'en' && !lt[0].mt && lt[1]?.lang === 'zh-Hans' && lt[1].mt, '原声（自动生成字幕是英文）→ 用人工英文字幕；简体中文没有原生轨 → YouTube 自动翻译，标"机翻"');
+  const pT2 = playerTt('ccNative0002');
+  const oT2 = ourTt('ccNative0002');
+  check(pT2.length === 1, '原生字幕开着时直接复用播放器已经发出的请求，不再请它取');
+  check(
+    oT2.length === 2 && oT2.some((r) => r.query.lang === 'en' && !r.query.tlang && !r.query.kind) && oT2.some((r) => r.query.lang === 'en' && r.query.tlang === 'zh-Hans'),
+    `取了人工英文与"英文 → 简体中文"的 YouTube 机翻（tlang）：${oT2.map((r) => `${r.query.lang}${r.query.tlang ? `>${r.query.tlang}` : ''}`).join(', ')}`,
+  );
+  const ns3 = await nativeState(cc);
+  check(ns3.lang === null && ns3.windows === 0, '显示期间关掉了原生字幕（避免两层）');
+  check(((await panel.getByTestId('multicc-langs').textContent()) ?? '').includes('YouTube 机翻'), '侧边栏标明哪一行是 YouTube 机翻');
+  await cc.screenshot({ path: join(shots, '32-multicc-autotranslate.png') });
+  await panel.getByRole('button', { name: '关闭多语字幕' }).click();
+  await cc.waitForFunction(() => /** @type {any} */ (document.getElementById('movie_player')).getOption('captions', 'track')?.languageCode === 'en', null, { timeout: 5000 });
+  check(true, '关闭多语字幕：原生英文字幕恢复成你原来的选择');
+
+  console.log('\n[多语字幕：显示期间你自己打开原生字幕（按 C）→ 多语字幕先让开；关掉原生字幕即恢复，之后不再替你恢复]');
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await waitCcText(cc, ['I was a government major,', '[zh-Hans] I was a government major,']);
+  await cc.waitForFunction(() => !(/** @type {any} */ (document.getElementById('movie_player')).getOption('captions', 'track')?.languageCode), null, { timeout: 5000 });
+  // 模拟你在 YouTube 的字幕菜单里选了韩语（播放器自己的操作）
+  await cc.evaluate(() => /** @type {any} */ (document.getElementById('movie_player')).setOption('captions', 'track', { languageCode: 'ko' }));
+  await ccStatus.filter({ hasText: '先让开' }).waitFor({ timeout: 8000 });
+  await cc.waitForFunction(() => !document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelector('.line'), null, { timeout: 5000 });
+  check((await nativeState(cc)).lang === 'ko', '你打开的原生字幕保持开着，多语字幕不和你抢');
+  await cc.evaluate(() => /** @type {any} */ (document.getElementById('movie_player')).setOption('captions', 'track', {}));
+  await waitCcText(cc, ['I was a government major,', '[zh-Hans] I was a government major,']);
+  check(true, '你关掉原生字幕：多语字幕回来');
+  const callsBeforeOff = (await nativeState(cc)).calls.length;
+  await panel.getByRole('button', { name: '关闭多语字幕' }).click();
+  await cc.waitForFunction(() => !document.querySelector('[data-tubemuse="multicc"]'), null, { timeout: 5000 });
+  await cc.waitForTimeout(1500);
+  const ns4 = await nativeState(cc);
+  check(ns4.lang === null && ns4.calls.length === callsBeforeOff, '期间你自己动过原生字幕：关闭时不再替你恢复（保持你最后的选择）');
+  check(onlyCaptionCalls(ns4.calls.slice(1)) && ns4.foreign.length === 0, 'TubeMuse 只调用了字幕开关，没有改动 YouTube 的元素');
+
+  console.log('\n[多语字幕：没有 YouTube 字幕的视频 → 说明，不发请求]');
+  await cc.goto(`${MOCK}/watch?v=ccNoTrack003`);
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await ccStatus.filter({ hasText: '没有 YouTube 字幕' }).waitFor({ timeout: 10000 });
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await cc.locator('[data-tubemuse="multicc"] .status').filter({ hasText: '这个视频没有 YouTube 字幕' }).waitFor({ timeout: 8000 });
+  check(timedtextReqs('ccNoTrack003').length === 0 && (await nativeState(cc)).calls.length === 0, '播放器里说明"这个视频没有 YouTube 字幕"，不发请求、不碰播放器');
+
+  console.log('\n[多语字幕：YouTube 一直返回空字幕（令牌失效）→ 换轨重试 3 次后停下并说明，不无限重试]');
+  await cc.goto(`${MOCK}/watch?v=ccStale00004`);
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  const staleChip = cc.locator('[data-tubemuse="multicc"] .status');
+  await staleChip.filter({ hasText: '已停止' }).waitFor({ timeout: 30000 });
+  const staleCount = playerTt('ccStale00004').length;
+  await cc.waitForTimeout(3000);
+  check(staleCount === 3 && playerTt('ccStale00004').length === staleCount, `请播放器换了 ${staleCount} 条轨重取，之后不再请求`);
+  check(((await staleChip.textContent()) ?? '').includes('刷新这个页面'), `播放器里用人话说明：${(await staleChip.textContent())?.slice(0, 50)}…`);
+  check(((await ccStatus.textContent()) ?? '').includes('已停止'), '侧边栏同步显示停止原因');
+  check((await nativeState(cc)).lang === null, '停下后原生字幕也关回去（它本来就关着）');
+
+  console.log('\n[多语字幕：设置里勾选"自动显示" → 有字幕的视频打开就显示]');
+  await options.bringToFront();
+  await options.getByTestId('multicc-autoon').check();
+  await options.waitForTimeout(300);
+  await cc.bringToFront();
+  await cc.goto(`${MOCK}/watch?v=ccMulti0001`);
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await seekPaused(cc, 3.0);
+  await waitCcText(cc, ['내 이름을 불러줘', 'Lead me', '叫我的名字']);
+  check(true, '不用点：打开就叠加三种语言');
+  check(
+    requests.filter((r) => r.path === '/api/timedtext').every((r) => !String(r.headers.origin ?? '').startsWith('chrome-extension://') && !r.headers.authorization && !JSON.stringify(r).includes(FAKE_KEY)),
+    '字幕请求都是播放页自己发出的同源请求：不经过扩展后台、不带任何 Key 或令牌',
+  );
+  await options.bringToFront();
+  await options.getByTestId('multicc-autoon').uncheck();
+  await options.waitForTimeout(300);
+  await cc.close();
+  await panel.bringToFront();
+
   // ───────────────────────── 片段录制 ─────────────────────────
   console.log('\n[片段录制：设置]');
   await options.bringToFront();
   await options.reload();
   await options.locator('#clips').waitFor();
-  check(((await options.locator('#clips').textContent()) ?? '').includes('13. 片段录制') && (await options.getByTestId('clips-enabled').isChecked()), '设置页有"片段录制"一节，默认启用');
-  check(((await options.locator('#data').textContent()) ?? '').includes('14. 数据'), '"数据"一节顺延为 14');
+  check(((await options.locator('#clips').textContent()) ?? '').includes('14. 片段录制') && (await options.getByTestId('clips-enabled').isChecked()), '设置页有"片段录制"一节（多语字幕之后顺延为 14），默认启用');
+  check(((await options.locator('#data').textContent()) ?? '').includes('15. 数据'), '"数据"一节顺延为 15');
   const sw2 = context.serviceWorkers()[0] ?? sw;
   const manifest2 = await sw2.evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());
   check(manifest2.commands?.['toggle-clip-recording']?.suggested_key?.default === 'Alt+Shift+R', '快捷键 Alt+Shift+R 开始 / 停止录制');

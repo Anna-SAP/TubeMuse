@@ -90,12 +90,14 @@ await esbuild.build({
   logLevel: 'warning',
 });
 
-// 内容脚本不能是 ES 模块：单独打成 IIFE（观看追踪、自动字幕、片段录制各一个文件，互不依赖）
+// 内容脚本不能是 ES 模块：单独打成 IIFE（观看追踪、自动字幕、片段录制、多语字幕及其页面内助手各一个文件，互不依赖）
 await esbuild.build({
   entryPoints: {
     'content-tracker': join(root, 'src', 'content', 'tracker.ts'),
     'content-subtitles': join(root, 'src', 'content', 'subtitles.ts'),
     'content-clipper': join(root, 'src', 'content', 'clipper.ts'),
+    'content-multicc': join(root, 'src', 'content', 'multi-captions.ts'),
+    'content-multicc-bridge': join(root, 'src', 'content', 'multi-captions-bridge.ts'),
   },
   outdir,
   bundle: true,
@@ -141,14 +143,18 @@ const manifest = {
   side_panel: { default_path: 'sidepanel.html' },
   options_page: 'options.html',
   // 观看追踪：只读取本地播放器状态。自动字幕：播放时采集该视频音频交给后台转写，并在播放器内叠加只读字幕层。
-  // 片段录制：你开始录制后才把这个视频的画面与声音录进内存，保存时交给浏览器存进下载文件夹
+  // 片段录制：你开始录制后才把这个视频的画面与声音录进内存，保存时交给浏览器存进下载文件夹。
+  // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
   content_scripts: [
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-clipper.js'], run_at: 'document_idle' },
+    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
+    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc.js'], run_at: 'document_idle' },
   ],
   commands: {
     'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕' },
+    'toggle-multi-captions': { suggested_key: { default: 'Alt+Shift+C' }, description: '开关当前视频的多语字幕（YouTube 原生字幕叠加显示）' },
     'toggle-clip-recording': { suggested_key: { default: 'Alt+Shift+R' }, description: '开始 / 停止录制当前视频的片段' },
   },
   action: { default_title: 'TubeMuse', default_icon: icons },
@@ -210,6 +216,42 @@ for (const bad of [
   /getUserMedia|getDisplayMedia/,
 ]) {
   if (bad.test(clipper)) fail(`片段录制脚本里出现了不允许的操作（${bad}）：它只能录这个视频、交给浏览器保存。`);
+}
+
+// 红线（2026-11-02 变更，DECISIONS §37）：多语字幕脚本唯一的网络请求是复用播放器自己的字幕请求（同源 /api/timedtext），
+// 只能有一处 fetch；不得用 HTML 字符串写页面、不得读写 Cookie、不得触发下载、不得带上跨站凭据
+const multicc = readFileSync(join(outdir, 'content-multicc.js'), 'utf8');
+if ((multicc.match(/\bfetch\(/g) ?? []).length !== 1 || !multicc.includes('/api/timedtext')) fail('多语字幕脚本只能有一处 fetch，且只取同源的 /api/timedtext。');
+for (const bad of [/XMLHttpRequest/, /\bWebSocket\b/, /sendBeacon/, /\bEventSource\b/, /\.innerHTML\s*=/, /outerHTML\s*=/, /insertAdjacentHTML/, /document\.cookie/, /\.download\s*=/, /credentials:\s*["']include/]) {
+  if (bad.test(multicc)) fail(`多语字幕脚本里出现了不允许的操作（${bad}）：它只能取当前视频的字幕、画字幕层。`);
+}
+// 页面内助手跑在 YouTube 页面自己的环境里：只读播放器的字幕轨列表、开关播放器自己的字幕；
+// 不得发网络请求、不得往页面插元素或写 HTML、不得读页面文字、不得读写 Cookie / 本地存储、不得动态执行代码、不得用扩展接口
+const bridge = readFileSync(join(outdir, 'content-multicc-bridge.js'), 'utf8');
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /innerHTML/,
+  /outerHTML/,
+  /insertAdjacent/,
+  /appendChild\(/,
+  /\.append\(/,
+  /\.prepend\(/,
+  /insertBefore\(/,
+  /replaceChildren\(/,
+  /replaceWith\(/,
+  /attachShadow\(/,
+  /\.textContent\b/,
+  /\.innerText\b/,
+  /document\.cookie/,
+  /localStorage|sessionStorage|indexedDB/,
+  /\beval\(|new Function\(/,
+  /\bchrome\./,
+]) {
+  if (bad.test(bridge)) fail(`多语字幕的页面内助手里出现了不允许的操作（${bad}）：它只能读字幕轨列表、开关播放器的字幕。`);
 }
 
 for (const file of walk(outdir)) {

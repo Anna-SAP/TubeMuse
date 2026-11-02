@@ -7,6 +7,7 @@ import type { XLedger } from '../core/x-budget';
 import type { DiscoveryState, DoubanState, HotspotState, SubtitleIndex, SubtitleTrack } from '../core/types';
 import type { SubtitleLedger } from '../core/subtitles';
 import type { ClipRecord } from '../core/clips';
+import { sanitizeCcLangs } from '../core/multi-captions';
 import type {
   Adjustment,
   ClusterState,
@@ -70,6 +71,11 @@ export function mergeSettings(stored: unknown): Settings {
       ...d.subtitles,
       ...withoutLegacySubtitleKeys(s.subtitles),
       translationModels: { ...d.subtitles.translationModels, ...((s.subtitles?.translationModels as object) ?? {}) },
+    },
+    multiCaptions: {
+      ...d.multiCaptions,
+      ...(s.multiCaptions as object),
+      langs: sanitizeCcLangs(s.multiCaptions?.langs) ?? [...d.multiCaptions.langs],
     },
     clips: { ...d.clips, ...(s.clips as object) },
     ui: { ...d.ui, ...(s.ui as object) },

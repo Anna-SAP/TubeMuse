@@ -1,8 +1,9 @@
-// 自动字幕：当前标签页这个视频的字幕状态与开关、今日花费、已生成的字幕。
+// 字幕页：多语字幕（YouTube 原生字幕叠加）的语言与开关；自动字幕的状态与开关、今日花费、已生成的字幕。
 // 状态来自注入 YouTube 页面的字幕脚本（只在本扩展内部传递）；字幕文字来自本机存储。
 
 import { useMemo, useState } from 'preact/hooks';
-import { BROWSER_SPEECH_LANGS, SUBTITLE_LANGS } from '../../config/defaults';
+import { BROWSER_SPEECH_LANGS, MULTI_CC, SUBTITLE_LANGS } from '../../config/defaults';
+import { MULTICC_MSG, type CcOption, type MultiCcTabState } from '../../core/multi-captions';
 import { RECOGNITION_MODE_LABELS, formatAudioDuration, formatCueTime, formatUsd, speechLangName, type SubtitleTabState } from '../../core/subtitles';
 import { formatClock } from '../../core/time';
 import { stores, subtitleTrackStore } from '../../services/repo';
@@ -56,6 +57,7 @@ export function SubtitlesView() {
 
   return (
     <div class="subtitles">
+      <MultiCaptionsPanel />
       {!s.enabled && (
         <Notice kind="warn">
           自动字幕已在设置中关闭。
@@ -74,7 +76,7 @@ export function SubtitlesView() {
       )}
 
       <section class="panel" data-testid="subtitle-tab">
-        <h2>当前标签页</h2>
+        <h2>自动字幕（语音识别 + 翻译）</h2>
         {state ? (
           <>
             <dl class="kv">
@@ -179,5 +181,103 @@ export function SubtitlesView() {
         </section>
       )}
     </div>
+  );
+}
+
+const CC_KIND_LABELS: Record<CcOption['kind'], { text: string; cls: string }> = {
+  native: { text: '原生字幕', cls: 'ok' },
+  asr: { text: 'YouTube 自动生成', cls: 'sub' },
+  auto: { text: 'YouTube 机翻', cls: 'approx' },
+  missing: { text: '这个视频没有', cls: '' },
+};
+
+/** 多语字幕：当前视频有哪些 YouTube 字幕、正在显示哪几种；勾选只对这个视频生效 */
+function MultiCaptionsPanel() {
+  const settings = useStore(stores.settings);
+  const { tabId, state } = useActiveTabState<MultiCcTabState>(MULTICC_MSG.getState, MULTICC_MSG.state);
+  const [busy, setBusy] = useState(false);
+  if (!settings) return null;
+  const cc = settings.multiCaptions;
+
+  const send = async (msg: object) => {
+    if (tabId === undefined) return;
+    setBusy(true);
+    try {
+      await chrome.tabs.sendMessage(tabId, msg);
+    } catch {
+      // 页面已关闭或换走：状态会随标签页事件刷新
+    } finally {
+      setBusy(false);
+    }
+  };
+  const checked = (state?.options ?? []).filter((o) => o.checked).map((o) => o.code);
+  const full = checked.length >= MULTI_CC.maxLines;
+  const toggleLang = (o: CcOption) => void send({ type: MULTICC_MSG.setLangs, langs: o.checked ? checked.filter((c) => c !== o.code) : [...checked, o.code] });
+
+  return (
+    <section class="panel" data-testid="multicc-panel">
+      <h2>多语字幕（YouTube 字幕叠加显示）</h2>
+      {!cc.enabled && (
+        <Notice kind="warn">
+          多语字幕已在设置中关闭。
+          <button class="btn link small" onClick={() => chrome.runtime.openOptionsPage()}>
+            打开设置
+          </button>
+        </Notice>
+      )}
+      {state ? (
+        <>
+          <p data-testid="multicc-status">{state.status}</p>
+          {state.error?.hint && <p class="muted small">{state.error.hint}</p>}
+          {state.options.length > 0 && (
+            <ul class="cc-langs" data-testid="multicc-langs">
+              {state.options.map((o) => {
+                const kind = CC_KIND_LABELS[o.kind];
+                return (
+                  <li>
+                    <label class="inline">
+                      <input type="checkbox" checked={o.checked} disabled={busy || (!o.checked && full)} onChange={() => toggleLang(o)} />
+                      <span class="cc-lang-name">{o.label}</span>
+                      <span class={`badge ${kind.cls}`}>
+                        {kind.text}
+                        {o.original ? ' · 原声' : ''}
+                      </span>
+                      {o.cues !== undefined && <span class="muted small">{o.cues} 句</span>}
+                    </label>
+                    {(o.note || o.error) && <div class="muted small cc-lang-note">{o.error ?? o.note}</div>}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {state.overridden && (
+            <button class="btn link small" disabled={busy} onClick={() => void send({ type: MULTICC_MSG.setLangs, langs: null })}>
+              这个视频改回默认语言
+            </button>
+          )}
+          {state.videoId && cc.enabled && (
+            <div class="row">
+              {state.active ? (
+                <button class="btn" disabled={busy} onClick={() => void send({ type: MULTICC_MSG.toggle, on: false })}>
+                  关闭多语字幕
+                </button>
+              ) : (
+                <button class="btn primary" disabled={busy} onClick={() => void send({ type: MULTICC_MSG.toggle, on: true })}>
+                  显示多语字幕
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      ) : (
+        <p class="muted small">当前标签页不是 YouTube 视频页。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有多语字幕脚本）。</p>
+      )}
+      <p class="muted small">
+        快捷键 Alt+Shift+C。勾选只对这个视频生效，最多 {MULTI_CC.maxLines} 种；默认语言在设置页「13. 多语字幕」里改。
+      </p>
+      <p class="muted small">
+        字幕来自 YouTube 播放页自己的字幕接口：复用播放器的字幕请求，只换语言（和你在播放器字幕菜单里换语言时一样），只存在这个标签页的内存里。显示期间 TubeMuse 暂时关掉 YouTube 原生字幕，关闭多语字幕时恢复。"机翻"是 YouTube 自带的自动翻译，不花钱。
+      </p>
+    </section>
   );
 }

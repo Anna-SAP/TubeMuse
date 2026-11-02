@@ -39,15 +39,17 @@ try {
   check(/^[a-p]{32}$/.test(extId), `正式版加载成功，扩展 ID：${extId}`);
   const manifest = await sw.evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());
   check(!!manifest.content_security_policy, 'CSP 已生效');
-  const scripts = (manifest.content_scripts ?? []).map((/** @type {any} */ c) => ({ js: c.js.join(','), matches: c.matches.join(',') }));
+  const scripts = (manifest.content_scripts ?? []).map((/** @type {any} */ c) => ({ js: c.js.join(','), matches: c.matches.join(','), world: c.world ?? 'ISOLATED' }));
   check(
     JSON.stringify(scripts) ===
       JSON.stringify([
-        { js: 'content-tracker.js', matches: 'https://www.youtube.com/*' },
-        { js: 'content-subtitles.js', matches: 'https://www.youtube.com/*' },
-        { js: 'content-clipper.js', matches: 'https://www.youtube.com/*' },
+        { js: 'content-tracker.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
+        { js: 'content-subtitles.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
+        { js: 'content-clipper.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
+        { js: 'content-multicc-bridge.js', matches: 'https://www.youtube.com/*', world: 'MAIN' },
+        { js: 'content-multicc.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
       ]),
-    `观看追踪、自动字幕与片段录制脚本只注入 www.youtube.com（${scripts.map((/** @type {{ js: string; matches: string }} */ s) => `${s.js} → ${s.matches}`).join('；')}）`,
+    `观看追踪、自动字幕、片段录制、多语字幕脚本只注入 www.youtube.com，只有多语字幕的页面内助手在页面环境（${scripts.map((/** @type {{ js: string; matches: string; world: string }} */ s) => `${s.js} → ${s.matches} ${s.world}`).join('；')}）`,
   );
   check(
     manifest.permissions.includes('alarms') && !['tabs', 'scripting', 'tabCapture', 'offscreen', 'downloads', 'desktopCapture', 'webRequest', 'declarativeNetRequest'].some((p) => manifest.permissions.includes(p)),
@@ -56,6 +58,7 @@ try {
   check(!manifest.web_accessible_resources, '没有向网页暴露任何扩展文件');
   check(manifest.commands?.['toggle-subtitles']?.suggested_key?.default === 'Alt+Shift+S', '快捷键 Alt+Shift+S 开关字幕');
   check(manifest.commands?.['toggle-clip-recording']?.suggested_key?.default === 'Alt+Shift+R', '快捷键 Alt+Shift+R 开始 / 停止录制片段');
+  check(manifest.commands?.['toggle-multi-captions']?.suggested_key?.default === 'Alt+Shift+C', '快捷键 Alt+Shift+C 开关多语字幕');
   // 授权走 launchWebAuthFlow：不再需要 manifest 的 oauth2（那是 getAuthToken 专用，依赖浏览器级 Google 登录）
   check(!manifest.oauth2 && manifest.permissions.includes('identity'), 'manifest 不含 oauth2，授权走 launchWebAuthFlow');
   const connect = /connect-src ([^;]+)/.exec(manifest.content_security_policy.extension_pages)?.[1]?.trim().split(/\s+/) ?? [];

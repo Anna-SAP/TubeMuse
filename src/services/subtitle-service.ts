@@ -25,7 +25,7 @@ import {
 import { OperationBudget } from '../core/quota';
 import { clip } from '../core/text';
 import { dayKey, nextMidnight } from '../core/time';
-import type { SubtitleCue, SubtitleTrack } from '../core/types';
+import type { SubtitleCue, SubtitleTrack, VideoMeta } from '../core/types';
 import type { AppContext } from './context';
 import { AppError, toAppError } from './errors';
 import { makeCharger, makeExhaustedMarker } from './quota-service';
@@ -107,31 +107,40 @@ export async function recognitionPlan(ctx: AppContext, videoId: string): Promise
   const settings = await stores.settings.read(ctx.kv);
   const setting = settings.subtitles.browserLang;
   if (setting !== 'auto') return recognitionLangFor(setting, undefined);
-  let meta = (await stores.videoMeta.read(ctx.kv))[videoId];
-  let note: string | undefined;
-  if (!meta) {
-    if ((await ctx.auth.status()) !== 'connected') {
-      note = '没有连接 YouTube（或授权已过期），读不到视频的语言，先按简体中文识别；不对的话在侧边栏"字幕"页换一种';
-    } else {
-      try {
-        const yt = createYouTube({
-          http: ctx.http,
-          auth: ctx.auth,
-          baseUrl: ctx.endpoints.youtubeApi,
-          charge: makeCharger(ctx, new OperationBudget({ searchCalls: 0, generalUnits: 1 }, '读取视频语言（自动字幕）'), settings.quota),
-          onQuotaExhausted: makeExhaustedMarker(ctx),
-        });
-        const [found] = await yt.videoMetas([videoId], ctx.now());
-        if (found) {
-          meta = found;
-          await stores.videoMeta.update(ctx.kv, ctx.locker, (m) => ({ ...m, [videoId]: found }));
-        }
-      } catch (e) {
-        note = `读不到视频的语言（${toAppError(e).message}），先按简体中文识别；不对的话在侧边栏"字幕"页换一种`;
-      }
-    }
-  }
+  const { meta, problem } = await lookupVideoMeta(ctx, videoId, '读取视频语言（自动字幕）');
+  const note =
+    problem === 'disconnected'
+      ? '没有连接 YouTube（或授权已过期），读不到视频的语言，先按简体中文识别；不对的话在侧边栏"字幕"页换一种'
+      : problem
+        ? `读不到视频的语言（${problem}），先按简体中文识别；不对的话在侧边栏"字幕"页换一种`
+        : undefined;
   return recognitionLangFor('auto', meta && !meta.missing ? meta : undefined, note);
+}
+
+/**
+ * 视频的元数据（语言等）：先看本机缓存（与观看记录共用），没有就用官方 videos.list 查一次
+ * （1 unit，单独的 1-unit 预算，记进配额）。没连接 YouTube 时 problem = 'disconnected'，查询出错时是错误原因。
+ */
+export async function lookupVideoMeta(ctx: AppContext, videoId: string, purpose: string): Promise<{ meta?: VideoMeta; problem?: string }> {
+  const cached = (await stores.videoMeta.read(ctx.kv))[videoId];
+  if (cached) return { meta: cached };
+  if ((await ctx.auth.status()) !== 'connected') return { problem: 'disconnected' };
+  const settings = await stores.settings.read(ctx.kv);
+  try {
+    const yt = createYouTube({
+      http: ctx.http,
+      auth: ctx.auth,
+      baseUrl: ctx.endpoints.youtubeApi,
+      charge: makeCharger(ctx, new OperationBudget({ searchCalls: 0, generalUnits: 1 }, purpose), settings.quota),
+      onQuotaExhausted: makeExhaustedMarker(ctx),
+    });
+    const [found] = await yt.videoMetas([videoId], ctx.now());
+    if (!found) return {};
+    await stores.videoMeta.update(ctx.kv, ctx.locker, (m) => ({ ...m, [videoId]: found }));
+    return { meta: found };
+  } catch (e) {
+    return { problem: toAppError(e).message };
+  }
 }
 
 export interface TextCueInput {

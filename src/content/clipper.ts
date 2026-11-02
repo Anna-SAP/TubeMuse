@@ -10,6 +10,7 @@
 // 受版权保护（DRM）的视频浏览器不允许录制，本脚本不绕过。
 
 import { CLIPS, DEFAULT_SETTINGS } from '../config/defaults';
+import { MULTICC_LINE_COLORS } from '../core/multi-captions';
 import {
   CLIP_MSG,
   CLIP_STOP_LABELS,
@@ -134,7 +135,7 @@ function fail(message: string, hint?: string): void {
 
 // ── 画面 ──
 
-/** 播放器里当时显示的字幕：YouTube 原生字幕在上，TubeMuse 自动字幕（原文、译文）在下 */
+/** 播放器里当时显示的字幕：YouTube 原生字幕在上，其次 TubeMuse 多语字幕，TubeMuse 自动字幕（原文、译文）在下 */
 function readBurnLines(): BurnLine[] {
   const player = playerEl();
   if (!player) return [];
@@ -147,6 +148,15 @@ function readBurnLines(): BurnLine[] {
       if (t) lines.push(t);
     }
     for (const text of lines) out.push({ text, tone: 'source' });
+  }
+  // 多语字幕（同一扩展，shadow root 是 open）：一种语言一行，颜色与播放器里一致；它叠在自动字幕层上面
+  const cc = player.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelector<HTMLElement>('.wrap');
+  if (cc && !cc.hidden) {
+    for (const l of cc.querySelectorAll<HTMLElement>('.line')) {
+      const text = l.hidden ? '' : (l.querySelector('.tx')?.textContent?.trim() ?? '');
+      const i = Number(/\bl(\d)\b/.exec(l.className)?.[1] ?? 0);
+      if (text) out.push({ text, tone: i ? 'translation' : 'source', color: MULTICC_LINE_COLORS[i] ?? MULTICC_LINE_COLORS[0] });
+    }
   }
   const root = player.querySelector('[data-tubemuse="subtitles"]')?.shadowRoot;
   const wrap = root?.querySelector<HTMLElement>('.wrap');
@@ -186,7 +196,7 @@ function drawCaptions(r: Recording): void {
     g.roundRect(b.x, b.y, b.w, b.h, b.fontPx * 0.2);
     g.fill();
     g.font = `500 ${b.fontPx}px ${FONT}`;
-    g.fillStyle = b.tone === 'translation' ? '#ffe7a3' : '#ffffff';
+    g.fillStyle = b.color ?? (b.tone === 'translation' ? '#ffe7a3' : '#ffffff');
     g.fillText(b.text, b.cx, b.cy);
   }
 }

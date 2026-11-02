@@ -457,3 +457,52 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 存进子文件夹（要 `downloads` 权限，还要把数据搬出页面）。
   - Shorts（播放器结构不同）。
   - 刷新或关闭页面前提醒未保存的片段（要拦截页面关闭，会打扰正常浏览）。
+
+## 37. 多语字幕：几种 YouTube 字幕同时叠在播放器里（2026-11-02，用户要求，规格外新增）
+
+- **需求**：突破 YouTube 播放器一次只能显示一种字幕的限制，在播放器底部同时叠加中、英、韩等几种语言的 CC 字幕（用户给了参考截图：三行从上到下堆叠）。用户点名的三个技术点：取多个语言轨、不同语言的时间戳差异与 `currentTime` 对齐、注入播放器且适配全屏 / 剧场模式、不与原生字幕冲突。
+- **红线变更（用户 2026-11-02 确认，CLAUDE.md §1、§2 同步）**：这件事与三条红线冲突——"YouTube 数据只走官方 Data API"（字幕文字只能来自播放页自己的接口）、注入脚本的用途白名单（新用途，且要调用播放器）、网络出口白名单（内容脚本要请求 `www.youtube.com/api/timedtext`）。开工前停下汇报，给了三个方案：复用播放器请求并由 TubeMuse 代管原生字幕开关（推荐）、只读不操作播放器（每个视频你要按两次 C）、不改红线不做。用户选了推荐方案；"视频没有你选的语言时"选了"用 YouTube 自动翻译补上并标注"。观看追踪、自动字幕、片段录制脚本与它们的构建检查不变。
+- **外部事实（2026-11-02 核实）**
+  - 官方 Data API 走不通：`captions.list`（50 units）与 `captions.download`（200 units）都只接受 `youtube.force-ssl` / `youtubepartner` 权限，不含 `youtube.readonly`；`captions.download` 还要求"有权编辑这个视频"——别人的视频一律 403（[captions.list](https://developers.google.com/youtube/v3/docs/captions/list)、[captions.download](https://developers.google.com/youtube/v3/docs/captions/download)）。2025–2026 的修订记录里没有字幕相关变更。
+  - 真实 YouTube 实测（Claude 内置浏览器，Chromium 152，已登录；TED 演讲 `arj7oStGLkU`，50 条字幕轨、156 种自动翻译目标）：
+    - 字幕轨列表在播放器对象上：`#movie_player.getPlayerResponse().captions.playerCaptionsTracklistRenderer`（`captionTracks[].baseUrl / languageCode / kind / name / vssId / isTranslatable`、`translationLanguages`）。隔离环境的内容脚本看不到这个对象。旧的 `timedtext?type=list` 已失效（404）。
+    - 直接请求 `baseUrl`（带不带 `fmt=json3`）都返回 **200 空响应**：缺播放器生成的 `pot` 令牌。
+    - 原生字幕关着时播放器不发字幕请求；`setOption('captions','track',{languageCode})` 会让播放器自己发出请求（XHR），地址带 `pot`（116 字符）、`potc=1`、`fmt=json3`、`c=WEB` 等，在 Resource Timing 里能看到完整地址。
+    - 把这个地址的 `lang` 换成 `ko` / `zh-CN` 得到完整的韩文（305 句）/ 中文（316 句）字幕，加 `tlang=zh-Hans` 得到 YouTube 机翻（315 句）；不带 Cookie 也行；去掉 `pot` 又是空响应。签名（`sparams`）不覆盖 `lang` / `kind` / `tlang`。
+    - `setOption('captions','track',{})` 关掉原生字幕（字幕按钮 `aria-pressed=false`、字幕窗口消失）；`loadModule('captions')` + `setOption` 再打开；`getOption('captions','track')` 读当前选择（关着时是 `{}`）。
+    - 页面的资源计时缓冲会被清掉（测试中早先的条目消失），所以用 `PerformanceObserver` 而不是只读一次 `getEntriesByType`。
+    - 广告期间播放器会为**广告视频**取字幕（`v=QoI7QEvAljo`，不是页面的视频），这时 `getPlayerResponse()` 仍是正片。所以只认 `v` 等于当前视频的请求，广告期间也不请播放器取字幕。
+    - 自动生成字幕的 json3（同一视频的 en/asr，实测）：1 个只定义窗口的事件（无 `segs`）、逐词 `tOffsetMs`、换行事件 `aAppend: 1`（`segs` 只有 `"\n"`），相邻句 29/30 时间重叠（两行滚动显示）——与解析器的假设一致。
+- **架构：三块，各自独立、各有构建检查**
+  1. **页面内助手** `content/multi-captions-bridge.ts`（manifest `world: "MAIN"`，Chrome 111+）：只应答五种请求——`state`（字幕轨列表、可翻译语言、当前原生字幕）、`prime`（让播放器选一条轨）、`hide-native`（关原生字幕，`save` 时记住原来的选择）、`restore-native`、`forget-native`。只依赖 `core/multicc-protocol.ts`（不带入任何设置与默认值，产物 3.7 KB）。构建检查：不得发网络请求、不得往页面插元素或写 HTML、不得读页面文字（`textContent` / `innerText`）、不得碰 Cookie / 本地存储、不得 `eval`、不得用 `chrome.*`。
+  2. **取字幕与画字幕层** `content/multi-captions.ts`（隔离环境）：控制流程、经 `window.postMessage` 与助手通话、`PerformanceObserver` 记下播放器的字幕请求地址、复用它取各语言、按播放进度画字幕层。构建检查：**只能有一处 `fetch(`**、产物里必须有 `/api/timedtext`，不得 XHR / WebSocket / sendBeacon / EventSource、不得写 HTML、不得碰 Cookie、不得触发下载、不得 `credentials: 'include'`。运行时每个地址先过 `trackUrl` 校验：与页面同源、路径 `/api/timedtext`、`v` 是当前视频、带 `pot`。
+  3. **纯逻辑** `core/multi-captions.ts`：json3 解析、按时间找句、选轨、地址改写、助手消息校验、侧边栏勾选项。后台只多了一件事：`services/multi-captions-service.ts` 回答"视频原声是什么语言"（见下）。
+  - 放弃把功能塞进自动字幕脚本：那个脚本的构建检查保证"不发任何网络请求"，混进来就破了这个保证；两层字幕的生命周期（录音识别 vs 取现成字幕）也完全不同。
+  - 放弃在 MAIN 世界里打补丁拦截 `fetch` / `XMLHttpRequest`：要改动 YouTube 页面的 JS 环境，也只能拿到播放器取过的那一种语言；资源计时只读地址、不碰页面代码，够用了。
+  - 放弃用 `chrome.scripting.executeScript({ world: 'MAIN' })`：要新增 `scripting` 权限；声明式的 MAIN 内容脚本不需要任何权限。
+  - 页面能看到也能伪造双方的 postMessage：内容脚本把助手的回答当不可信输入（`sanitizeTrackList` 逐项校验、截断）；助手只接受白名单里的五种操作。页面本来就能直接调用播放器，助手没有给它新增任何能力。
+- **取字幕的流程（每个视频）**
+  - 开启后先读一次字幕轨列表；原生字幕开着就关掉并记住（开启期间只在这一刻做一次）。
+  - 已经看到播放器带令牌的请求（原生字幕本来开着时播放器加载就发过）→ 直接复用；没有 → 请助手让播放器选第一行要用的那条轨，播放器就会自己发出请求，看到后立刻把为此打开的原生字幕关掉。每次改动原生字幕后，作废改动之前发出的"读状态"请求，等读到改动后的状态再判断（`nativeEpoch`），否则会把自己的改动当成你按了 C。
+  - 每种语言（轨 + 翻译目标）只取一次，同时最多 2 个，存在内存里；拖动、回看、关掉再开都不再取，换视频即丢。
+  - 令牌失效：用某个令牌取到空响应、而它从没成功取到过字幕 → 判为失效，记下不再用，请播放器换一条轨重取；同一个视频最多 3 次，之后停下并说明（"刷新页面后再试"），不无限重试。用一个已经成功过的令牌取到空响应 → 是那条轨本身是空的，只在那一行说明。
+  - 广告期间不操作播放器、不显示；Shorts 不支持。
+- **原生字幕与冲突**：叠加显示期间原生字幕关着（不然会有两层，且位置重叠）。你自己按 C 打开原生字幕时多语字幕**先让开**（不和你抢），并且忘掉之前记住的选择——之后关闭多语字幕时不再替你恢复，保持你最后的操作；你再按 C 关掉原生字幕，多语字幕回来。不再显示多语字幕时（关掉、换视频且新视频不自动显示），只在原生字幕仍关着时恢复原来的选择。自动字幕层也在时，多语字幕叠在它上面（量它的位置），两者不互相关闭。
+  - 放弃注入 CSS 隐藏 `.ytp-caption-window-container`：那是改动 YouTube 的元素，红线不允许；用播放器自己的开关等同你按 C。
+- **选轨（`resolveSources`）**：偏好是一个有序列表（默认 `original` → `en` → `zh-Hans`，最多 4 种），一种语言一行、从上到下按顺序。
+  - 语言归并（`langMatchKey`）：中文按字形分简 / 繁（zh-CN、zh-SG、zh-Hans = 简；zh-TW、zh-HK、zh-MO、zh-Hant = 繁），其他语言只看主语言（en-GB = en）；`iw`→`he`、`in`→`id`。同一语言里人工字幕优先于自动生成，同等时代码完全一致的优先。
+  - "视频原声语言"：有自动生成的字幕就用它的语言（YouTube 按声音识别）；没有（MV 常见）时问后台，后台用官方 `videos.list` 查 `defaultAudioLanguage`（1 unit，与自动字幕、观看记录共用 `videoMeta` 缓存——从 `recognitionPlan` 里抽出 `lookupVideoMeta` 共用）。查不到就在侧边栏说明，其余语言照常。
+  - 没有原生轨：用 YouTube 自动翻译（`tlang`）补上，标"机翻"。源轨：原声语言的人工字幕 > 其他人工字幕 > 自动生成。"原声语言"本身不用翻译补（译成原声语言的字幕不是原话）。同一种语言只出现一次（例如原声是英文时，"English" 不再重复）。
+  - 侧边栏可以给单个视频另选（只在这个标签页里记住），一键改回默认。
+- **时间轴同步（`textAt`，纯函数）**：每种语言用**自己的**时间轴独立查找，不硬对齐到某一种语言——各语言字幕的断句和起止时间本来就不同（实测的 TED 演讲里中、韩两轨句数不同），硬对齐会让某些行提前或滞后。按开始时间二分找到最后一句已开始的，再往前看最多 8 句有没有还没结束的（覆盖长标牌）；同时有几句时最多显示 2 句。两句之间空档 < 0.3 秒时留着上一句，避免闪。自动生成的字幕：相邻句截到下一句开始（YouTube 是两行滚动显示，我们一种语言只占一行），并按 `tOffsetMs` 逐词出现。
+  - 刷新：播放时用 `requestAnimationFrame` 每帧按 `video.currentTime` 查（每行只在文字变化时写 `textContent`），暂停 / 拖动时由每 250 毫秒一次的主循环刷新；标签页在后台时不跑。
+  - 放弃"以第一种语言为准、其他语言按重叠度配对"：显示更整齐，但会让别的语言的句子比说话提前出现。放弃原生 `<track>` / `TextTrack`：一次只能显示一种语言的样式，做不出分语言的颜色与机翻标记，也要往 `<video>` 里插元素。
+- **显示**：`#movie_player` 里加一个带 Shadow DOM 的元素（`data-tubemuse="multicc"`），`pointer-events: none`，只用 `textContent` 写字。每种语言一行，从上到下按偏好顺序，颜色依次白、浅黄、浅蓝、浅紫（`MULTICC_LINE_COLORS`，第一行之后略小）；机翻行前面一个小"机翻"标记。字号按播放器高度缩放（全屏、剧场模式自动变大），控制栏出现时上移；这一刻没有字幕的语言那一行收起，全部没有时整层隐藏。状态与错误用人话写在播放器右上角（自动字幕的状态在左上角，互不遮挡）。
+- **片段录制**：烧录字幕时也读多语字幕层（同一扩展的 open shadow root），每行保留自己的颜色（`BurnLine.color`）。
+- **开关与设置**：设置页新增"13. 多语字幕"（片段录制、数据顺延为 14、15）：启用、有字幕的视频自动显示（默认关）、YouTube 自动翻译补缺（默认开）、显示的语言与顺序、字号。侧边栏"字幕"页最上面新增"多语字幕"一块：状态、这个视频所有的字幕（勾选即生效，写明原生 / 自动生成 / 机翻、读到几句或为什么没有）、开 / 关按钮。快捷键 `Alt+Shift+C`（`commands`，不需要权限）。默认关闭的理由同 §33：你要的是"按需"，而且开启会动原生字幕。
+- **权限：没有新增。** MAIN 世界的内容脚本由 manifest 声明，不需要 `scripting`；同源请求不需要 host 权限；扩展页面的 CSP 白名单不变（这个请求不是扩展页面发的）。冒烟测试核对五个内容脚本、只有助手在 MAIN 世界。
+- **测试**
+  - 单测 35 条：json3（人工多行字幕、窗口事件、自动生成字幕的换行事件与逐词时间、坏数据、上限）；按时间找句（边界、空档桥接、重叠、长句、逐词出现、两种语言断句不同时各显示各的、1 万句二分与逐句扫描对拍）；语言归并、选轨（用户截图那支 MV 的轨、原声语言来自自动生成字幕 / YouTube 数据 / 查不到、机翻补缺与源轨选择、关掉自动翻译、原声不翻译、译不成、最多 4 行）、侧边栏勾选项、让播放器取哪条轨；地址（认得播放器请求、只换语言参数且令牌签名原样、asr / tlang / name、拒绝别的视频 / 站点 / 无令牌）；助手消息校验；设置默认值与旧数据兼容；烧录颜色；后台查原声语言（1 unit 并缓存、没连接、没写、关闭、坏 ID）。
+  - e2e：mock 播放页带一个按实测接口写的假播放器（`getPlayerResponse` / `getOption` / `setOption` / `loadModule`，选轨时自己用 XHR 发带 `pot` 的请求），mock 字幕接口没有令牌时回空响应。场景：默认不开启、不发请求；原生字幕关着时开启 → 请播放器取一次 → 复用请求取韩 / 英 / 中三种（令牌、签名原样，各一次）→ 三行按各自时间轴显示（4.25 秒时英、中已换句而韩文未换）、空档不闪、全部没有时隐藏；原生字幕随即关掉；只调用了字幕开关、YouTube 的元素没被改动（MutationObserver）；侧边栏加一种空轨语言 → 只在那一行说明；播放器从 360 高变 720 高字号翻倍、控制栏出现时上移；关闭后不替你打开本来关着的原生字幕；原生字幕开着的演讲 → 直接复用、不再请播放器取 → 英文 + 机翻中文（`tlang`）→ 关闭后恢复原生英文；显示期间你按 C → 让开、再按 C → 回来、之后关闭不再替你恢复；没有字幕的视频只说明不请求；令牌一直失效 → 换 3 条轨后停下并说明、不再请求；勾选自动显示后打开就显示；字幕请求都是页面同源请求、不带任何 Key 或令牌。
+- **没做 / 留给以后**：每种语言单独调时间偏移（用户没要，各轨自带的时间轴已对准）；把字幕存进本机供离线回看或导出（红线只允许存在内存里）；Shorts；YouTube Music 与嵌入式播放器。
+- **以后怎么换**：YouTube 改了令牌或字幕接口时，只需改 `core/multi-captions.ts` 的 `timedtextVideoId` / `trackUrl` 与页面内助手的 `state`（播放器字段）；若某天官方 Data API 允许 `youtube.readonly` 下载别人视频的字幕，就把取字幕换成后台调用官方接口，页面内助手与字幕层不变。

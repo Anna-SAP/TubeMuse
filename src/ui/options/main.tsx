@@ -3,7 +3,8 @@
 import { render } from 'preact';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { BROWSER_SPEECH_LANGS, DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE, SUBTITLE_LANGS, type BrowserSpeechLang, type SubtitleLang } from '../../config/defaults';
+import { BROWSER_SPEECH_LANGS, DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE, MULTI_CC, MULTI_CC_LANGS, SUBTITLE_LANGS, type BrowserSpeechLang, type SubtitleLang } from '../../config/defaults';
+import { ORIGINAL } from '../../core/multi-captions';
 import { asrPrice, hourlyEstimateUsd, llmPrice } from '../../core/subtitles';
 import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { browserSpeechEnv, detectLocal, installLocal, type LocalAvailability } from '../../services/speech';
@@ -551,7 +552,9 @@ function App() {
 
       <SubtitleSection settings={settings} hasOpenAiKey={!!secrets.openaiApiKey} update={updateSettings} />
 
-      <Section title="13. 片段录制" id="clips">
+      <MultiCaptionSection settings={settings} update={updateSettings} />
+
+      <Section title="14. 片段录制" id="clips">
         <p class="muted small">
           在侧边栏"片段"页（或按 Alt+Shift+R）录下正在看的 YouTube 视频的一段：画面和声音都来自这个视频本身，在本机编码，由浏览器存进下载文件夹。不经过网络，TubeMuse 不保留视频副本，只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
         </p>
@@ -565,7 +568,7 @@ function App() {
         </label>
         <label class="inline">
           <input type="checkbox" checked={settings.clips.burnSubtitles} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, burnSubtitles: e.currentTarget.checked } }))} />
-          把字幕烧进画面：录的是播放器里当时显示的字幕（TubeMuse 自动字幕或 YouTube 原生字幕），字号跟"12. 自动字幕"的字号倍数；更费电脑
+          把字幕烧进画面：录的是播放器里当时显示的字幕（YouTube 原生字幕、TubeMuse 多语字幕或自动字幕），字号跟"12. 自动字幕"的字号倍数；更费电脑
         </label>
         <div class="grid">
           <NumField
@@ -579,7 +582,7 @@ function App() {
         </div>
       </Section>
 
-      <Section title="14. 数据" id="data">
+      <Section title="15. 数据" id="data">
         <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
         <div class="row">
           <button
@@ -672,6 +675,9 @@ function App() {
         <p class="muted small">注入 youtube.com 的观看追踪脚本只读取本地播放器状态（进度、时长、暂停、倍速、是否广告、标签页是否可见），不读取页面内容、不改动页面、不发任何网络请求。</p>
         <p class="muted small">
           注入 youtube.com 的自动字幕脚本在视频播放时拿到这个视频的声音（不下载、不保存）：转写方式是"浏览器识别"时交给浏览器自带的语音识别（装了本地语音包时在本机识别，否则由 Chrome 自己连接 Google 的语音服务）；是"OpenAI"时交给扩展后台发往 <code>{new URL(ENDPOINTS.openai).host}</code>。它在播放器里加一层只读字幕，不改动 YouTube 自己的元素，本身不发任何网络请求。
+        </p>
+        <p class="muted small">
+          注入 youtube.com 的多语字幕脚本只在你开启后工作：页面内助手读取播放器的字幕轨列表、开关播放器自己的字幕（为拿到播放器的字幕请求短暂打开一次；显示期间关掉原生字幕，关闭时恢复）；另一个脚本复用播放器自己的字幕请求，只换语言，向同源的 <code>www.youtube.com/api/timedtext</code> 取你选的语言（与你在字幕菜单里换语言时播放器发的请求相同），字幕只存在这个标签页的内存里。它在播放器里加一层只读字幕，不改动 YouTube 自己的元素。偏好里有"视频原声语言"而字幕轨看不出时，后台用 YouTube Data API 查一次视频语言（1 unit，有缓存）。
         </p>
         <p class="muted small">
           注入 youtube.com 的片段录制脚本只在你开始录制后工作：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字。
@@ -860,6 +866,78 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
       </label>
       <p class="muted small">
         浏览器识别：声音交给浏览器自带的语音识别，扩展自己不发送音频。OpenAI 转写：发给 OpenAI 的只有这几秒音频与前几句转写文字（帮助连贯）。发给翻译模型的只有当前这句和前三句的文字与目标语言。都不含视频 ID、标题、频道或你的账号信息。花费在侧边栏顶部"字幕 $"实时显示，到每日预算立即停止并提示。
+      </p>
+    </Section>
+  );
+}
+
+const ccLangName = (code: string) => (MULTI_CC_LANGS as Record<string, string>)[code] ?? code;
+
+function MultiCaptionSection({ settings, update }: { settings: Settings; update: (fn: (s: Settings) => Settings) => void }) {
+  const s = settings.multiCaptions;
+  const set = (patch: Partial<Settings['multiCaptions']>) => update((x) => ({ ...x, multiCaptions: { ...x.multiCaptions, ...patch } }));
+  const langs = s.langs;
+  const move = (i: number, d: number) => {
+    const next = [...langs];
+    [next[i], next[i + d]] = [next[i + d]!, next[i]!];
+    set({ langs: next });
+  };
+  const addable = Object.keys(MULTI_CC_LANGS).filter((c) => !langs.includes(c));
+  return (
+    <Section title="13. 多语字幕" id="multicc">
+      <p class="muted small">
+        把视频自带的几种 YouTube 字幕（CC）同时叠在播放器里，一种语言一行，各按自己的时间轴对准播放进度；全屏、剧场模式自动放大。显示期间暂时关掉 YouTube 原生字幕，关闭时恢复。免费，不经过大模型。
+      </p>
+      <label class="inline">
+        <input type="checkbox" checked={s.enabled} onChange={(e) => set({ enabled: e.currentTarget.checked })} />
+        启用多语字幕
+      </label>
+      <label class="inline">
+        <input type="checkbox" data-testid="multicc-autoon" checked={s.autoOn} onChange={(e) => set({ autoOn: e.currentTarget.checked })} />
+        有 YouTube 字幕的视频自动显示（默认关闭：只在你从侧边栏"字幕"页或按 Alt+Shift+C 开启时显示）
+      </label>
+      <label class="inline">
+        <input type="checkbox" data-testid="multicc-autotranslate" checked={s.autoTranslate} onChange={(e) => set({ autoTranslate: e.currentTarget.checked })} />
+        视频没有你选的语言时，用 YouTube 自带的自动翻译补上（行首标"机翻"；"视频原声语言"不用翻译补）
+      </label>
+      <p class="small">
+        <strong>显示的语言（从上到下，最多 {MULTI_CC.maxLines} 种）</strong>
+      </p>
+      <ol class="cc-order" data-testid="multicc-lang-order">
+        {langs.map((code, i) => (
+          <li>
+            <div class="row">
+              <span>{ccLangName(code)}</span>
+              <span class="muted small">{code === ORIGINAL ? '按 YouTube 自动生成字幕的语言判断；没有时查 YouTube 数据里写的原声语言' : code}</span>
+              <button class="icon-btn" aria-label={`上移 ${ccLangName(code)}`} disabled={i === 0} onClick={() => move(i, -1)}>
+                ↑
+              </button>
+              <button class="icon-btn" aria-label={`下移 ${ccLangName(code)}`} disabled={i === langs.length - 1} onClick={() => move(i, 1)}>
+                ↓
+              </button>
+              <button class="icon-btn" aria-label={`去掉 ${ccLangName(code)}`} disabled={langs.length <= 1} onClick={() => set({ langs: langs.filter((_, j) => j !== i) })}>
+                ✕
+              </button>
+            </div>
+          </li>
+        ))}
+      </ol>
+      {langs.length < MULTI_CC.maxLines && (
+        <label class="field">
+          <span>添加一种语言</span>
+          <select class="input" data-testid="multicc-add-lang" value="" onChange={(e) => e.currentTarget.value && set({ langs: [...langs, e.currentTarget.value] })}>
+            <option value="">选择…</option>
+            {addable.map((c) => (
+              <option value={c}>{ccLangName(c)}</option>
+            ))}
+          </select>
+        </label>
+      )}
+      <div class="grid">
+        <NumField label="字号倍数" value={s.fontScale} min={0.6} max={2} step={0.1} onChange={(v) => set({ fontScale: v })} />
+      </div>
+      <p class="muted small">
+        字幕来自 YouTube 播放页自己的字幕接口（复用播放器的请求，只换语言参数），只存在那个标签页的内存里；不经过 TubeMuse 后台、不发给大模型、不进导出。侧边栏"字幕"页可以给单个视频另选语言。
       </p>
     </Section>
   );

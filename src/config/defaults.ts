@@ -160,6 +160,21 @@ export const DEFAULT_SETTINGS = {
     /** 字号倍数 */
     fontScale: 1,
   },
+  /**
+   * 多语字幕（用户 2026-11-02 批准的红线变更，见 DECISIONS §37）：把视频自带的几种 YouTube 字幕（CC）
+   * 同时叠加在播放器里，一种语言一行，从上到下按 langs 的顺序。
+   */
+  multiCaptions: {
+    enabled: true,
+    /** 有 YouTube 字幕的视频自动显示；默认关闭：只在你从侧边栏"字幕"页或按 Alt+Shift+C 开启时显示 */
+    autoOn: false,
+    /** 从上到下显示的语言（最多 MULTI_CC.maxLines 种）；original = 视频原声的语言 */
+    langs: ['original', 'en', 'zh-Hans'] as string[],
+    /** 你选的语言这个视频没有原生字幕时，用 YouTube 自带的自动翻译补上（标注"机翻"；用户 2026-11-02 选择） */
+    autoTranslate: true,
+    /** 字号倍数 */
+    fontScale: 1,
+  },
   /** 视频片段录制（用户 2026-11-01 批准的红线变更，见 DECISIONS §36）：只在你从侧边栏或快捷键开始后录制 */
   clips: {
     enabled: true,
@@ -328,6 +343,58 @@ export const DOUBAN = {
   transientFeedsKept: 5,
   /** 评价词 → 星级（豆瓣五档） */
   ratingStars: { 力荐: 5, 推荐: 4, 还行: 3, 较差: 2, 很差: 1 } as Record<string, number>,
+} as const;
+
+/**
+ * 多语字幕可选的语言（代码 → 显示名）。代码用 YouTube 字幕接口的写法（zh-Hans / zh-Hant）；
+ * 其他写法（zh-CN、en-US…）在匹配字幕轨时会归并，见 core/multi-captions.ts 的 langMatchKey。
+ */
+export const MULTI_CC_LANGS = {
+  original: '视频原声语言',
+  'zh-Hans': '简体中文',
+  'zh-Hant': '繁體中文',
+  en: 'English',
+  ja: '日本語',
+  ko: '한국어',
+  es: 'Español',
+  fr: 'Français',
+  de: 'Deutsch',
+  pt: 'Português',
+  ru: 'Русский',
+  id: 'Bahasa Indonesia',
+  vi: 'Tiếng Việt',
+  th: 'ไทย',
+  ar: 'العربية',
+  hi: 'हिन्दी',
+  it: 'Italiano',
+} as const;
+
+/** 多语字幕的内部参数 */
+export const MULTI_CC = {
+  /** 最多同时显示几种语言（行） */
+  maxLines: 4,
+  /** 同一种语言同时有几句重叠时（对白、标牌）最多显示几句 */
+  maxOverlapCues: 2,
+  /** 一句结束后、下一句开始前的空档短于这么久（秒）时，先留着上一句，避免字幕闪一下 */
+  gapBridgeSec: 0.3,
+  /** 按时间找"此刻在显示的句子"时，往前最多看几句（覆盖持续很久的长句） */
+  lookbackCues: 8,
+  /** 一条字幕轨最多读多少句、一句最多多少字、响应最多多大 */
+  maxCuesPerTrack: 20_000,
+  cueMaxChars: 500,
+  maxResponseBytes: 5_000_000,
+  /** 让播放器取一次字幕后，最多等这么久看到它的请求 */
+  primeTimeoutMs: 6_000,
+  /** 同一个视频最多让播放器取几次（令牌失效时会重取一次） */
+  primeMaxAttempts: 3,
+  /** 两次让播放器取字幕之间至少隔多久 */
+  primeRetryMs: 8_000,
+  /** 同时取几种语言 */
+  fetchConcurrency: 2,
+  /** 与页面内助手通话的超时 */
+  bridgeTimeoutMs: 2_000,
+  /** 多久向页面内助手问一次播放器的字幕状态（你可能按了 C） */
+  stateRefreshMs: 1_000,
 } as const;
 
 /** 视频片段录制的内部参数 */

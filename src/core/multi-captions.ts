@@ -1,0 +1,415 @@
+// 多语字幕（用户 2026-11-02 批准的红线变更，见 DECISIONS §37）的纯逻辑：
+// - 解析 YouTube 字幕文件（json3）；
+// - 按播放进度挑出每种语言此刻该显示的那句（各语言用各自的时间轴，互不硬对齐）；
+// - 按你的语言偏好从视频的字幕轨里选轨，没有原生轨时用 YouTube 自动翻译补上（标注"机翻"）；
+// - 复用播放器自己的字幕请求（带 pot 令牌）、只换语言参数的地址；
+// - 页面内助手（MAIN world）与内容脚本之间的消息校验：页面能看到、也能伪造这些消息，一律当不可信输入。
+
+import { MULTI_CC } from '../config/defaults';
+import { isLangCode } from './multicc-protocol';
+
+export { BRIDGE_OPS, BRIDGE_TAG, isLangCode, type BridgeOp } from './multicc-protocol';
+
+export const MULTICC_MSG = {
+  getState: 'tubemuse:multicc:get-state',
+  state: 'tubemuse:multicc:state',
+  toggle: 'tubemuse:multicc:toggle',
+  setLangs: 'tubemuse:multicc:set-langs',
+  /** 内容脚本 → 后台：视频原声的语言（官方 videos.list，与自动字幕共用缓存） */
+  videoLang: 'tubemuse:multicc:video-lang',
+} as const;
+
+/** 语言偏好里的"视频原声语言" */
+export const ORIGINAL = 'original';
+
+const VIDEO_ID = /^[A-Za-z0-9_-]{6,20}$/;
+
+/** 设置或侧边栏传来的语言列表：只留合法代码、去重、最多 max 种；不是数组时返回 undefined */
+export function sanitizeCcLangs(raw: unknown, max: number = MULTI_CC.maxLines): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  for (const x of raw) if ((x === ORIGINAL || isLangCode(x)) && !out.includes(x)) out.push(x);
+  return out.slice(0, max);
+}
+
+// ── 字幕轨 ──
+
+/** 'asr' = YouTube 自动生成的字幕 */
+export type TrackKind = 'asr' | '';
+
+/** 视频里的一条字幕轨（来自播放器） */
+export interface CcTrack {
+  /** 字幕接口的 lang 参数（例如 zh-Hans、en、ko） */
+  lang: string;
+  kind: TrackKind;
+  /** 字幕接口的 name 参数（多数轨为空） */
+  name: string;
+  /** 播放器字幕菜单里的名字 */
+  label: string;
+  vssId: string;
+  /** YouTube 能否把这条轨自动翻译成别的语言 */
+  translatable: boolean;
+}
+
+/** 播放器当前显示的原生字幕 */
+export interface NativeState {
+  lang: string;
+  kind: TrackKind;
+  tlang?: string;
+}
+
+export interface CcTrackList {
+  videoId: string;
+  tracks: CcTrack[];
+  /** YouTube 自动翻译能译成的语言 */
+  translationLangs: { code: string; label: string }[];
+  /** null = 原生字幕关着 */
+  native: NativeState | null;
+}
+
+const str = (x: unknown, max: number): string => (typeof x === 'string' ? x.trim().slice(0, max) : '');
+const kindOf = (x: unknown): TrackKind => (x === 'asr' ? 'asr' : '');
+
+/** 页面内助手报来的字幕轨列表（不可信）：逐项校验，格式不对的丢掉；整体不对时返回 undefined */
+export function sanitizeTrackList(raw: unknown): CcTrackList | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.videoId !== 'string' || !VIDEO_ID.test(r.videoId)) return undefined;
+  const tracks: CcTrack[] = [];
+  for (const t of Array.isArray(r.tracks) ? r.tracks.slice(0, 300) : []) {
+    if (!t || typeof t !== 'object') continue;
+    const x = t as Record<string, unknown>;
+    if (!isLangCode(x.lang)) continue;
+    tracks.push({ lang: x.lang, kind: kindOf(x.kind), name: str(x.name, 150), label: str(x.label, 120) || x.lang, vssId: str(x.vssId, 200), translatable: x.translatable === true });
+  }
+  const translationLangs: CcTrackList['translationLangs'] = [];
+  for (const l of Array.isArray(r.translationLangs) ? r.translationLangs.slice(0, 400) : []) {
+    const x = l as Record<string, unknown> | null;
+    if (x && isLangCode(x.code)) translationLangs.push({ code: x.code, label: str(x.label, 120) || x.code });
+  }
+  let native: NativeState | null = null;
+  const n = r.native as Record<string, unknown> | null | undefined;
+  if (n && typeof n === 'object' && isLangCode(n.lang)) native = { lang: n.lang, kind: kindOf(n.kind), ...(isLangCode(n.tlang) ? { tlang: n.tlang } : {}) };
+  return { videoId: r.videoId, tracks, translationLangs, native };
+}
+
+// ── 选轨 ──
+
+const ALIASES: Record<string, string> = { iw: 'he', in: 'id', ji: 'yi', jw: 'jv' };
+
+/** 匹配字幕轨时用的归并键：中文按字形分简 / 繁（zh-CN = zh-Hans），其他语言只看主语言（en-GB、en-US 都算 en） */
+export function langMatchKey(code: string): string {
+  const parts = code.toLowerCase().split('-');
+  const primary = ALIASES[parts[0]!] ?? parts[0]!;
+  if (primary !== 'zh') return primary;
+  const rest = parts.slice(1);
+  return rest.includes('hant') || rest.some((p) => p === 'tw' || p === 'hk' || p === 'mo') ? 'zh-hant' : 'zh-hans';
+}
+
+const sameLang = (a: string, b: string) => langMatchKey(a) === langMatchKey(b);
+export const trackKey = (t: Pick<CcTrack, 'lang' | 'kind' | 'name'>) => `${t.lang}|${t.kind}|${t.name}`;
+
+/** 某种语言最合适的原生轨：人工字幕优先于自动生成，同等时代码完全一致的优先；没有返回 undefined */
+export function bestTrack(tracks: readonly CcTrack[], want: string): CcTrack | undefined {
+  let best: CcTrack | undefined;
+  let bestScore = -1;
+  for (const t of tracks) {
+    if (!sameLang(t.lang, want)) continue;
+    const score = (t.kind === '' ? 2 : 0) + (t.lang.toLowerCase() === want.toLowerCase() ? 1 : 0);
+    if (score > bestScore) [best, bestScore] = [t, score];
+  }
+  return best;
+}
+
+/** 视频原声的语言：自动生成字幕的语言（YouTube 按说话声音识别）；没有时用官方数据里的音频语言 */
+export function originalLangOf(list: CcTrackList, videoLang?: string): string | undefined {
+  const asr = list.tracks.find((t) => t.kind === 'asr');
+  if (asr) return asr.lang;
+  return isLangCode(videoLang) ? videoLang : undefined;
+}
+
+/** 自动翻译的源轨：原声语言的人工字幕 > 其他人工字幕 > 自动生成的字幕（都要 YouTube 标了可翻译） */
+export function translationBase(list: CcTrackList, originalLang: string | undefined): CcTrack | undefined {
+  const ok = list.tracks.filter((t) => t.translatable);
+  return (originalLang ? ok.find((t) => t.kind === '' && sameLang(t.lang, originalLang)) : undefined) ?? ok.find((t) => t.kind === '') ?? ok[0];
+}
+
+/** 要显示的一行（一种语言） */
+export interface CcSource {
+  /** 同一条轨 + 同一个翻译目标只取一次 */
+  key: string;
+  /** 实际的语言（"原声语言"已换成具体语言） */
+  want: string;
+  /** 来自偏好里的哪一项（original 或语言代码）：侧边栏取消勾选时按它删 */
+  pref: string;
+  label: string;
+  track: CcTrack;
+  /** YouTube 自动翻译的目标语言 */
+  tlang?: string;
+  autoTranslated: boolean;
+}
+
+export interface CcResolution {
+  sources: CcSource[];
+  /** 选了但这个视频给不出的语言，以及原因 */
+  missing: { pref: string; want?: string; reason: string }[];
+  originalLang?: string;
+}
+
+/**
+ * 按偏好顺序选轨：有原生轨用原生轨；没有时（且允许）用 YouTube 自动翻译补上；"原声语言"不用翻译补
+ * （译成原声语言的字幕不是原话）。同一种语言只出现一次，最多 maxLines 行。
+ */
+export function resolveSources(list: CcTrackList, langs: readonly string[], opts: { autoTranslate: boolean; videoLang?: string; maxLines?: number }): CcResolution {
+  const originalLang = originalLangOf(list, opts.videoLang);
+  const sources: CcSource[] = [];
+  const missing: CcResolution['missing'] = [];
+  for (const pref of langs) {
+    const isOriginal = pref === ORIGINAL;
+    const want = isOriginal ? originalLang : pref;
+    if (!want) {
+      missing.push({ pref, reason: '看不出视频原声是什么语言（没有自动生成的字幕，YouTube 数据里也没写）' });
+      continue;
+    }
+    if (sources.some((s) => sameLang(s.want, want))) continue;
+    const track = bestTrack(list.tracks, want);
+    if (track) {
+      sources.push({ key: trackKey(track), want, pref, label: track.label, track, autoTranslated: false });
+      continue;
+    }
+    if (isOriginal) {
+      missing.push({ pref, want, reason: '这个视频没有原声语言的字幕' });
+      continue;
+    }
+    if (!opts.autoTranslate) {
+      missing.push({ pref, want, reason: '这个视频没有这种语言的字幕' });
+      continue;
+    }
+    const base = translationBase(list, originalLang);
+    const targets = list.translationLangs.filter((l) => sameLang(l.code, want));
+    const target = targets.find((l) => l.code.toLowerCase() === want.toLowerCase()) ?? targets[0];
+    if (!base) missing.push({ pref, want, reason: '这个视频的字幕不支持 YouTube 自动翻译' });
+    else if (!target) missing.push({ pref, want, reason: 'YouTube 不能自动翻译成这种语言' });
+    else sources.push({ key: `${trackKey(base)}>${target.code}`, want, pref, label: target.label, track: base, tlang: target.code, autoTranslated: true });
+  }
+  return { sources: sources.slice(0, opts.maxLines ?? MULTI_CC.maxLines), missing, ...(originalLang ? { originalLang } : {}) };
+}
+
+/** 侧边栏里的一个勾选项 */
+export interface CcOption {
+  /** 勾选 / 取消时写进语言列表的值（original 或语言代码） */
+  code: string;
+  label: string;
+  kind: 'native' | 'asr' | 'auto' | 'missing';
+  checked: boolean;
+  original?: boolean;
+  note?: string;
+  /** 正在显示的语言：读到的句数，或没读到的原因（内容脚本填） */
+  cues?: number;
+  error?: string;
+}
+
+/** 侧边栏的勾选项：先是正在显示（或选了但没有）的语言，按显示顺序；再是这个视频其他的原生字幕 */
+export function ccOptions(list: CcTrackList, res: CcResolution, langs: readonly string[]): CcOption[] {
+  const out: CcOption[] = [];
+  for (const pref of langs) {
+    const s = res.sources.find((x) => x.pref === pref);
+    if (s) {
+      out.push({ code: pref, label: s.label, kind: s.autoTranslated ? 'auto' : s.track.kind === 'asr' ? 'asr' : 'native', checked: true, ...(pref === ORIGINAL ? { original: true } : {}) });
+      continue;
+    }
+    const m = res.missing.find((x) => x.pref === pref);
+    if (m) out.push({ code: pref, label: m.want ?? pref, kind: 'missing', checked: true, note: m.reason, ...(pref === ORIGINAL ? { original: true } : {}) });
+  }
+  const shown = (lang: string) => res.sources.some((s) => sameLang(s.want, lang)) || out.some((o) => o.code !== ORIGINAL && sameLang(o.code, lang));
+  for (const t of list.tracks) {
+    if (shown(t.lang)) continue;
+    const best = bestTrack(list.tracks, t.lang)!;
+    out.push({ code: best.lang, label: best.label, kind: best.kind === 'asr' ? 'asr' : 'native', checked: false });
+  }
+  return out;
+}
+
+/**
+ * 让播放器自己取一次字幕（拿到带令牌的请求）用哪条轨：优先第一行用到的轨；
+ * 已经让它取过的轨跳过（播放器可能有缓存，不再发请求）。
+ */
+export function primeTrack(list: CcTrackList, sources: readonly CcSource[], primed: ReadonlySet<string>): CcTrack | undefined {
+  const fresh = (t: CcTrack) => !primed.has(trackKey(t)) && !t.name;
+  return sources.map((s) => s.track).find(fresh) ?? list.tracks.find((t) => fresh(t) && t.kind === '') ?? list.tracks.find(fresh);
+}
+
+// ── 字幕请求地址 ──
+
+/** 播放器自己发出的字幕请求（同源的 /api/timedtext，带 pot 令牌）→ 视频 ID；不是就返回 undefined */
+export function timedtextVideoId(url: string, pageOrigin: string): string | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (u.origin !== pageOrigin || u.pathname !== '/api/timedtext' || !u.searchParams.get('pot')) return undefined;
+  const v = u.searchParams.get('v');
+  return v && VIDEO_ID.test(v) ? v : undefined;
+}
+
+/** 复用播放器自己的字幕请求，只换语言参数（lang / kind / name / tlang），格式固定 json3 */
+export function trackUrl(template: string, pageOrigin: string, videoId: string, src: Pick<CcSource, 'track' | 'tlang'>): string | undefined {
+  if (timedtextVideoId(template, pageOrigin) !== videoId) return undefined;
+  const u = new URL(template);
+  const p = u.searchParams;
+  p.set('lang', src.track.lang);
+  if (src.track.kind) p.set('kind', src.track.kind);
+  else p.delete('kind');
+  if (src.track.name) p.set('name', src.track.name);
+  else p.delete('name');
+  if (src.tlang) p.set('tlang', src.tlang);
+  else p.delete('tlang');
+  p.delete('type');
+  p.set('fmt', 'json3');
+  return u.toString();
+}
+
+// ── 字幕文件（json3）──
+
+/** 自动生成的字幕逐词出现：at = 这个词相对句首的秒数 */
+export interface CcWord {
+  at: number;
+  text: string;
+}
+
+/** 一句字幕，时间是视频秒 */
+export interface CcCue {
+  start: number;
+  end: number;
+  text: string;
+  words?: CcWord[];
+}
+
+const CONTROL = new RegExp(`[\\x00-\\x08\\x0B-\\x1F\\x7F${String.fromCharCode(0x200b)}-${String.fromCharCode(0x200d, 0x2028, 0x2029, 0xfeff)}]`, 'g');
+
+/** 统一换行、去掉控制字符和零宽字符、每行压缩空白；空行丢掉 */
+export function cleanCueText(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(CONTROL, '')
+    .split('\n')
+    .map((l) => l.replace(/[ \t\xA0]+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+const finite = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+
+/**
+ * 解析 YouTube 的 json3 字幕：events[].tStartMs / dDurationMs / segs[].utf8（自动生成字幕的 segs 带 tOffsetMs）。
+ * 跳过只定义字幕窗口的事件和自动生成字幕的换行事件（aAppend）。
+ * 自动生成的字幕是两行滚动显示，相邻句子时间重叠：这里把每句截到下一句开始，一种语言一次只占一行。
+ */
+export function parseJson3(raw: unknown, opts: { asr: boolean; maxCues?: number; maxChars?: number }): CcCue[] {
+  const events = (raw as { events?: unknown } | null)?.events;
+  if (!Array.isArray(events)) return [];
+  const maxCues = opts.maxCues ?? MULTI_CC.maxCuesPerTrack;
+  const maxChars = opts.maxChars ?? MULTI_CC.cueMaxChars;
+  const cues: CcCue[] = [];
+  for (const ev of events) {
+    if (cues.length >= maxCues) break;
+    if (!ev || typeof ev !== 'object') continue;
+    const e = ev as { tStartMs?: unknown; dDurationMs?: unknown; segs?: unknown; aAppend?: unknown };
+    if (!Array.isArray(e.segs) || e.aAppend || !finite(e.tStartMs) || e.tStartMs < 0 || !finite(e.dDurationMs) || e.dDurationMs <= 0) continue;
+    const words: CcWord[] = [];
+    for (const s of e.segs) {
+      const seg = s as { utf8?: unknown; tOffsetMs?: unknown } | null;
+      if (typeof seg?.utf8 !== 'string') continue;
+      words.push({ at: finite(seg.tOffsetMs) && seg.tOffsetMs > 0 ? seg.tOffsetMs / 1000 : 0, text: seg.utf8.replace(CONTROL, '') });
+    }
+    const text = cleanCueText(words.map((w) => w.text).join('')).slice(0, maxChars);
+    if (!text) continue;
+    const cue: CcCue = { start: e.tStartMs / 1000, end: (e.tStartMs + e.dDurationMs) / 1000, text };
+    if (opts.asr && words.some((w) => w.at > 0)) cue.words = words;
+    cues.push(cue);
+  }
+  cues.sort((a, b) => a.start - b.start);
+  if (opts.asr) {
+    for (let i = 0; i < cues.length - 1; i++) {
+      const c = cues[i]!;
+      const next = cues[i + 1]!;
+      if (next.start < c.end) c.end = Math.max(next.start, c.start + 0.05);
+    }
+  }
+  return cues;
+}
+
+/** 这句在第 t 秒显示的文字：自动生成的字幕只显示已经说到的词 */
+function visibleText(cue: CcCue, t: number): string {
+  if (!cue.words) return cue.text;
+  return cleanCueText(
+    cue.words
+      .filter((w) => cue.start + w.at <= t + 1e-3)
+      .map((w) => w.text)
+      .join(''),
+  );
+}
+
+/**
+ * 这种语言在第 t 秒该显示的文字（没有就是空串）。cues 必须按开始时间排好序。
+ * 二分找到最后一句开始的，再往前看几句有没有还没结束的（重叠的对白、标牌）；
+ * 两句之间的空档很短时留着上一句，免得字幕闪一下。
+ */
+export function textAt(cues: readonly CcCue[], t: number, o: { gapBridgeSec: number; lookbackCues: number; maxOverlapCues: number } = MULTI_CC): string {
+  let lo = 0;
+  let hi = cues.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cues[mid]!.start <= t) lo = mid + 1;
+    else hi = mid;
+  }
+  const last = lo - 1;
+  if (last < 0) return '';
+  const active: CcCue[] = [];
+  for (let i = last; i >= 0 && i > last - o.lookbackCues; i--) if (cues[i]!.end > t) active.push(cues[i]!);
+  if (!active.length) {
+    const prev = cues[last]!;
+    const next = cues[last + 1];
+    if (next && next.start - prev.end < o.gapBridgeSec) active.push(prev);
+  }
+  return active
+    .slice(0, o.maxOverlapCues)
+    .reverse()
+    .map((c) => visibleText(c, t))
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** 每行的颜色：第一行白色，其后浅黄、浅蓝、浅紫（片段录制烧录字幕时用同样的颜色） */
+export const MULTICC_LINE_COLORS = ['#ffffff', '#ffe7a3', '#bfe4ff', '#ddd0ff'] as const;
+
+// ── 状态（内容脚本 → 侧边栏）──
+
+export type MultiCcPhase = 'off' | 'waiting' | 'loading' | 'showing' | 'yielded' | 'no-tracks' | 'error';
+
+export interface MultiCcLine {
+  key: string;
+  label: string;
+  autoTranslated: boolean;
+  /** 读到的句数；还在读时没有 */
+  cues?: number;
+  error?: string;
+}
+
+export interface MultiCcTabState {
+  videoId: string | null;
+  enabled: boolean;
+  active: boolean;
+  manual?: 'on' | 'off';
+  phase: MultiCcPhase;
+  status: string;
+  options: CcOption[];
+  lines: MultiCcLine[];
+  /** 这个视频用的是你在侧边栏单独选的语言 */
+  overridden: boolean;
+  /** TubeMuse 暂时关掉了 YouTube 原生字幕（关闭多语字幕时恢复） */
+  nativeHidden: boolean;
+  error?: { message: string; hint?: string };
+}

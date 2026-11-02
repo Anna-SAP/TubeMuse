@@ -13,6 +13,8 @@ import { ingestSession } from './services/watch-service';
 import { SUBTITLE_PORT, subtitleSession } from './services/subtitle-service';
 import { CLIP_MSG, type ClipTabState } from './core/clips';
 import { recordSavedClip } from './services/clip-service';
+import { MULTICC_MSG } from './core/multi-captions';
+import { multiCcVideoLanguage } from './services/multi-captions-service';
 
 const ctx = createBrowserContext();
 const TICK = 'tubemuse-tick';
@@ -89,7 +91,7 @@ function fromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
 let connecting: Promise<void> | undefined;
 
 let reminderTimer: ReturnType<typeof setTimeout> | undefined;
-chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply) => void) => {
+chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | { lang?: string; note?: string }) => void) => {
   const m = msg as { type?: string; session?: unknown } | undefined;
   if (m?.type === AUTH_CONNECT_MESSAGE) {
     if (!fromExtensionPage(sender)) return false;
@@ -109,6 +111,12 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
       reminderTimer = setTimeout(() => void checkReminder(ctx).catch(() => undefined), 5_000);
     });
     return false;
+  }
+  // 多语字幕：视频原声的语言（官方 videos.list，1 unit，有缓存）；字幕文字本身不经过后台
+  if (m?.type === MULTICC_MSG.videoLang) {
+    if (!fromTrackedSite(sender)) return false;
+    multiCcVideoLanguage(ctx, (m as { videoId?: unknown }).videoId).then(sendResponse, () => sendResponse({}));
+    return true;
   }
   // 片段录制：录制脚本存好了一个片段，记一笔（只有元数据；视频文件由浏览器存进下载文件夹，不经过这里）
   if (m?.type === CLIP_MSG.saved) {
@@ -153,10 +161,11 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((m) => void keepAlive(() => handle(m)).catch((e) => console.warn('[TubeMuse] 字幕处理失败', e instanceof Error ? e.message : e)));
 });
 
-// 快捷键：开关当前标签页这个视频的字幕 / 开始或停止录制片段（只发给本扩展的内容脚本；不是 YouTube 页面时什么也不做）
+// 快捷键：开关当前标签页这个视频的自动字幕 / 多语字幕 / 开始或停止录制片段（只发给本扩展的内容脚本；不是 YouTube 页面时什么也不做）
 chrome.commands.onCommand.addListener((command, tab) => {
   if (tab?.id === undefined) return;
   if (command === 'toggle-subtitles') void chrome.tabs.sendMessage(tab.id, { type: 'tubemuse:subtitles:toggle' }).catch(() => undefined);
+  else if (command === 'toggle-multi-captions') void chrome.tabs.sendMessage(tab.id, { type: MULTICC_MSG.toggle }).catch(() => undefined);
   else if (command === 'toggle-clip-recording') void chrome.tabs.sendMessage(tab.id, { type: CLIP_MSG.toggle }).catch(() => undefined);
 });
 

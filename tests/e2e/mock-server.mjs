@@ -77,6 +77,141 @@ export const SUBTITLE_VIDEOS = [
   { id: 'clipSpa00001', seconds: 20, captions: 'yes' },
 ];
 
+/**
+ * 多语字幕用的播放页：带假播放器（接口照 2026-11-02 实测的 YouTube 播放器）与字幕轨。
+ * cues：[开始秒, 结束秒, 文字]；三种语言故意断句、起止时间都不同。empty：字幕接口对这条轨返回空；
+ * stale：这个视频的字幕接口一律返回空（模拟播放器的令牌失效）；initial：页面打开时原生字幕已开着的语言。
+ * @typedef {{ lang: string; kind?: 'asr'; label: string; cues: [number, number, string][]; empty?: boolean }} MockCcTrack
+ * @type {{ id: string; seconds: number; lang?: string; initial?: string; stale?: boolean; tracks: MockCcTrack[]; translationLangs: string[] }[]}
+ */
+export const CC_VIDEOS = [
+  {
+    // 像用户截图里的 MV：中文（简体）、English、Korean、Indonesian，没有自动生成的字幕；原声语言要查 YouTube 数据（ko）
+    id: 'ccMulti0001',
+    seconds: 16,
+    lang: 'ko',
+    tracks: [
+      { lang: 'zh-Hans', label: 'Chinese (Simplified)', cues: [[0.5, 4.0, '叫我的名字'], [4.2, 8.6, '循着彼此相连的脉络'], [9.0, 13.0, '哪怕双脚触不到底']] },
+      { lang: 'en', label: 'English', cues: [[0.5, 2.2, 'Call my name'], [2.3, 4.0, 'Lead me'], [4.2, 8.6, 'Along the lines that connect us'], [9.0, 13.0, "Even if my feet don't touch the ground"]] },
+      { lang: 'ko', label: 'Korean', cues: [[0.8, 4.3, '내 이름을 불러줘'], [4.5, 8.8, '서로 이어진 결을 따라'], [9.2, 13.2, "그거면 돼 I'm diving for"]] },
+      { lang: 'id', label: 'Indonesian', cues: [], empty: true },
+    ],
+    translationLangs: ['zh-Hans', 'zh-Hant', 'ja', 'fr'],
+  },
+  {
+    // 像一场英文演讲：人工英文、自动生成英文、韩文；页面打开时原生英文字幕已开着
+    id: 'ccNative0002',
+    seconds: 16,
+    lang: 'en',
+    initial: 'en',
+    tracks: [
+      { lang: 'en', label: 'English', cues: [[0.5, 3.0, 'So in college,'], [3.1, 6.0, 'I was a government major,'], [6.2, 10.0, 'which means I had to write a lot of papers.']] },
+      { lang: 'en', kind: 'asr', label: 'English (auto-generated)', cues: [[0.5, 3.0, 'so in college'], [3.1, 6.0, 'i was a government major']] },
+      { lang: 'ko', label: 'Korean', cues: [[0.8, 3.4, '대학에 다닐 때'], [3.6, 6.2, '정치학을 전공했어요']] },
+    ],
+    translationLangs: ['zh-Hans', 'ja'],
+  },
+  { id: 'ccNoTrack003', seconds: 10, tracks: [], translationLangs: [] },
+  {
+    id: 'ccStale00004',
+    seconds: 10,
+    stale: true,
+    tracks: [
+      { lang: 'en', label: 'English', cues: [[0.5, 3, 'never shown']] },
+      { lang: 'ko', label: 'Korean', cues: [[0.5, 3, 'never shown']] },
+      { lang: 'ja', label: 'Japanese', cues: [[0.5, 3, 'never shown']] },
+    ],
+    translationLangs: ['zh-Hans'],
+  },
+];
+
+/**
+ * 假播放器（在播放页里运行）：getPlayerResponse / getOption / setOption / loadModule 与真播放器同名同形；
+ * 选了字幕轨就像真播放器一样自己用 XHR 发出带 pot 令牌的字幕请求（加 x-mock-player 头，便于区分谁发的），
+ * 并把字幕画进自己的 .ytp-caption-window-container。
+ * window.__playerCalls：改动性调用（setOption / loadModule / unloadModule）；
+ * window.__foreign：播放器自己的字幕窗口、字幕按钮的 aria-pressed、本扩展的 [data-tubemuse] 层以外的任何 DOM 变化。
+ * @param {(typeof CC_VIDEOS)[number]} cfg
+ */
+function mockPlayer(cfg) {
+  const p = /** @type {any} */ (document.getElementById('movie_player'));
+  const video = /** @type {HTMLVideoElement} */ (p.querySelector('video'));
+  const box = /** @type {HTMLElement} */ (p.querySelector('.ytp-caption-window-container'));
+  const btn = p.querySelector('.ytp-subtitles-button');
+  const w = /** @type {any} */ (window);
+  const calls = (w.__playerCalls = /** @type {unknown[]} */ ([]));
+  w.__foreign = [];
+  let n = 0;
+  /** @type {Record<string, unknown>} */
+  let track = {};
+  /** @type {{ tStartMs: number; dDurationMs: number; segs: { utf8: string }[] }[]} */
+  let cues = [];
+  const base = (/** @type {MockCcTrack} */ t) =>
+    `${location.origin}/api/timedtext?v=${cfg.id}&ei=mock&caps=asr&opi=1&xoaf=5&hl=en&ip=0.0.0.0&ipbits=0&expire=9999999999&sparams=ip,ipbits,expire,v,ei,caps,opi,xoaf&signature=MOCKSIG&key=yt8&lang=${t.lang}${t.kind ? '&kind=asr' : ''}`;
+  const captionTracks = cfg.tracks.map((t) => ({ baseUrl: base(t), name: { simpleText: t.label }, vssId: `${t.kind ? 'a' : ''}.${t.lang}`, languageCode: t.lang, ...(t.kind ? { kind: 'asr' } : {}), isTranslatable: true }));
+  const response = {
+    videoDetails: { videoId: cfg.id },
+    ...(cfg.tracks.length ? { captions: { playerCaptionsTracklistRenderer: { captionTracks, translationLanguages: cfg.translationLangs.map((c) => ({ languageCode: c, languageName: { simpleText: `lang:${c}` } })) } } } : {}),
+  };
+  const draw = () => {
+    const t = video.currentTime * 1000;
+    const c = track.languageCode ? cues.find((e) => e.tStartMs <= t && t < e.tStartMs + e.dDurationMs) : undefined;
+    const text = c ? c.segs.map((s) => s.utf8).join('') : '';
+    if (box.dataset.text === text) return;
+    box.dataset.text = text;
+    box.replaceChildren();
+    if (!text) return;
+    const win = document.createElement('div');
+    win.className = 'caption-window';
+    const line = document.createElement('span');
+    line.className = 'caption-visual-line';
+    line.textContent = text;
+    win.append(line);
+    box.append(win);
+  };
+  p.getPlayerResponse = () => response;
+  p.getOption = (/** @type {string} */ m, /** @type {string} */ o) => (m === 'captions' && o === 'track' ? track : undefined);
+  p.loadModule = (/** @type {string} */ m) => calls.push(['loadModule', m]);
+  p.unloadModule = (/** @type {string} */ m) => calls.push(['unloadModule', m]);
+  p.setOption = (/** @type {string} */ m, /** @type {string} */ o, /** @type {any} */ v) => {
+    calls.push(['setOption', m, o, JSON.stringify(v)]);
+    if (m !== 'captions' || o !== 'track') return;
+    const t = v?.languageCode ? (cfg.tracks.find((x) => x.lang === v.languageCode && (x.kind ?? '') === (v.kind ?? '')) ?? cfg.tracks.find((x) => x.lang === v.languageCode)) : undefined;
+    if (!t) {
+      track = {};
+      cues = [];
+      btn?.setAttribute('aria-pressed', 'false');
+      return draw();
+    }
+    track = { languageCode: t.lang, languageName: t.label, displayName: t.label, kind: t.kind ?? '', name: '', id: null, is_translateable: true, vss_id: `${t.kind ? 'a' : ''}.${t.lang}` };
+    btn?.setAttribute('aria-pressed', 'true');
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', `${base(t)}&potc=1&pot=MOCKPOT-${cfg.id}-${++n}&fmt=json3&c=WEB&cver=2.20261030`);
+    xhr.setRequestHeader('x-mock-player', '1');
+    xhr.onload = () => {
+      try {
+        cues = (JSON.parse(xhr.responseText || '{}').events ?? []).filter((/** @type {any} */ e) => e.segs);
+      } catch {
+        cues = [];
+      }
+      draw();
+    };
+    xhr.send();
+  };
+  video.addEventListener('timeupdate', draw);
+  video.addEventListener('seeked', draw);
+  new MutationObserver((ms) => {
+    for (const m of ms) {
+      const el = /** @type {Element} */ (m.target.nodeType === 1 ? m.target : m.target.parentElement);
+      if (el.closest('.ytp-caption-window-container') || el.closest('[data-tubemuse]')) continue;
+      if (m.type === 'attributes' && m.attributeName === 'aria-pressed' && el === btn) continue;
+      if (m.type === 'childList' && el === p && [...m.addedNodes, ...m.removedNodes].every((x) => x.nodeType === 1 && /** @type {Element} */ (x).hasAttribute('data-tubemuse'))) continue;
+      w.__foreign.push(`${m.type}:${el.tagName}.${el.className}:${m.attributeName ?? ''}`);
+    }
+  }).observe(p, { subtree: true, childList: true, attributes: true, characterData: true });
+  if (cfg.initial) p.setOption('captions', 'track', { languageCode: cfg.initial });
+}
+
 const WATCH_AS_MOCK = WATCH_VIDEOS.map((w) => ({ id: w.id, title: w.title, channelId: w.channelId, channelTitle: w.channelTitle, hoursAgo: 200, duration: `PT${w.seconds}S`, views: 1000, likes: 10, lang: 'zh', categoryId: w.categoryId }));
 
 /** Phase 3：新博主发现的候选（都未订阅；UCold 不活跃，不应被推荐） */
@@ -84,7 +219,10 @@ const NEW_CREATOR_VIDEOS = ['UCnewA', 'UCnewB', 'UCnewC', 'UCnewD', 'UCnewE', 'U
   [0, 1, 2, 3].map((j) => ({ id: `${ch.slice(2)}v${j}xxxxx`, title: `${ch.slice(-1)} 频道：AI 进阶第 ${j + 1} 课`, channelId: ch, channelTitle: `新锐频道 ${ch.slice(-1)}`, hoursAgo: 24 * (i + j + 1), duration: 'PT15M', views: 20000, likes: 900, lang: 'zh' })),
 ).concat([{ id: 'oldv0xxxxxxx', title: '很久以前的视频', channelId: 'UCold', channelTitle: '停更频道', hoursAgo: 24 * 300, duration: 'PT15M', views: 1, likes: 1, lang: 'zh' }]);
 
-const ALL = [...AI_VIDEOS, ...SAFETY_VIDEOS, ...WATCH_AS_MOCK, ...NEW_CREATOR_VIDEOS];
+/** 多语字幕的播放页也能被 videos.list 查到（原声语言） */
+const CC_AS_MOCK = CC_VIDEOS.filter((c) => c.lang).map((c) => ({ id: c.id, title: `多语字幕测试 ${c.id}`, channelId: 'UCccmock', channelTitle: 'CC Mock', hoursAgo: 300, duration: `PT${c.seconds}S`, views: 1000, likes: 10, lang: c.lang }));
+
+const ALL = [...AI_VIDEOS, ...SAFETY_VIDEOS, ...WATCH_AS_MOCK, ...NEW_CREATOR_VIDEOS, ...CC_AS_MOCK];
 const SUBSCRIPTIONS = [
   { id: 'UCsciA', title: '科普星球', description: '用动画讲科学与技术' },
   { id: 'UCexplain', title: 'Explain Lab', description: 'Visual explainers about AI and computing' },
@@ -297,6 +435,18 @@ export function startMockServer() {
       if (p === '/watch') {
         const id = url.searchParams.get('v') ?? '';
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        const cv = CC_VIDEOS.find((x) => x.id === id);
+        if (cv) {
+          // 有字幕轨时字幕按钮是"有字幕"的样子；没有字幕轨时不放按钮（自动字幕不会因此自己开启）
+          const ccButton = cv.tracks.length
+            ? '<button class="ytp-subtitles-button ytp-button" aria-keyshortcuts="c" data-tooltip-title="Subtitles/closed captions (c)" data-title-no-tooltip="Subtitles/closed captions" aria-pressed="false" aria-label="Subtitles/closed captions">CC</button>'
+            : '';
+          return res.end(
+            `<!doctype html><html><head><meta charset="utf-8"><title>多语字幕测试 - YouTube</title><style>#movie_player{position:relative;width:640px;height:360px;background:#000;overflow:hidden}#player{width:100%;height:100%}.ytp-chrome-bottom{position:absolute;left:12px;right:12px;bottom:0;height:48px}.ytp-caption-window-container{position:absolute;left:0;right:0;bottom:60px;text-align:center;color:#fff;font:20px sans-serif}</style></head>` +
+              `<body><div id="movie_player" class="html5-video-player ytp-autohide"><video id="player" preload="auto" src="/media/${id}.wav"></video><div class="ytp-caption-window-container"></div>` +
+              `<div class="ytp-chrome-bottom">${ccButton}</div></div><script>(${mockPlayer.toString()})(${JSON.stringify(cv)})</script></body></html>`,
+          );
+        }
         const sv = SUBTITLE_VIDEOS.find((x) => x.id === id);
         if (sv) {
           const label = sv.captions === 'yes' ? 'Subtitles/closed captions' : 'Subtitles/closed captions unavailable';
@@ -311,9 +461,9 @@ export function startMockServer() {
       }
       if (p.startsWith('/media/')) {
         const id = p.slice('/media/'.length).replace(/.wav$/, '');
-        const w = WATCH_VIDEOS.find((x) => x.id === id) ?? SUBTITLE_VIDEOS.find((x) => x.id === id);
+        const w = WATCH_VIDEOS.find((x) => x.id === id) ?? SUBTITLE_VIDEOS.find((x) => x.id === id) ?? CC_VIDEOS.find((x) => x.id === id);
         if (!w) return send(404, {});
-        const wav = SUBTITLE_VIDEOS.includes(/** @type {any} */ (w)) ? speechWav(w.seconds) : silentWav(w.seconds);
+        const wav = WATCH_VIDEOS.includes(/** @type {any} */ (w)) ? silentWav(w.seconds) : speechWav(w.seconds);
         const range = /bytes=(d+)-(d*)/.exec(String(req.headers.range ?? ''));
         if (range) {
           const start = Number(range[1]);
@@ -323,6 +473,16 @@ export function startMockServer() {
         }
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
         return res.end(wav);
+      }
+      // 播放页自己的字幕接口（多语字幕复用播放器的这个请求）：没有 pot 令牌、令牌失效、没有这条轨时，像真接口一样回 200 空响应
+      if (p === '/api/timedtext') {
+        const cv = CC_VIDEOS.find((x) => x.id === url.searchParams.get('v'));
+        const t = cv?.tracks.find((x) => x.lang === url.searchParams.get('lang') && (x.kind ?? '') === (url.searchParams.get('kind') ?? ''));
+        const tlang = url.searchParams.get('tlang');
+        res.writeHead(200, { 'content-type': 'application/json; charset=UTF-8' });
+        if (!cv || cv.stale || !url.searchParams.get('pot') || !t || t.empty) return res.end('');
+        const events = t.cues.map(([s, e, text]) => ({ tStartMs: Math.round(s * 1000), dDurationMs: Math.round((e - s) * 1000), segs: [{ utf8: tlang ? `[${tlang}] ${text}` : text }] }));
+        return res.end(JSON.stringify({ wireMagic: 'pb3', events: [{ tStartMs: 0, dDurationMs: cv.seconds * 1000, id: 1, wpWinPosId: 1, wsWinStyleId: 1 }, ...events] }));
       }
       if (p === '/youtube/v3/playlistItems') {
         const ch = 'UC' + (url.searchParams.get('playlistId') ?? '').slice(2);
