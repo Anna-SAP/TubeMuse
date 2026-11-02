@@ -16,6 +16,8 @@ import {
   MULTICC_MSG,
   ORIGINAL,
   ccOptions,
+  fitLine,
+  joinCueLines,
   parseJson3,
   primeTrack,
   resolveSources,
@@ -354,10 +356,11 @@ function step(res: CcResolution): void {
 
 const CSS = `
 :host { all: initial; position: absolute; inset: 0; pointer-events: none; z-index: 39; }
-.wrap { position: absolute; left: 0; right: 0; bottom: var(--bottom, 48px); display: flex; flex-direction: column; align-items: center; gap: 0.16em; padding: 0 4%; transition: bottom 0.2s ease; font-size: var(--fs, 20px); }
+.wrap { position: absolute; left: 0; right: 0; bottom: var(--bottom, 48px); display: flex; flex-direction: column; align-items: center; gap: 0.12em; padding: 0 ${((1 - MULTI_CC.lineMaxWidthRatio) * 50).toFixed(2)}%; transition: bottom 0.2s ease; font-size: var(--fs, 20px); }
 .wrap[hidden], .line[hidden] { display: none; }
-.line { max-width: 92%; box-sizing: border-box; text-align: center; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.32; padding: 0.06em 0.45em; border-radius: 0.2em; background: rgba(8, 8, 8, 0.72); color: #fff; font-family: "YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", "Noto Sans KR", "Malgun Gothic", sans-serif; text-shadow: 0 0 2px rgba(0, 0, 0, 0.6); }
-${MULTICC_LINE_COLORS.map((c, i) => `.l${i} { color: ${c};${i ? ' font-size: 0.92em;' : ''} }`).join('\n')}
+.line { max-width: 100%; box-sizing: border-box; text-align: center; white-space: nowrap; overflow: hidden; line-height: 1.25; padding: 0.05em 0.45em; border-radius: 0.2em; background: rgba(8, 8, 8, 0.72); color: #fff; font-family: "YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", "Noto Sans KR", "Malgun Gothic", sans-serif; text-shadow: 0 0 2px rgba(0, 0, 0, 0.6); }
+.line.multi { white-space: normal; overflow-wrap: anywhere; }
+${MULTICC_LINE_COLORS.map((c, i) => `.l${i} { color: ${c}; }`).join('\n')}
 .mt { display: inline-block; font-size: 0.6em; line-height: 1.3; vertical-align: 0.3em; margin-right: 0.45em; padding: 0 0.32em; border: 1px solid currentColor; border-radius: 0.25em; opacity: 0.75; }
 .mt[hidden] { display: none; }
 .status { position: absolute; top: 10px; right: 10px; max-width: min(60%, 420px); font: 12px/1.45 Roboto, "Noto Sans SC", "Microsoft YaHei", sans-serif; color: #fff; background: rgba(0, 0, 0, 0.66); padding: 4px 8px; border-radius: 4px; }
@@ -365,8 +368,12 @@ ${MULTICC_LINE_COLORS.map((c, i) => `.l${i} { color: ${c};${i ? ' font-size: 0.9
 .status .hint { opacity: 0.8; }
 `;
 
+/** 第一行之后的语言略小一点 */
+const SECONDARY_LINE_SIZE = 0.92;
+
 interface Line {
   key: string;
+  index: number;
   el: HTMLElement;
   mt: HTMLElement;
   tx: HTMLElement;
@@ -375,6 +382,8 @@ interface Line {
 
 let overlay: { host: HTMLElement; wrap: HTMLElement; lines: Line[]; status: HTMLElement; statusMain: HTMLElement; statusHint: HTMLElement } | undefined;
 let shown: CcSource[] = [];
+/** 当前字号（第一行）与一行最多能占的宽度；变了（全屏、剧场模式、改字号）就重新排每一行 */
+let geom: { fs: number; avail: number } | undefined;
 
 function ensureOverlay(player: HTMLElement): NonNullable<typeof overlay> {
   if (overlay && overlay.host.parentElement === player) return overlay;
@@ -401,6 +410,7 @@ function ensureOverlay(player: HTMLElement): NonNullable<typeof overlay> {
 function removeOverlay(): void {
   overlay?.host.remove();
   overlay = undefined;
+  geom = undefined;
 }
 
 /** 行与要显示的语言一一对应（语言或顺序变了才重建） */
@@ -420,28 +430,53 @@ function syncLines(o: NonNullable<typeof overlay>, sources: CcSource[]): void {
     el.append(mt, tx);
     el.hidden = true;
     o.wrap.append(el);
-    return { key: s.key, el, mt, tx, text: '' };
+    return { key: s.key, index: i, el, mt, tx, text: '' };
   });
 }
 
-/** 只更新文字（每帧调用）：按当前播放进度在每种语言自己的时间轴上找这一句 */
+const baseSize = (l: Line, fs: number) => fs * (l.index ? SECONDARY_LINE_SIZE : 1);
+
+/**
+ * 每种语言尽量只占一行：先按原字号、不折行排一次，量出宽度；放不下就等比缩小这一行的字号（最多到 fitMinScale），
+ * 还放不下才允许折行。一批行先全部写、再一起量、再一起改，每批只触发一次排版。
+ */
+function fitLines(lines: Line[]): void {
+  const g = geom;
+  const todo = lines.filter((l) => l.text && !l.el.hidden);
+  if (!g || !todo.length) return;
+  for (const l of todo) {
+    l.el.classList.remove('multi');
+    l.el.style.fontSize = `${baseSize(l, g.fs).toFixed(1)}px`;
+  }
+  const natural = todo.map((l) => l.el.scrollWidth);
+  todo.forEach((l, i) => {
+    const { scale, wrap } = fitLine(natural[i]!, g.avail);
+    if (scale < 1) l.el.style.fontSize = `${(baseSize(l, g.fs) * scale).toFixed(1)}px`;
+    l.el.classList.toggle('multi', wrap);
+  });
+}
+
+/** 只更新文字（每帧调用）：按当前播放进度在每种语言自己的时间轴上找这一句，接成一行 */
 function renderText(): void {
   const o = overlay;
   const v = videoEl();
   if (!o || !v) return;
   const t = v.currentTime;
   let any = false;
+  const changed: Line[] = [];
   for (const l of o.lines) {
     const ld = loaded.get(l.key);
-    const text = ld?.state === 'ok' ? textAt(ld.cues, t) : '';
+    const text = ld?.state === 'ok' ? joinCueLines(textAt(ld.cues, t)) : '';
     if (text !== l.text) {
       l.tx.textContent = text;
       l.text = text;
       l.el.hidden = !text;
+      changed.push(l);
     }
     any ||= !!text;
   }
   o.wrap.hidden = !any;
+  fitLines(changed);
 }
 
 /** 字号随播放器高度变（全屏、剧场模式自动变大）；控制栏出现时上移；自动字幕层也在时叠在它上面 */
@@ -454,6 +489,11 @@ function layout(o: NonNullable<typeof overlay>, player: HTMLElement): void {
   if (asr && !asr.hidden && asr.offsetHeight > 0) bottom = Math.max(bottom, player.getBoundingClientRect().bottom - asr.getBoundingClientRect().top + 6);
   o.host.style.setProperty('--fs', `${fs.toFixed(1)}px`);
   o.host.style.setProperty('--bottom', `${Math.round(bottom)}px`);
+  const next = { fs: Math.round(fs * 10) / 10, avail: Math.floor((player.clientWidth || 640) * MULTI_CC.lineMaxWidthRatio) - 2 };
+  if (!geom || geom.fs !== next.fs || geom.avail !== next.avail) {
+    geom = next;
+    fitLines(o.lines);
+  }
 }
 
 let raf = 0;
@@ -488,8 +528,8 @@ function render(): void {
   if (!player || !video || (!shown.length && !status)) return removeOverlay();
   const o = ensureOverlay(player);
   syncLines(o, shown);
-  renderText();
   layout(o, player);
+  renderText();
   o.status.hidden = !status;
   o.statusMain.textContent = status?.text ?? '';
   o.statusHint.textContent = status?.hint ?? '';
