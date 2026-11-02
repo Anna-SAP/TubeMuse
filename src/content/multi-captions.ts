@@ -10,6 +10,7 @@
 
 import { DEFAULT_SETTINGS, MULTI_CC } from '../config/defaults';
 import {
+  AutoCaptionWindow,
   BRIDGE_TAG,
   MULTICC_LINE_COLORS,
   MULTICC_MSG,
@@ -82,6 +83,8 @@ let yielded = false;
 let fatal: { message: string; hint?: string } | undefined;
 let notice: { text: string; until: number } | undefined;
 let lastState = '';
+/** 正片刚开始的那一下，播放器会按你保存的偏好自动打开原生字幕：这期间的打开不算你按了 C */
+const autoWindow = new AutoCaptionWindow(Date.now());
 
 function alive(): boolean {
   try {
@@ -291,8 +294,17 @@ function step(res: CcResolution): void {
     }
     return;
   }
-  // 你自己又打开了原生字幕：先让开，不和你抢；也不再替你恢复
   const ours = primeOwnedSince > 0;
+  if (list.native && !ours && !yielded) {
+    // 正片刚开始：这是播放器按你保存的偏好自动打开的（不是你按了 C）——照常关掉并记住，关闭多语字幕时恢复
+    if (autoWindow.absorb(Date.now())) {
+      const save = !nativeHidden;
+      nativeHidden = true;
+      void nativeOp('hide-native', { save });
+      return;
+    }
+  }
+  // 你自己又打开了原生字幕：先让开，不和你抢；也不再替你恢复
   if (list.native && !ours) {
     if (!yielded) {
       yielded = true;
@@ -314,6 +326,9 @@ function step(res: CcResolution): void {
       return;
     }
     if (primeAttempts >= MULTI_CC.primeMaxAttempts) return giveUp();
+    // 正片刚开始：播放器可能马上按你的偏好自动打开字幕（顺带发出带令牌的请求）。先等这一下，
+    // 免得我们让它选的轨盖掉你的偏好、又把它随后的自动打开当成你按了 C
+    if (autoWindow.isOpen(Date.now())) return;
     if (Date.now() < nextPrimeAt) return;
     const track = primeTrack(list, res.sources, primed);
     if (!track) return giveUp();
@@ -500,7 +515,7 @@ function phaseAndStatus(res: CcResolution | undefined): { phase: MultiCcPhase; s
   if (yielded) return { phase: 'yielded', status: '你打开了 YouTube 原生字幕，多语字幕先让开；按 C 关掉原生字幕即恢复' };
   if (!res.sources.length) return { phase: 'error', status: '你选的语言这个视频都没有' };
   const states = res.sources.map((s) => loaded.get(s.key));
-  if (!template && !states.some((x) => x?.state === 'ok')) return { phase: 'loading', status: '正在请播放器取一次字幕…' };
+  if (!template && !states.some((x) => x?.state === 'ok')) return { phase: 'loading', status: '正在等播放器准备字幕…' };
   if (states.every((x) => x?.state === 'error')) return { phase: 'error', status: '没能读到字幕' };
   if (states.some((x) => !x || x.state === 'loading')) return { phase: 'loading', status: '正在读取字幕…' };
   const ok = states.filter((x) => x?.state === 'ok').length;
@@ -582,6 +597,7 @@ function switchVideo(next: string | null): void {
   nextPrimeAt = 0;
   loaded.clear();
   fatal = undefined;
+  autoWindow.restart(Date.now());
   scanResources();
 }
 
@@ -590,12 +606,16 @@ function tick(): void {
   const { videoId: vid, shorts } = videoIdFromUrl(location.href);
   const next = shorts ? null : vid;
   if (next !== videoId) switchVideo(next);
+  const v = videoEl();
+  autoWindow.sample({ now: Date.now(), ad: adShowing(), playing: !!v && !v.paused && !v.seeking && v.readyState >= 3 });
   const listed = list?.videoId === videoId;
   const wanted = want();
   if (active && !wanted) deactivate();
   if (wanted) active = true;
-  // 自动开启要先知道有没有字幕轨；关掉后要知道原生字幕的现状才能恢复
-  if (videoId && settings.enabled && (active || settings.autoOn || nativeHidden || !listed) && Date.now() - listAt >= MULTI_CC.stateRefreshMs) void refreshList();
+  // 自动开启要先知道有没有字幕轨；关掉后要知道原生字幕的现状才能恢复。
+  // 正片刚开始时每轮都读：播放器按你的偏好自动打开字幕要尽快看到，才能在那段时间内认出它
+  const refreshEvery = active && autoWindow.isOpen(Date.now()) ? TICK_MS : MULTI_CC.stateRefreshMs;
+  if (videoId && settings.enabled && (active || settings.autoOn || nativeHidden || !listed) && Date.now() - listAt >= refreshEvery) void refreshList();
   // 不再显示多语字幕：把我们关掉的原生字幕恢复（你在这期间自己动过原生字幕时不恢复）
   if (!active && nativeHidden && listed && listEpoch === nativeEpoch && !primeOwnedSince) {
     nativeHidden = false;

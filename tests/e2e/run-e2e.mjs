@@ -934,6 +934,9 @@ try {
       texts,
       { timeout: 15000 },
     );
+  /** 等字幕层有 n 行显示着文字 */
+  const waitCcLines = (/** @type {import('playwright').Page} */ page, /** @type {number} */ n) =>
+    page.waitForFunction((n) => (document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelectorAll('.line:not([hidden])').length ?? 0) === n, n, { timeout: 15000 });
   const nativeState = (/** @type {import('playwright').Page} */ page) =>
     page.evaluate(() => {
       const p = /** @type {any} */ (document.getElementById('movie_player'));
@@ -1071,13 +1074,22 @@ try {
   await panel.getByRole('button', { name: '显示多语字幕' }).click();
   await waitCcText(cc, ['I was a government major,', '[zh-Hans] I was a government major,']);
   await cc.waitForFunction(() => !(/** @type {any} */ (document.getElementById('movie_player')).getOption('captions', 'track')?.languageCode), null, { timeout: 5000 });
+  // 你是在看的过程中按 C 的：先播两秒（正片刚开始那一下，原生字幕被打开算播放器按你的偏好自动打开的，见下一场景）
+  await cc.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 0.5;
+    return v.play();
+  });
+  await cc.waitForTimeout(2000);
+  await cc.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).pause());
+  await waitCcLines(cc, 2);
   // 模拟你在 YouTube 的字幕菜单里选了韩语（播放器自己的操作）
   await cc.evaluate(() => /** @type {any} */ (document.getElementById('movie_player')).setOption('captions', 'track', { languageCode: 'ko' }));
   await ccStatus.filter({ hasText: '先让开' }).waitFor({ timeout: 8000 });
   await cc.waitForFunction(() => !document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelector('.line'), null, { timeout: 5000 });
   check((await nativeState(cc)).lang === 'ko', '你打开的原生字幕保持开着，多语字幕不和你抢');
   await cc.evaluate(() => /** @type {any} */ (document.getElementById('movie_player')).setOption('captions', 'track', {}));
-  await waitCcText(cc, ['I was a government major,', '[zh-Hans] I was a government major,']);
+  await waitCcLines(cc, 2);
   check(true, '你关掉原生字幕：多语字幕回来');
   const callsBeforeOff = (await nativeState(cc)).calls.length;
   await panel.getByRole('button', { name: '关闭多语字幕' }).click();
@@ -1123,9 +1135,46 @@ try {
     requests.filter((r) => r.path === '/api/timedtext').every((r) => !String(r.headers.origin ?? '').startsWith('chrome-extension://') && !r.headers.authorization && !JSON.stringify(r).includes(FAKE_KEY)),
     '字幕请求都是播放页自己发出的同源请求：不经过扩展后台、不带任何 Key 或令牌',
   );
+
+  // 2026-11-02 用户报告：开启后播放器里只有一种字幕，侧边栏写"你打开了 YouTube 原生字幕，多语字幕先让开"——其实没按 C。
+  // 根因：你保存的 YouTube 偏好是"字幕开、中文"，播放器在正片开始后约 0.8 秒自动打开它；多语字幕若在这之前完成了第一次检查，
+  // 就把这次自动打开当成了你的操作（DECISIONS §38）
+  /** 等播放器按偏好自动打开中文、又被多语字幕关掉之后，检查没有让开、原生字幕关着、令牌来自那次自动打开 */
+  const checkStickyAbsorbed = async (/** @type {string} */ id, /** @type {string} */ how) => {
+    await waitCcLines(cc, 3);
+    await cc.waitForTimeout(2500);
+    const st = (await ccStatus.textContent()) ?? '';
+    const ns = await nativeState(cc);
+    check(!st.includes('先让开') && st.includes('正在显示 3 种语言') && ns.lang === null && ns.windows === 0, `${how}：播放器按你的偏好自动打开中文——没有误当成你按了 C，照常叠加三种语言、原生字幕关着（${st}）`);
+    const pS = playerTt(id);
+    check(pS.length === 1 && pS[0]?.query.lang === 'zh-Hans' && ourTt(id).length === 3, `直接复用那次自动打开发出的请求（${pS.map((r) => r.query.lang).join(', ')}），没有另外请播放器选轨`);
+    await seekPaused(cc, 3.0);
+    await waitCcText(cc, ['내 이름을 불러줘', 'Lead me', '叫我的名字']);
+    await panel.getByRole('button', { name: '关闭多语字幕' }).click();
+    await cc.waitForFunction(() => /** @type {any} */ (document.getElementById('movie_player')).getOption('captions', 'track')?.languageCode === 'zh-Hans', null, { timeout: 5000 });
+    check(true, '关闭多语字幕：原生字幕恢复成你保存的中文');
+  };
+
+  console.log('\n[多语字幕：你保存的偏好是"字幕开、中文"，勾选了自动显示——页面打开约 1 秒后播放器自动打开中文（用户报告的 bug）]');
+  await cc.goto(`${MOCK}/watch?v=ccSticky0006`);
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await cc.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  await checkStickyAbsorbed('ccSticky0006', '自动显示');
+
   await options.bringToFront();
   await options.getByTestId('multicc-autoon').uncheck();
   await options.waitForTimeout(300);
+  await cc.bringToFront();
+
+  console.log('\n[多语字幕：同样的偏好，先放 2.5 秒广告，你在广告期间点了"显示多语字幕"——广告结束后播放器自动打开中文]');
+  await cc.goto(`${MOCK}/watch?v=ccSticky0005`);
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await cc.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
+  check(await cc.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.contains('ad-showing')), '正在播广告');
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await checkStickyAbsorbed('ccSticky0005', '广告期间开启');
+
   await cc.close();
   await panel.bringToFront();
 

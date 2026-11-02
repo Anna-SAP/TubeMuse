@@ -239,6 +239,60 @@ export function primeTrack(list: CcTrackList, sources: readonly CcSource[], prim
   return sources.map((s) => s.track).find(fresh) ?? list.tracks.find((t) => fresh(t) && t.kind === '') ?? list.tracks.find(fresh);
 }
 
+// ── 原生字幕是谁打开的 ──
+
+/**
+ * 区分"播放器按你保存的偏好自动打开原生字幕"与"你按了 C"。
+ * YouTube 在每次正片开始（页面打开、站内换视频、广告结束）后约 1 秒自动打开你上次用的字幕（实测 0.8 秒，
+ * 还没开始播放）；多语字幕若恰在这之前开启，就会把这次自动打开当成你的操作而让开（2026-11-02 用户报告的 bug）。
+ * 正片开始后、播放满 autoCaptionGracePlaySec 秒（且不超过 autoCaptionGraceMaxMs）之前算"播放器可能自动打开"的窗口，
+ * 窗口内最多吸收 autoCaptionMaxAbsorb 次。纯逻辑：由主循环每轮喂播放器状态。
+ */
+export class AutoCaptionWindow {
+  private startAt: number;
+  private lastAt: number;
+  private played = 0;
+  private wasAd = false;
+  private absorbed = 0;
+
+  constructor(
+    now: number,
+    private readonly o: { autoCaptionGracePlaySec: number; autoCaptionGraceMaxMs: number; autoCaptionMaxAbsorb: number } = MULTI_CC,
+  ) {
+    this.startAt = now;
+    this.lastAt = now;
+  }
+
+  /** 正片重新开始（换视频）：重新计时 */
+  restart(now: number): void {
+    this.startAt = now;
+    this.lastAt = now;
+    this.played = 0;
+    this.absorbed = 0;
+  }
+
+  /** 每轮喂一次：是否在播广告、正片是否在播放。广告结束 = 正片重新开始 */
+  sample(s: { now: number; ad: boolean; playing: boolean }): void {
+    if (this.wasAd && !s.ad) this.restart(s.now);
+    this.wasAd = s.ad;
+    // 标签页在后台时定时器被节流：一轮最多按 1 秒算，免得一下子把窗口跳过去
+    if (s.playing && !s.ad) this.played += Math.min(Math.max(0, s.now - this.lastAt), 1_000) / 1_000;
+    this.lastAt = s.now;
+  }
+
+  /** 现在播放器还可能按你的偏好自动打开原生字幕 */
+  isOpen(now: number): boolean {
+    return this.played < this.o.autoCaptionGracePlaySec && now - this.startAt < this.o.autoCaptionGraceMaxMs;
+  }
+
+  /** 原生字幕被打开了（不是我们打开的）：算播放器自动打开的就返回 true（并记一次），否则是你按的 */
+  absorb(now: number): boolean {
+    if (!this.isOpen(now) || this.absorbed >= this.o.autoCaptionMaxAbsorb) return false;
+    this.absorbed++;
+    return true;
+  }
+}
+
 // ── 字幕请求地址 ──
 
 /** 播放器自己发出的字幕请求（同源的 /api/timedtext，带 pot 令牌）→ 视频 ID；不是就返回 undefined */

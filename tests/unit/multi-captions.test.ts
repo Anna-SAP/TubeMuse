@@ -6,6 +6,7 @@ import { DEFAULT_SETTINGS, MULTI_CC } from '../../src/config/defaults';
 import { ENDPOINTS } from '../../src/config/endpoints';
 import { layoutBurnIn } from '../../src/core/clips';
 import {
+  AutoCaptionWindow,
   ORIGINAL,
   bestTrack,
   ccOptions,
@@ -320,6 +321,55 @@ describe('选轨', () => {
     const all = new Set(TALK.tracks.map(trackKey));
     expect(primeTrack(TALK, r.sources, all)).toBeUndefined();
     expect(primeTrack({ ...TALK, tracks: [track('en', { name: 'CC1' })] }, [], new Set())).toBeUndefined();
+  });
+});
+
+describe('原生字幕是谁打开的（2026-11-02 bug：播放器按你保存的偏好自动打开，被当成你按了 C）', () => {
+  const O = { autoCaptionGracePlaySec: 1.5, autoCaptionGraceMaxMs: 8_000, autoCaptionMaxAbsorb: 2 };
+  /** 每 250 毫秒喂一次，共 ms 毫秒 */
+  const run = (w: AutoCaptionWindow, from: number, ms: number, s: { ad: boolean; playing: boolean }) => {
+    for (let t = from + 250; t <= from + ms; t += 250) w.sample({ now: t, ...s });
+    return from + ms;
+  };
+
+  it('正片刚开始（还没播放）：原生字幕被打开算播放器自动打开的，最多吸收 2 次，第 3 次算你按的', () => {
+    const w = new AutoCaptionWindow(0, O);
+    const t = run(w, 0, 800, { ad: false, playing: false }); // 实测：重新加载 0.8 秒后、还没开始播放就自动打开
+    expect(w.isOpen(t)).toBe(true);
+    expect([w.absorb(t), w.absorb(t), w.absorb(t)]).toEqual([true, true, false]);
+  });
+
+  it('正片播放满 1.5 秒后：再打开原生字幕就是你按的 C', () => {
+    const w = new AutoCaptionWindow(0, O);
+    const t = run(w, 0, 1_750, { ad: false, playing: true });
+    expect(w.isOpen(t)).toBe(false);
+    expect(w.absorb(t)).toBe(false);
+  });
+
+  it('一直停在开头没播：最多等 8 秒', () => {
+    const w = new AutoCaptionWindow(0, O);
+    expect(w.isOpen(run(w, 0, 7_750, { ad: false, playing: false }))).toBe(true);
+    expect(w.isOpen(run(w, 7_750, 500, { ad: false, playing: false }))).toBe(false);
+  });
+
+  it('广告期间不计时；广告结束 = 正片重新开始，播放器会再按你的偏好打开一次', () => {
+    const w = new AutoCaptionWindow(0, O);
+    let t = run(w, 0, 3_000, { ad: false, playing: true });
+    expect(w.isOpen(t)).toBe(false);
+    t = run(w, t, 20_000, { ad: true, playing: true }); // 中插广告
+    t = run(w, t, 500, { ad: false, playing: false });
+    expect(w.isOpen(t)).toBe(true);
+    expect(w.absorb(t)).toBe(true);
+  });
+
+  it('换视频重新计时；标签页在后台被节流时一轮最多按 1 秒算', () => {
+    const w = new AutoCaptionWindow(0, O);
+    w.sample({ now: 60_000, ad: false, playing: true }); // 一下子过了 60 秒：只算 1 秒
+    expect(w.isOpen(60_000)).toBe(false); // 但墙钟已超过 8 秒
+    w.restart(100_000);
+    w.sample({ now: 100_250, ad: false, playing: true });
+    expect(w.isOpen(100_250)).toBe(true);
+    expect([MULTI_CC.autoCaptionGracePlaySec, MULTI_CC.autoCaptionGraceMaxMs, MULTI_CC.autoCaptionMaxAbsorb]).toEqual([2, 8_000, 2]);
   });
 });
 

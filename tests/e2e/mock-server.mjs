@@ -81,8 +81,10 @@ export const SUBTITLE_VIDEOS = [
  * 多语字幕用的播放页：带假播放器（接口照 2026-11-02 实测的 YouTube 播放器）与字幕轨。
  * cues：[开始秒, 结束秒, 文字]；三种语言故意断句、起止时间都不同。empty：字幕接口对这条轨返回空；
  * stale：这个视频的字幕接口一律返回空（模拟播放器的令牌失效）；initial：页面打开时原生字幕已开着的语言。
+ * sticky：你在 YouTube 保存的字幕偏好（开着 + 这种语言）——像真播放器一样，正片开始（页面打开或广告结束）后
+ * 过一会儿（STICKY_DELAY_MS）自动打开它（2026-11-02 实测约 0.8 秒；这里放慢一点，稳定复现竞态）；adMs：先放这么久的广告。
  * @typedef {{ lang: string; kind?: 'asr'; label: string; cues: [number, number, string][]; empty?: boolean }} MockCcTrack
- * @type {{ id: string; seconds: number; lang?: string; initial?: string; stale?: boolean; tracks: MockCcTrack[]; translationLangs: string[] }[]}
+ * @type {{ id: string; seconds: number; lang?: string; initial?: string; sticky?: string; adMs?: number; stale?: boolean; tracks: MockCcTrack[]; translationLangs: string[] }[]}
  */
 export const CC_VIDEOS = [
   {
@@ -112,6 +114,33 @@ export const CC_VIDEOS = [
     translationLangs: ['zh-Hans', 'ja'],
   },
   { id: 'ccNoTrack003', seconds: 10, tracks: [], translationLangs: [] },
+  // 用户报告的 bug（2026-11-02）：你保存的偏好是"字幕开、中文（简体）"，播放器在正片开始后自动打开它。
+  // 0006：没有广告，页面一打开（勾选了"自动显示"）；0005：先放 2.5 秒广告，你在广告期间点了"显示多语字幕"
+  {
+    id: 'ccSticky0006',
+    seconds: 16,
+    lang: 'ko',
+    sticky: 'zh-Hans',
+    tracks: [
+      { lang: 'zh-Hans', label: 'Chinese (Simplified)', cues: [[0.5, 4.0, '叫我的名字'], [4.2, 8.6, '循着彼此相连的脉络']] },
+      { lang: 'en', label: 'English', cues: [[0.5, 2.2, 'Call my name'], [2.3, 4.0, 'Lead me'], [4.2, 8.6, 'Along the lines that connect us']] },
+      { lang: 'ko', label: 'Korean', cues: [[0.8, 4.3, '내 이름을 불러줘'], [4.5, 8.8, '서로 이어진 결을 따라']] },
+    ],
+    translationLangs: ['zh-Hans', 'ja'],
+  },
+  {
+    id: 'ccSticky0005',
+    seconds: 16,
+    lang: 'ko',
+    sticky: 'zh-Hans',
+    adMs: 2500,
+    tracks: [
+      { lang: 'zh-Hans', label: 'Chinese (Simplified)', cues: [[0.5, 4.0, '叫我的名字'], [4.2, 8.6, '循着彼此相连的脉络']] },
+      { lang: 'en', label: 'English', cues: [[0.5, 2.2, 'Call my name'], [2.3, 4.0, 'Lead me'], [4.2, 8.6, 'Along the lines that connect us']] },
+      { lang: 'ko', label: 'Korean', cues: [[0.8, 4.3, '내 이름을 불러줘'], [4.5, 8.8, '서로 이어진 결을 따라']] },
+    ],
+    translationLangs: ['zh-Hans', 'ja'],
+  },
   {
     id: 'ccStale00004',
     seconds: 10,
@@ -130,10 +159,13 @@ export const CC_VIDEOS = [
  * 选了字幕轨就像真播放器一样自己用 XHR 发出带 pot 令牌的字幕请求（加 x-mock-player 头，便于区分谁发的），
  * 并把字幕画进自己的 .ytp-caption-window-container。
  * window.__playerCalls：改动性调用（setOption / loadModule / unloadModule）；
- * window.__foreign：播放器自己的字幕窗口、字幕按钮的 aria-pressed、本扩展的 [data-tubemuse] 层以外的任何 DOM 变化。
+ * window.__foreign：播放器自己的字幕窗口、字幕按钮的 aria-pressed、本扩展的 [data-tubemuse] 层以外的任何 DOM 变化
+ * （放广告的页面里播放器自己切换 ad-showing 也除外）。
+ * 播放器按 sticky 自动打开字幕走内部路径，不记进 __playerCalls（真播放器也不经过公开的 setOption）。
  * @param {(typeof CC_VIDEOS)[number]} cfg
+ * @param {number} stickyDelayMs
  */
-function mockPlayer(cfg) {
+function mockPlayer(cfg, stickyDelayMs) {
   const p = /** @type {any} */ (document.getElementById('movie_player'));
   const video = /** @type {HTMLVideoElement} */ (p.querySelector('video'));
   const box = /** @type {HTMLElement} */ (p.querySelector('.ytp-caption-window-container'));
@@ -175,8 +207,18 @@ function mockPlayer(cfg) {
   p.unloadModule = (/** @type {string} */ m) => calls.push(['unloadModule', m]);
   p.setOption = (/** @type {string} */ m, /** @type {string} */ o, /** @type {any} */ v) => {
     calls.push(['setOption', m, o, JSON.stringify(v)]);
-    if (m !== 'captions' || o !== 'track') return;
+    if (m === 'captions' && o === 'track') select(v);
+  };
+  /** 你保存的字幕偏好：像真播放器一样，选了轨就记成"开着"，关掉就记成"关着"（实测 yt-player-caption-persistence） */
+  let persisted = !!cfg.sticky;
+  /** 正片开始时读一次保存的偏好，过一会儿照它打开字幕（不管这期间别人选过什么——用户截图里正是这样） */
+  const contentStart = () => {
+    const want = persisted ? cfg.sticky : undefined;
+    if (want) setTimeout(() => select({ languageCode: want }), stickyDelayMs);
+  };
+  function select(/** @type {any} */ v) {
     const t = v?.languageCode ? (cfg.tracks.find((x) => x.lang === v.languageCode && (x.kind ?? '') === (v.kind ?? '')) ?? cfg.tracks.find((x) => x.lang === v.languageCode)) : undefined;
+    persisted = !!t;
     if (!t) {
       track = {};
       cues = [];
@@ -205,12 +247,24 @@ function mockPlayer(cfg) {
       const el = /** @type {Element} */ (m.target.nodeType === 1 ? m.target : m.target.parentElement);
       if (el.closest('.ytp-caption-window-container') || el.closest('[data-tubemuse]')) continue;
       if (m.type === 'attributes' && m.attributeName === 'aria-pressed' && el === btn) continue;
+      if (m.type === 'attributes' && m.attributeName === 'class' && el === p && cfg.adMs) continue;
       if (m.type === 'childList' && el === p && [...m.addedNodes, ...m.removedNodes].every((x) => x.nodeType === 1 && /** @type {Element} */ (x).hasAttribute('data-tubemuse'))) continue;
       w.__foreign.push(`${m.type}:${el.tagName}.${el.className}:${m.attributeName ?? ''}`);
     }
   }).observe(p, { subtree: true, childList: true, attributes: true, characterData: true });
   if (cfg.initial) p.setOption('captions', 'track', { languageCode: cfg.initial });
+  // 先放广告（同一个播放器，加 ad-showing），广告结束正片开始；没有广告时页面打开即正片开始
+  if (cfg.adMs) {
+    p.classList.add('ad-showing');
+    setTimeout(() => {
+      p.classList.remove('ad-showing');
+      contentStart();
+    }, cfg.adMs);
+  } else contentStart();
 }
+
+/** 播放器在正片开始后多久按你保存的偏好打开字幕（实测约 0.8 秒；放慢到 1 秒，让内容脚本稳定地先于它完成第一次检查） */
+const STICKY_DELAY_MS = 1_000;
 
 const WATCH_AS_MOCK = WATCH_VIDEOS.map((w) => ({ id: w.id, title: w.title, channelId: w.channelId, channelTitle: w.channelTitle, hoursAgo: 200, duration: `PT${w.seconds}S`, views: 1000, likes: 10, lang: 'zh', categoryId: w.categoryId }));
 
@@ -444,7 +498,7 @@ export function startMockServer() {
           return res.end(
             `<!doctype html><html><head><meta charset="utf-8"><title>多语字幕测试 - YouTube</title><style>#movie_player{position:relative;width:640px;height:360px;background:#000;overflow:hidden}#player{width:100%;height:100%}.ytp-chrome-bottom{position:absolute;left:12px;right:12px;bottom:0;height:48px}.ytp-caption-window-container{position:absolute;left:0;right:0;bottom:60px;text-align:center;color:#fff;font:20px sans-serif}</style></head>` +
               `<body><div id="movie_player" class="html5-video-player ytp-autohide"><video id="player" preload="auto" src="/media/${id}.wav"></video><div class="ytp-caption-window-container"></div>` +
-              `<div class="ytp-chrome-bottom">${ccButton}</div></div><script>(${mockPlayer.toString()})(${JSON.stringify(cv)})</script></body></html>`,
+              `<div class="ytp-chrome-bottom">${ccButton}</div></div><script>(${mockPlayer.toString()})(${JSON.stringify(cv)}, ${STICKY_DELAY_MS})</script></body></html>`,
           );
         }
         const sv = SUBTITLE_VIDEOS.find((x) => x.id === id);
