@@ -405,6 +405,10 @@ export const MULTI_CC = {
   autoCaptionGraceMaxMs: 8_000,
   /** 同一段等待里最多当作"播放器自动打开"几次；再打开就是你按的 */
   autoCaptionMaxAbsorb: 2,
+  /** 一行字幕最宽占播放器宽度的比例（两边各留一半） */
+  lineMaxWidthRatio: 0.96,
+  /** 一行放不下时先缩小字号，最多缩到这个比例；还放不下才折行（用户 2026-11-03 要求：每种语言尽量只占一行） */
+  fitMinScale: 0.75,
 } as const;
 
 /** 视频片段录制的内部参数 */

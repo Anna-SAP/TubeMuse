@@ -436,6 +436,35 @@ export function textAt(cues: readonly CcCue[], t: number, o: { gapBridgeSec: num
     .join('\n');
 }
 
+// ── 一种语言一行 ──
+
+/** 中日韩全角标点结尾：后面直接接下一行，不加空格 */
+const FULLWIDTH_END = /[，。！？、；：…」』》〉】）〕]$/;
+
+/**
+ * 一种语言尽量只占一行：把一句字幕里作者手动断开的几行（YouTube 字幕常把一句歌词拆成两行）以及同时显示的几句接成一行。
+ * 中日韩全角标点之后直接接，其余用一个空格隔开。
+ */
+export function joinCueLines(text: string): string {
+  let out = '';
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    out = !out ? line : FULLWIDTH_END.test(out) ? out + line : `${out} ${line}`;
+  }
+  return out;
+}
+
+/**
+ * 一行放不下时怎么办：先等比缩小字号（最多缩到 minScale），还放不下才允许折行（此时就用 minScale）。
+ * naturalPx：按原字号、不折行时的宽度；availPx：可用宽度。字号、内边距、"机翻"标记都按 em 算，宽度随字号等比变化。
+ */
+export function fitLine(naturalPx: number, availPx: number, minScale: number = MULTI_CC.fitMinScale): { scale: number; wrap: boolean } {
+  if (!(naturalPx > 0) || !(availPx > 0) || naturalPx <= availPx) return { scale: 1, wrap: false };
+  const scale = Math.floor((availPx / naturalPx) * 1000) / 1000;
+  return scale >= minScale ? { scale, wrap: false } : { scale: minScale, wrap: true };
+}
+
 /** 每行的颜色：第一行白色，其后浅黄、浅蓝、浅紫（片段录制烧录字幕时用同样的颜色） */
 export const MULTICC_LINE_COLORS = ['#ffffff', '#ffe7a3', '#bfe4ff', '#ddd0ff'] as const;
 

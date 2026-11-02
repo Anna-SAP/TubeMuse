@@ -94,9 +94,20 @@ export const CC_VIDEOS = [
     seconds: 16,
     lang: 'ko',
     tracks: [
-      { lang: 'zh-Hans', label: 'Chinese (Simplified)', cues: [[0.5, 4.0, '叫我的名字'], [4.2, 8.6, '循着彼此相连的脉络'], [9.0, 13.0, '哪怕双脚触不到底']] },
-      { lang: 'en', label: 'English', cues: [[0.5, 2.2, 'Call my name'], [2.3, 4.0, 'Lead me'], [4.2, 8.6, 'Along the lines that connect us'], [9.0, 13.0, "Even if my feet don't touch the ground"]] },
-      { lang: 'ko', label: 'Korean', cues: [[0.8, 4.3, '내 이름을 불러줘'], [4.5, 8.8, '서로 이어진 결을 따라'], [9.2, 13.2, "그거면 돼 I'm diving for"]] },
+      // 9 秒起的一句像真实歌词字幕那样在句中手动断成两行；13.3 秒有一句特别长的英文（测试"一种语言一行"的排版）
+      { lang: 'zh-Hans', label: 'Chinese (Simplified)', cues: [[0.5, 4.0, '叫我的名字'], [4.2, 8.6, '循着彼此相连的脉络'], [9.0, 13.0, '哪怕双脚触不到底\n(diving for, diving for)']] },
+      {
+        lang: 'en',
+        label: 'English',
+        cues: [
+          [0.5, 2.2, 'Call my name'],
+          [2.3, 4.0, 'Lead me'],
+          [4.2, 8.6, 'Along the lines that connect us'],
+          [9.0, 13.0, "Even if my feet don't touch the ground\n(diving for, diving for)"],
+          [13.3, 14.3, "Even if my feet don't touch the ground, I'm diving for it, diving for it, with every breath I take and every step I make, I keep on running through the night until the morning light, calling out your name again and again across the city streets"],
+        ],
+      },
+      { lang: 'ko', label: 'Korean', cues: [[0.8, 4.3, '내 이름을 불러줘'], [4.5, 8.8, '서로 이어진 결을 따라'], [9.2, 13.2, "그거면 돼\nI'm diving for"]] },
       { lang: 'id', label: 'Indonesian', cues: [], empty: true },
     ],
     translationLangs: ['zh-Hans', 'zh-Hant', 'ja', 'fr'],

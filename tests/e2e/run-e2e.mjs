@@ -1037,6 +1037,46 @@ try {
     p.classList.add('ytp-autohide');
   });
 
+  console.log('\n[多语字幕：每种语言尽量只占一行——一句里手动断的行接成一行；放不下先缩小字号（最多到 75%），再放不下才折行]');
+  /** 每一行：语言、文字排成了几行、字号、是否允许折行、是否放得下 */
+  const lineBoxes = () =>
+    cc.evaluate(() =>
+      [...(document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelectorAll('.line:not([hidden])') ?? [])].map((x) => {
+        const l = /** @type {HTMLElement} */ (x);
+        return { lang: l.dataset.lang, rows: /** @type {HTMLElement} */ (l.querySelector('.tx')).getClientRects().length, fs: parseFloat(l.style.fontSize), multi: l.classList.contains('multi'), fits: l.scrollWidth <= l.clientWidth + 1, w: l.scrollWidth };
+      }),
+    );
+  const setPlayerWidth = (/** @type {string} */ w) => cc.evaluate((w) => (/** @type {HTMLElement} */ (document.getElementById('movie_player')).style.width = w), w);
+  await seekPaused(cc, 10.0);
+  await waitCcText(cc, ["그거면 돼 I'm diving for", "Even if my feet don't touch the ground (diving for, diving for)", '哪怕双脚触不到底 (diving for, diving for)']);
+  const fsBase = (await ccVars()).fs;
+  const b10 = await lineBoxes();
+  check(b10.length === 3 && b10.every((b) => b.rows === 1 && !b.multi && b.fits), `字幕里原本断成两行的歌词接成一行：三种语言各占一行（${b10.map((b) => `${b.lang} ${b.rows} 行`).join('，')}）`);
+  check(b10[0]?.fs === fsBase && Math.abs((b10[1]?.fs ?? 0) - fsBase * 0.92) < 0.15, `放得下时不缩小：第一行 ${b10[0]?.fs}px，其后 ${b10[1]?.fs}px（92%）`);
+  // 精确验证：量出英文这一行按原字号的宽度，再把播放器调窄到只够它 85% 宽 → 这一行应缩到约 85%、仍是一行
+  const enW = b10.find((b) => b.lang === 'en')?.w ?? 0;
+  const enBase = fsBase * 0.92;
+  await setPlayerWidth(`${Math.ceil((enW * 0.85 + 2) / 0.96)}px`);
+  await cc.waitForTimeout(600);
+  const en85 = (await lineBoxes()).find((b) => b.lang === 'en');
+  check(!!en85 && !en85.multi && en85.rows === 1 && en85.fits && en85.fs / enBase > 0.82 && en85.fs / enBase < 0.87, `放不下时等比缩小这一行：${enBase.toFixed(1)}px → ${en85?.fs}px，仍是一行`);
+  await setPlayerWidth(`${Math.ceil((enW * 0.6 + 2) / 0.96)}px`);
+  await cc.waitForTimeout(600);
+  const en60 = (await lineBoxes()).find((b) => b.lang === 'en');
+  check(!!en60 && en60.multi && en60.rows >= 2 && Math.abs(en60.fs - enBase * 0.75) < 0.15, `缩到 75% 还放不下才折行：${en60?.fs}px、${en60?.rows} 行`);
+  await setPlayerWidth('');
+  await seekPaused(cc, 13.8);
+  await waitCcLines(cc, 1);
+  await cc.waitForTimeout(300);
+  const long = (await lineBoxes())[0];
+  check(long?.lang === 'en' && long.multi && long.rows >= 2 && Math.abs(long.fs - enBase * 0.75) < 0.15, `一句特别长的字幕：缩到 75% 后折行，显示全文、不截断（${long?.rows} 行）`);
+  await cc.setViewportSize({ width: 660, height: 380 });
+  await cc.screenshot({ path: join(shots, '34-multicc-long-line.png') });
+  await seekPaused(cc, 10.0);
+  await waitCcText(cc, ["그거면 돼 I'm diving for", "Even if my feet don't touch the ground (diving for, diving for)", '哪怕双脚触不到底 (diving for, diving for)']);
+  await cc.screenshot({ path: join(shots, '33-multicc-single-line.png') });
+  await cc.setViewportSize({ width: 420, height: 900 });
+
   console.log('\n[多语字幕：关闭 → 字幕层移除；原生字幕本来关着，保持关着]');
   await panel.getByRole('button', { name: '关闭多语字幕' }).click();
   await cc.waitForFunction(() => !document.querySelector('[data-tubemuse="multicc"]'), null, { timeout: 5000 });

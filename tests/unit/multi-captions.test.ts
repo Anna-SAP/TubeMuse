@@ -11,6 +11,8 @@ import {
   bestTrack,
   ccOptions,
   cleanCueText,
+  fitLine,
+  joinCueLines,
   langMatchKey,
   parseJson3,
   primeTrack,
@@ -225,6 +227,43 @@ describe('按播放进度找这一句（各语言各自的时间轴）', () => {
       const x = (i * 9.731) % t;
       expect(textAt(many, x)).toBe(linear(x));
     }
+  });
+});
+
+describe('一种语言尽量只占一行（2026-11-03 用户要求）', () => {
+  it('作者在一句里手动断的行接成一行：英文、韩文用空格；中文在全角标点后直接接', () => {
+    expect(joinCueLines("We YG지, Yeah we be trimmin' trimmin'\nWe gon' shock yuh")).toBe("We YG지, Yeah we be trimmin' trimmin' We gon' shock yuh");
+    expect(joinCueLines('我们是YG，没错，我们一直在修剪修剪\n我们会让你大吃一惊')).toBe('我们是YG，没错，我们一直在修剪修剪 我们会让你大吃一惊');
+    expect(joinCueLines('上大学那会儿，\n我主修政治学。')).toBe('上大学那会儿，我主修政治学。');
+    expect(joinCueLines('So in college,\nI was a government major,')).toBe('So in college, I was a government major,');
+  });
+
+  it('同时显示的几句（textAt 用换行隔开）也接成一行；空行、首尾空白去掉；没有换行时原样', () => {
+    const overlap: CcCue[] = [
+      { start: 0, end: 10, text: '[标牌] 出口' },
+      { start: 2, end: 4, text: 'A：快走' },
+    ];
+    expect(joinCueLines(textAt(overlap, 3))).toBe('[标牌] 出口 A：快走');
+    expect(joinCueLines('\n  a  \n\n b ')).toBe('a b');
+    expect(joinCueLines('내 이름을 불러줘')).toBe('내 이름을 불러줘');
+    expect(joinCueLines('')).toBe('');
+  });
+
+  it('放得下：原字号；放不下：等比缩小到正好放下；缩到 75% 还放不下：用 75% 并允许折行', () => {
+    expect(fitLine(500, 600)).toEqual({ scale: 1, wrap: false });
+    expect(fitLine(600, 600)).toEqual({ scale: 1, wrap: false });
+    expect(fitLine(750, 600)).toEqual({ scale: 0.8, wrap: false });
+    const tight = fitLine(799, 600);
+    expect(tight.wrap).toBe(false);
+    expect(799 * tight.scale).toBeLessThanOrEqual(600);
+    expect(fitLine(900, 600)).toEqual({ scale: 0.75, wrap: true });
+    expect(MULTI_CC.fitMinScale).toBe(0.75);
+  });
+
+  it('还没排版（宽度为 0）或不可见：不缩放', () => {
+    expect(fitLine(0, 600)).toEqual({ scale: 1, wrap: false });
+    expect(fitLine(500, 0)).toEqual({ scale: 1, wrap: false });
+    expect(fitLine(Number.NaN, 600)).toEqual({ scale: 1, wrap: false });
   });
 });
 
