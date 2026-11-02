@@ -75,6 +75,7 @@ export const SUBTITLE_VIDEOS = [
   { id: 'clipRange001', seconds: 14, captions: 'yes' },
   { id: 'clipManual01', seconds: 14, captions: 'yes' },
   { id: 'clipSpa00001', seconds: 20, captions: 'yes' },
+  { id: 'clipPreroll1', seconds: 30, captions: 'yes' },
 ];
 
 /**

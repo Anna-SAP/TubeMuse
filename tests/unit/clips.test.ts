@@ -1,5 +1,7 @@
 // 视频片段录制：时间码、文件名、编码格式与尺寸、开录前检查、录 / 等 / 停的判定、字幕烧录排版、录制记录（后台校验与保存）。
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLIPS, DEFAULT_SETTINGS } from '../../src/config/defaults';
 import {
@@ -12,6 +14,7 @@ import {
   formatBytes,
   formatTimecode,
   layoutBurnIn,
+  mp4TrackKinds,
   outputSize,
   parseTimecode,
   pickClipFormat,
@@ -106,6 +109,58 @@ describe('编码格式与尺寸', () => {
     expect(videoBitrate(720)).toBe(5_000_000);
     expect(videoBitrate(482)).toBe(2_500_000);
     expect(videoBitrate(360)).toBe(1_500_000);
+  });
+  it('录音采样率固定 48 kHz（AAC 编码器只接受 44.1 / 48 kHz，蓝牙通话模式是 16 kHz）', () => {
+    expect(CLIPS.audioSampleRate).toBe(48_000);
+  });
+});
+
+describe('MP4 文件头里的轨', () => {
+  const box = (type: string, ...children: Uint8Array[]): Uint8Array => {
+    const len = 8 + children.reduce((n, c) => n + c.length, 0);
+    const out = new Uint8Array(len);
+    new DataView(out.buffer).setUint32(0, len);
+    out.set([...type].map((c) => c.charCodeAt(0)), 4);
+    let p = 8;
+    for (const c of children) {
+      out.set(c, p);
+      p += c.length;
+    }
+    return out;
+  };
+  const raw = (s: string) => Uint8Array.from([...s].map((c) => c.charCodeAt(0)));
+  const hdlr = (kind: string) => box('hdlr', new Uint8Array(8), raw(kind), new Uint8Array(12));
+  const trak = (kind: string) => box('trak', box('tkhd', new Uint8Array(84)), box('mdia', box('mdhd', new Uint8Array(24)), hdlr(kind)));
+  const cat = (...parts: Uint8Array[]) => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let p = 0;
+    for (const x of parts) {
+      out.set(x, p);
+      p += x.length;
+    }
+    return out;
+  };
+  const ftyp = box('ftyp', raw('isom'), new Uint8Array(4));
+
+  it('读出文件头声明的画面轨、声音轨', () => {
+    expect(mp4TrackKinds(cat(ftyp, box('moov', box('mvhd', new Uint8Array(100)), trak('vide'), trak('soun'))))).toEqual(['vide', 'soun']);
+    expect(mp4TrackKinds(cat(ftyp, box('moov', trak('vide')), box('moof', box('mfhd', new Uint8Array(8)))))).toEqual(['vide']);
+  });
+  it('文件头还没写全：返回 undefined，等更多数据再查', () => {
+    const full = cat(ftyp, box('moov', trak('vide'), trak('soun')));
+    expect(mp4TrackKinds(full.subarray(0, full.length - 5))).toBeUndefined();
+    expect(mp4TrackKinds(ftyp)).toBeUndefined();
+    expect(mp4TrackKinds(ftyp.subarray(0, 6))).toBeUndefined();
+    expect(mp4TrackKinds(new Uint8Array(0))).toBeUndefined();
+  });
+  it('文件头之前就出现分片或数据：没有可用的文件头', () => {
+    expect(mp4TrackKinds(cat(ftyp, box('moof', box('mfhd', new Uint8Array(8)))))).toEqual([]);
+  });
+  it('Chrome 156 实录：开头暂停过的文件头只有画面轨，正常的有两条轨', () => {
+    const head = (name: string) => new Uint8Array(readFileSync(join(__dirname, '..', 'fixtures', name)));
+    // 录音机 start() 后暂停 6 秒再继续（2026-11-02 用户报告的无声片段同样只有画面轨）
+    expect(mp4TrackKinds(head('chrome156-mp4-head-video-only.bin'))).toEqual(['vide']);
+    expect(mp4TrackKinds(head('chrome156-mp4-head-av.bin'))?.sort()).toEqual(['soun', 'vide']);
   });
 });
 

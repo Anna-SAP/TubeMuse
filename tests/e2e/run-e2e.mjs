@@ -1223,14 +1223,20 @@ try {
         for (let i = 0; i < d.length; i += 4) if (d[i] + d[i + 1] + d[i + 2] > 600) n++;
         return n;
       };
+      // 文件头里没有声音轨（声音数据可能还在文件里，但播放器读不到）时解不出声音：响度记 0
       const ac = new AudioContext();
-      const buf = await ac.decodeAudioData(await blob.arrayBuffer());
-      const ch = buf.getChannelData(0);
-      let s = 0;
-      for (let i = 0; i < ch.length; i++) s += ch[i] * ch[i];
+      let rms = 0;
+      try {
+        const ch = (await ac.decodeAudioData(await blob.arrayBuffer())).getChannelData(0);
+        let s = 0;
+        for (let i = 0; i < ch.length; i++) s += ch[i] * ch[i];
+        rms = Math.sqrt(s / ch.length);
+      } catch {
+        // 没有可解码的声音轨
+      }
       URL.revokeObjectURL(url);
       void ac.close();
-      return { head: Array.from(bytes.slice(0, 12)), duration, width: v.videoWidth, height: v.videoHeight, rms: Math.sqrt(s / ch.length), bottomBright: bright(0.8, 0.95), topBright: bright(0.05, 0.6) };
+      return { head: Array.from(bytes.slice(0, 12)), duration, width: v.videoWidth, height: v.videoHeight, rms, bottomBright: bright(0.8, 0.95), topBright: bright(0.05, 0.6) };
     }, b64);
   };
   /** MP4（第 4–8 字节是 ftyp）或 WebM（EBML 头 1A 45 DF A3） */
@@ -1300,6 +1306,29 @@ try {
   check(JSON.stringify(await clipPlayerHtml()) === JSON.stringify(playerBefore), '录制没有往页面里加任何元素，播放器原样未动');
   check(requests.slice(requestsBeforeClip).every((r) => r.path.startsWith('/media/')), '录制与保存不发任何网络请求（只有播放器自己加载媒体）');
 
+  // 2026-11-02 用户报告：片头广告中开始录，存下的 MP4 没有声音。录音机开始后先暂停了一阵，
+  // Chrome 的 MP4 封装把声音排在画面之后，写文件头时还没有声音轨——声音数据在文件里，播放器却读不到。
+  // 文件头随第一个分片写出（一片约 101 帧；mock 视频只有声音，画布约 10 帧/秒，一片约 10 秒）：
+  // 开头等待的时长超过一片、之后又录满一片才会复现（修复前的构建：等 13 秒、录 12 秒 → 文件头只有画面轨）
+  console.log('\n[片段录制：片头广告中开始 → 广告结束才真正开录 → 文件里有声音]');
+  await clipPage.goto(`${MOCK}/watch?v=clipPreroll1`);
+  await clipPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await clipPage.evaluate(() => {
+    /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.add('ad-showing');
+    return /** @type {HTMLVideoElement} */ (document.querySelector('video')).play();
+  });
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '广告中' }).waitFor({ timeout: 5000 });
+  await clipPage.waitForTimeout(13000);
+  await clipPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ad-showing'));
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 5000 });
+  await clipPage.waitForTimeout(12000);
+  const [prerollDl] = await Promise.all([clipPage.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const preroll = await analyzeClip(clipPage, /** @type {string} */ (await prerollDl.path()));
+  check(preroll.duration > 10.5 && preroll.duration < 16,`只录了广告之后的部分（${preroll.duration.toFixed(1)} 秒）`);
+  check(preroll.rms > 0.02, `开始时等了 13 秒广告，文件里仍有声音（响度 ${preroll.rms.toFixed(3)}）`);
+
   console.log('\n[片段录制：按时间段截取 → 自动跳到起点、到终点自动停；字幕烧进画面]');
   await clipPage.goto(`${MOCK}/watch?v=clipRange001`);
   await clipPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
@@ -1327,7 +1356,7 @@ try {
   check(range.rms > 0.02, '时间段片段也有声音');
   check(range.bottomBright > 200 && range.topBright === 0, `字幕烧进了画面底部（亮像素 ${range.bottomBright}），画面其他地方没有多出东西`);
   const log2 = await clipLog();
-  check(log2.length === 2 && log2[0].mode === 'range' && log2[0].burned === true && log2[0].start === 2 && log2[0].end === 5, '记录里写明是时间段、带字幕');
+  check(log2.length === 3 && log2[0].mode === 'range' && log2[0].burned === true && log2[0].start === 2 && log2[0].end === 5, '记录里写明是时间段、带字幕');
   await panel.getByTestId('clip-burn').uncheck();
 
   console.log('\n[片段录制：关掉"停止后直接保存" → 先留在内存里，点保存才存；可以丢弃]');

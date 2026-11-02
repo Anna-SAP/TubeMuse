@@ -20,6 +20,7 @@ import {
   decideClip,
   formatTimecode,
   layoutBurnIn,
+  mp4TrackKinds,
   outputSize,
   pickClipFormat,
   titleFromDocumentTitle,
@@ -66,6 +67,10 @@ interface Recording {
   audioNodes: Map<string, MediaStreamAudioSourceNode>;
   canvasTrack: MediaStreamTrack;
   recorder: MediaRecorder;
+  /** 录音机等到第一次真正要录时才 start()，见 startRecorder */
+  started: boolean;
+  /** MP4 文件头已查过（或正在查）有没有声音轨，见 checkMp4Header */
+  headerChecked: boolean;
   chunks: Blob[];
   bytes: number;
   recordedSec: number;
@@ -83,6 +88,9 @@ interface Recording {
   burnBoxes: BurnBox[];
   stopping?: ClipStopReason;
   errorText?: string;
+  errorHint?: string;
+  /** 这一段不产出文件（例如注定没有声音） */
+  discard?: boolean;
 }
 
 interface ReadyClip extends ReadyClipInfo {
@@ -297,7 +305,14 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   } catch {
     return fail('浏览器不允许录制这个视频（可能受版权保护）');
   }
-  const ac = new AudioContext();
+  let ac: AudioContext;
+  try {
+    // 采样率固定 48 kHz，不跟着输出设备走：蓝牙耳机通话模式的 16 kHz，AAC 编码器不接受（见 CLIPS.audioSampleRate）
+    ac = new AudioContext({ sampleRate: CLIPS.audioSampleRate });
+  } catch (e) {
+    source.getTracks().forEach((t) => t.stop());
+    return fail(`浏览器没能准备录音：${e instanceof Error ? e.message : String(e)}`);
+  }
   if (ac.state === 'suspended') await ac.resume().catch(() => undefined);
   if (ac.state === 'suspended') {
     source.getTracks().forEach((t) => t.stop());
@@ -356,6 +371,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     audioNodes: new Map(),
     canvasTrack,
     recorder,
+    started: false,
+    headerChecked: false,
     chunks: [],
     bytes: 0,
     recordedSec: 0,
@@ -373,6 +390,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     if (!e.data.size) return;
     r.chunks.push(e.data);
     r.bytes += e.data.size;
+    if (r.format.ext === 'mp4' && !r.headerChecked) void checkMp4Header(r);
   };
   recorder.onerror = (e) => {
     const err = (e as Event & { error?: DOMException }).error;
@@ -388,11 +406,46 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     video.currentTime = req.start!;
     if (video.paused) void video.play().catch(() => undefined);
   }
-  recorder.start(CLIPS.timesliceMs);
-  // 先停在暂停状态，由下一轮判断该不该录（例如广告中、正在跳到起点）
-  recorder.pause();
+  // 录音机先不开始，由下一轮判断该不该录（例如广告中、正在跳到起点），第一次该录时才 start()
   r.waiting = 'seeking';
   tick();
+}
+
+/**
+ * 第一次真正要录时才开始录音机。不能先 start() 再暂停着等：Chrome 的 MP4 封装按时间戳排队，开头暂停多久，
+ * 声音就排在画面后面多久；文件头随第一个分片（约 101 帧）写出，开头的暂停长过一个分片时，那时还没有声音，
+ * 文件头里就没有声音轨——声音数据虽在文件里，播放器却读不到（2026-11-02 实测 Chrome 156，见 DECISIONS §39）。
+ * 开始之后的暂停（广告、你按暂停）没有这个问题：文件头已经带着两条轨写出了。
+ */
+function startRecorder(r: Recording): void {
+  r.started = true;
+  try {
+    r.recorder.start(CLIPS.timesliceMs);
+  } catch (e) {
+    r.errorText = e instanceof Error ? e.message : String(e);
+    stopRecording('error');
+  }
+}
+
+/** MP4 文件头一写出就查有没有声音轨：没有的话这一段注定没声音，立刻停下告诉你，不产出静默的无声文件 */
+async function checkMp4Header(r: Recording): Promise<void> {
+  r.headerChecked = true;
+  let kinds: string[] | undefined;
+  try {
+    kinds = mp4TrackKinds(new Uint8Array(await new Blob(r.chunks).slice(0, CLIPS.headerScanBytes).arrayBuffer()));
+  } catch {
+    return;
+  }
+  // 文件头还没写全：下一块数据到了再查
+  if (!kinds) {
+    if (r.bytes < CLIPS.headerScanBytes) r.headerChecked = false;
+    return;
+  }
+  if (kinds.includes('soun') || rec !== r || r.stopping) return;
+  r.errorText = '浏览器写出的文件里没有声音轨，这一段录下来会没有声音';
+  r.errorHint = '已停止，没有保存这一段；重新开始录制一次试试';
+  r.discard = true;
+  stopRecording('error');
 }
 
 function stopRecording(reason: ClipStopReason): void {
@@ -429,8 +482,8 @@ function finish(r: Recording): void {
   cleanup(r);
   rec = undefined;
   const reason = r.stopping ?? 'user';
-  if (reason === 'error') fail(`录制出错：${r.errorText ?? '未知错误'}`, '已录到的部分（如果有）仍可保存');
-  if (!r.bytes || r.recordedSec < 0.3 || r.mediaFirst === undefined) {
+  if (reason === 'error') fail(`录制出错：${r.errorText ?? '未知错误'}`, r.errorHint ?? '已录到的部分（如果有）仍可保存');
+  if (r.discard || !r.bytes || r.recordedSec < 0.3 || r.mediaFirst === undefined) {
     if (reason !== 'error') fail('这一段没有录到内容，没有生成文件', '例如一直在广告、暂停或缓冲中；视频播放时再录');
     broadcast();
     return;
@@ -517,10 +570,13 @@ function tick(): void {
     );
     if (d.kind === 'stop') stopRecording(d.reason);
     else if (d.kind === 'record') {
-      if (r.recorder.state === 'paused') r.recorder.resume();
-      r.waiting = undefined;
-      r.mediaFirst ??= v.currentTime;
-      r.mediaLast = v.currentTime;
+      if (!r.started) startRecorder(r);
+      else if (r.recorder.state === 'paused') r.recorder.resume();
+      if (!r.stopping) {
+        r.waiting = undefined;
+        r.mediaFirst ??= v.currentTime;
+        r.mediaLast = v.currentTime;
+      }
     } else {
       if (r.recorder.state === 'recording') r.recorder.pause();
       r.waiting = d.why;

@@ -124,6 +124,53 @@ export function videoBitrate(height: number): number {
   return (CLIPS.videoBitrates.find((b) => height >= b.minHeight) ?? CLIPS.videoBitrates[CLIPS.videoBitrates.length - 1]!).bps;
 }
 
+// ── MP4 文件头 ──
+
+interface Mp4Box {
+  type: string;
+  body: number;
+  /** 盒子在声明里的结尾；可能超出手里这段字节（还没写完） */
+  end: number;
+}
+
+function readMp4Boxes(b: Uint8Array, start: number, end: number): Mp4Box[] {
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const out: Mp4Box[] = [];
+  let p = start;
+  while (p + 8 <= end) {
+    const size32 = v.getUint32(p);
+    const header = size32 === 1 ? 16 : 8;
+    if (p + header > end) break;
+    const size = size32 === 1 ? Number(v.getBigUint64(p + 8)) : size32 === 0 ? Infinity : size32;
+    if (size < header) break;
+    out.push({ type: String.fromCharCode(b[p + 4]!, b[p + 5]!, b[p + 6]!, b[p + 7]!), body: p + header, end: p + size });
+    p += size;
+  }
+  return out;
+}
+
+/**
+ * MP4 文件头（moov）里声明了哪些轨：'vide' 画面、'soun' 声音。bytes 是文件开头的一段。
+ * 文件头还没完整出现在这段里时返回 undefined（多给些字节再查）；文件头之前就出现了分片或数据，返回 []。
+ * 录制用的是分片 MP4，文件头写出后不再改：里面没有 'soun' 的话，后面录到的声音播放器一概读不到。
+ */
+export function mp4TrackKinds(bytes: Uint8Array): string[] | undefined {
+  for (const box of readMp4Boxes(bytes, 0, bytes.length)) {
+    if (box.end > bytes.length) return undefined;
+    if (box.type === 'moof' || box.type === 'mdat') return [];
+    if (box.type !== 'moov') continue;
+    return readMp4Boxes(bytes, box.body, box.end)
+      .filter((t) => t.type === 'trak')
+      .map((trak) => {
+        const mdia = readMp4Boxes(bytes, trak.body, trak.end).find((m) => m.type === 'mdia');
+        const hdlr = mdia && readMp4Boxes(bytes, mdia.body, mdia.end).find((h) => h.type === 'hdlr');
+        // hdlr：版本与标志 4 字节、pre_defined 4 字节，之后是轨的类型
+        return hdlr && hdlr.body + 12 <= hdlr.end ? String.fromCharCode(...bytes.subarray(hdlr.body + 8, hdlr.body + 12)) : '';
+      });
+  }
+  return undefined;
+}
+
 // ── 开录前检查 ──
 
 export interface ClipStartRequest {
