@@ -325,6 +325,70 @@ export function trackUrl(template: string, pageOrigin: string, videoId: string, 
   return u.toString();
 }
 
+// ── 取字幕：失败、重试、等待 ──
+
+/** 一种语言（轨 + 翻译目标）的读取状态；attempt = 第几次请求（从 1 起） */
+export type CcLoad =
+  | { state: 'loading'; since: number; attempt: number }
+  | { state: 'retry'; message: string; at: number; attempt: number }
+  | { state: 'ok'; cues: CcCue[] }
+  | { state: 'error'; message: string; hint?: string };
+
+/** 取字幕失败的原因：HTTP 状态码、超时（我们放弃等待）、连不上 */
+export type CcFetchFailure = { http: number } | { timeout: true } | { network: true };
+
+/**
+ * 取字幕失败后怎么办。YouTube 服务器出错（5xx）、限流（429）、超时、连不上都是暂时的：隔 delays[attempt-1] 再试，
+ * 最多重试 delays.length 次，之后停下并说明（2026-11-03 实测：字幕接口整体变慢时，同一请求有时 20 秒后成功、多数 40 秒后 502，
+ * YouTube 播放器自己的字幕请求也一样）。其余 HTTP 错误（4xx）重试也没用，直接说明。attempt：刚失败的是第几次（从 1 起）。
+ */
+export function ccFetchRetry(
+  f: CcFetchFailure,
+  attempt: number,
+  o: { retryDelaysMs: readonly number[]; timeoutMs: number } = { retryDelaysMs: MULTI_CC.fetchRetryDelaysMs, timeoutMs: MULTI_CC.fetchTimeoutMs },
+): { message: string; retryInMs?: number; hint?: string } {
+  if ('http' in f && f.http < 500 && f.http !== 429) return { message: `YouTube 的字幕接口返回 HTTP ${f.http}` };
+  const message =
+    'network' in f
+      ? '连不上 YouTube 的字幕接口'
+      : 'timeout' in f
+        ? `YouTube 的字幕接口 ${Math.round(o.timeoutMs / 1000)} 秒没有回应`
+        : f.http === 429
+          ? 'YouTube 的字幕接口暂时限流（HTTP 429）'
+          : `YouTube 的字幕服务器出错（HTTP ${f.http}）`;
+  const delay = o.retryDelaysMs[attempt - 1];
+  if (delay !== undefined) return { message, retryInMs: delay };
+  return {
+    message: attempt > 1 ? `${message}，重试 ${attempt - 1} 次仍不行` : message,
+    hint:
+      'network' in f
+        ? '检查网络（或代理）后，关掉再打开多语字幕即重试'
+        : '这是 YouTube 那边暂时的问题，不是 TubeMuse 的设置问题；这时 YouTube 自带的字幕通常也出不来。过几分钟关掉再打开多语字幕即重试',
+  };
+}
+
+/**
+ * 还一种语言都没读到时，说明在等什么：有请求已等了 slowFetchMs 以上 → YouTube 的字幕接口慢、已等几秒；
+ * 没有在途的请求、都在等重试 → 出了什么错、几秒后第几次重试；否则"正在读取字幕…"。
+ */
+export function ccWaitStatus(
+  loads: readonly (CcLoad | undefined)[],
+  now: number,
+  o: { slowFetchMs: number; maxRetries: number } = { slowFetchMs: MULTI_CC.slowFetchMs, maxRetries: MULTI_CC.fetchRetryDelaysMs.length },
+): string {
+  let oldest: Extract<CcLoad, { state: 'loading' }> | undefined;
+  let next: Extract<CcLoad, { state: 'retry' }> | undefined;
+  for (const x of loads) {
+    if (x?.state === 'loading' && (!oldest || x.since < oldest.since)) oldest = x;
+    if (x?.state === 'retry' && (!next || x.at < next.at)) next = x;
+  }
+  if (oldest && now - oldest.since >= o.slowFetchMs) {
+    return `YouTube 的字幕接口响应很慢，已等 ${Math.floor((now - oldest.since) / 1000)} 秒…${oldest.attempt > 1 ? `（第 ${oldest.attempt - 1} 次重试）` : ''}`;
+  }
+  if (!oldest && next) return `${next.message}，${Math.max(1, Math.ceil((next.at - now) / 1000))} 秒后重试（第 ${next.attempt - 1} 次，最多 ${o.maxRetries} 次）`;
+  return '正在读取字幕…';
+}
+
 // ── 字幕文件（json3）──
 
 /** 自动生成的字幕逐词出现：at = 这个词相对句首的秒数 */

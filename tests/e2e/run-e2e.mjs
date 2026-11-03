@@ -954,8 +954,10 @@ try {
     context.waitForEvent('page'),
     panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/watch?v=ccMulti0001`),
   ]);
+  // ccFlaky00007 的字幕接口故意回 502 / 404：浏览器为这几个请求记的"Failed to load resource"是预期的，其余照常算错
+  const expectedCcFailure = (/** @type {import('playwright').ConsoleMessage} */ m) => /\/api\/timedtext\?v=ccFlaky00007&/.test(m.location().url);
   cc.on('pageerror', (e) => consoleErrors.push(`multicc watch pageerror: ${e.message}`));
-  cc.on('console', (m) => m.type() === 'error' && consoleErrors.push(`multicc watch: ${m.text()}`));
+  cc.on('console', (m) => m.type() === 'error' && !expectedCcFailure(m) && consoleErrors.push(`multicc watch: ${m.text()}`));
   await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
   await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
   await cc.waitForTimeout(1500);
@@ -1161,6 +1163,31 @@ try {
   check(((await staleChip.textContent()) ?? '').includes('刷新这个页面'), `播放器里用人话说明：${(await staleChip.textContent())?.slice(0, 50)}…`);
   check(((await ccStatus.textContent()) ?? '').includes('已停止'), '侧边栏同步显示停止原因');
   check((await nativeState(cc)).lang === null, '停下后原生字幕也关回去（它本来就关着）');
+
+  // 2026-11-03 用户报告：部分视频一直"正在读取字幕…"。实测 YouTube 的字幕接口（连同播放器自己的请求）20 秒才回、多数 40 秒后 502（DECISIONS §42）
+  console.log('\n[多语字幕：YouTube 的字幕接口又慢又时不时出错 → 说明在等什么；502 隔一会儿重试；404 不重试，关掉再打开即重试]');
+  await cc.goto(`${MOCK}/watch?v=ccFlaky00007`);
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
+  await seekPaused(cc, 3.0);
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  const flakyTt = (/** @type {string} */ lang) => ourTt('ccFlaky00007').filter((r) => r.query.lang === lang).length;
+  await ccStatus.filter({ hasText: '响应很慢' }).waitFor({ timeout: 30000 });
+  const slowText = (await ccStatus.textContent()) ?? '';
+  const slowChip = (await cc.locator('[data-tubemuse="multicc"] .status').textContent()) ?? '';
+  check(/YouTube 的字幕接口响应很慢，已等 \d+ 秒/.test(slowText) && slowChip.includes('响应很慢'), `一种都还没读到、请求等了 8 秒以上：侧边栏与播放器里都说明是 YouTube 那边慢（${slowText}）`);
+  await ccStatus.filter({ hasText: '正在显示 1 种语言' }).waitFor({ timeout: 15000 });
+  const flakyOpts = (await panel.getByTestId('multicc-langs').textContent()) ?? '';
+  check(flakyOpts.includes('YouTube 的字幕服务器出错（HTTP 502），稍后重试') && flakyOpts.includes('YouTube 的字幕接口返回 HTTP 404'), '慢的韩文读到了；英文那一行写明 502、稍后重试；中文那一行写明 404');
+  check(((await ccStatus.textContent()) ?? '').includes('还有 1 种在读取'), `侧边栏：${await ccStatus.textContent()}`);
+  await ccStatus.filter({ hasText: '正在显示 2 种语言' }).waitFor({ timeout: 40000 });
+  await waitCcText(cc, ['내 이름을 불러줘', 'Call my name']);
+  check(flakyTt('en') === 3 && flakyTt('ko') === 1 && flakyTt('zh-Hans') === 1, `英文 502 两次后第 3 次读到（隔 5、15 秒重试）；韩文只取了一次；404 不重试（英 ${flakyTt('en')}、韩 ${flakyTt('ko')}、中 ${flakyTt('zh-Hans')} 次）`);
+  await panel.getByRole('button', { name: '关闭多语字幕' }).click();
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await ccStatus.filter({ hasText: '正在显示 3 种语言' }).waitFor({ timeout: 15000 });
+  await waitCcText(cc, ['내 이름을 불러줘', 'Call my name', '叫我的名字']);
+  check(flakyTt('zh-Hans') === 2 && flakyTt('en') === 3 && flakyTt('ko') === 1, '关掉再打开：只重取没读到的中文，读到的两种不再取');
 
   console.log('\n[多语字幕：设置里勾选"自动显示" → 有字幕的视频打开就显示]');
   await options.bringToFront();
