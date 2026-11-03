@@ -85,7 +85,9 @@ export const SUBTITLE_VIDEOS = [
  * stale：这个视频的字幕接口一律返回空（模拟播放器的令牌失效）；initial：页面打开时原生字幕已开着的语言。
  * sticky：你在 YouTube 保存的字幕偏好（开着 + 这种语言）——像真播放器一样，正片开始（页面打开或广告结束）后
  * 过一会儿（STICKY_DELAY_MS）自动打开它（2026-11-02 实测约 0.8 秒；这里放慢一点，稳定复现竞态）；adMs：先放这么久的广告。
- * @typedef {{ lang: string; kind?: 'asr'; label: string; cues: [number, number, string][]; empty?: boolean }} MockCcTrack
+ * replies：TubeMuse（不是播放器）第 1、2、3…次取这条轨时字幕接口怎么回——'ok'、HTTP 状态码、或 'slow:毫秒'（等这么久再正常回）；
+ * 用完后一律 'ok'（模拟 2026-11-03 实测的 YouTube 字幕接口：慢、时不时 502）。
+ * @typedef {{ lang: string; kind?: 'asr'; label: string; cues: [number, number, string][]; empty?: boolean; replies?: (string | number)[] }} MockCcTrack
  * @type {{ id: string; seconds: number; lang?: string; initial?: string; sticky?: string; adMs?: number; stale?: boolean; tracks: MockCcTrack[]; translationLangs: string[] }[]}
  */
 export const CC_VIDEOS = [
@@ -153,6 +155,18 @@ export const CC_VIDEOS = [
       { lang: 'ko', label: 'Korean', cues: [[0.8, 4.3, '내 이름을 불러줘'], [4.5, 8.8, '서로 이어진 결을 따라']] },
     ],
     translationLangs: ['zh-Hans', 'ja'],
+  },
+  // 用户报告（2026-11-03）：一直"正在读取字幕…"。韩文第一次 9 秒才回；英文先 502 两次；中文先 404（关掉再打开后才好）
+  {
+    id: 'ccFlaky00007',
+    seconds: 16,
+    lang: 'ko',
+    tracks: [
+      { lang: 'ko', label: 'Korean', cues: [[0.8, 4.3, '내 이름을 불러줘']], replies: ['slow:9000'] },
+      { lang: 'en', label: 'English', cues: [[0.5, 4.0, 'Call my name']], replies: [502, 502] },
+      { lang: 'zh-Hans', label: 'Chinese (Simplified)', cues: [[0.5, 4.0, '叫我的名字']], replies: [404] },
+    ],
+    translationLangs: ['ja'],
   },
   {
     id: 'ccStale00004',
@@ -475,6 +489,8 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
  */
 
 let xCounter = 0;
+/** 多语字幕：TubeMuse 第几次取某条轨（视频|语言|kind → 次数），按 MockCcTrack.replies 决定怎么回 */
+const ccAttempts = new Map();
 
 export function startMockServer() {
   /** @type {Recorded[]} */
@@ -553,10 +569,24 @@ export function startMockServer() {
         const cv = CC_VIDEOS.find((x) => x.id === url.searchParams.get('v'));
         const t = cv?.tracks.find((x) => x.lang === url.searchParams.get('lang') && (x.kind ?? '') === (url.searchParams.get('kind') ?? ''));
         const tlang = url.searchParams.get('tlang');
-        res.writeHead(200, { 'content-type': 'application/json; charset=UTF-8' });
-        if (!cv || cv.stale || !url.searchParams.get('pot') || !t || t.empty) return res.end('');
-        const events = t.cues.map(([s, e, text]) => ({ tStartMs: Math.round(s * 1000), dDurationMs: Math.round((e - s) * 1000), segs: [{ utf8: tlang ? `[${tlang}] ${text}` : text }] }));
-        return res.end(JSON.stringify({ wireMagic: 'pb3', events: [{ tStartMs: 0, dDurationMs: cv.seconds * 1000, id: 1, wpWinPosId: 1, wsWinStyleId: 1 }, ...events] }));
+        const reply = () => {
+          res.writeHead(200, { 'content-type': 'application/json; charset=UTF-8' });
+          if (!cv || cv.stale || !url.searchParams.get('pot') || !t || t.empty) return res.end('');
+          const events = t.cues.map(([s, e, text]) => ({ tStartMs: Math.round(s * 1000), dDurationMs: Math.round((e - s) * 1000), segs: [{ utf8: tlang ? `[${tlang}] ${text}` : text }] }));
+          return res.end(JSON.stringify({ wireMagic: 'pb3', events: [{ tStartMs: 0, dDurationMs: cv.seconds * 1000, id: 1, wpWinPosId: 1, wsWinStyleId: 1 }, ...events] }));
+        };
+        if (!t?.replies || req.headers['x-mock-player'] === '1') return reply();
+        const key = `${cv?.id}|${t.lang}|${t.kind ?? ''}`;
+        const n = (ccAttempts.get(key) ?? 0) + 1;
+        ccAttempts.set(key, n);
+        const r = t.replies[n - 1] ?? 'ok';
+        if (typeof r === 'number') {
+          // 像 Google 前端的错误页
+          res.writeHead(r, { 'content-type': 'text/html; charset=UTF-8' });
+          return res.end(`<!DOCTYPE html><html lang=en><title>Error ${r} (Server Error)!!1</title><p><b>${r}.</b> That’s an error.`);
+        }
+        if (r.startsWith('slow:')) return void setTimeout(reply, Number(r.slice(5)));
+        return reply();
       }
       if (p === '/youtube/v3/playlistItems') {
         const ch = 'UC' + (url.searchParams.get('playlistId') ?? '').slice(2);

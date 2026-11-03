@@ -9,7 +9,9 @@ import {
   AutoCaptionWindow,
   ORIGINAL,
   bestTrack,
+  ccFetchRetry,
   ccOptions,
+  ccWaitStatus,
   cleanCueText,
   fitLine,
   joinCueLines,
@@ -24,6 +26,7 @@ import {
   trackKey,
   trackUrl,
   type CcCue,
+  type CcLoad,
   type CcTrack,
   type CcTrackList,
 } from '../../src/core/multi-captions';
@@ -449,6 +452,68 @@ describe('复用播放器的字幕请求', () => {
     expect(trackUrl(PLAYER_URL, ORIGIN, 'otherVideo1', { track: track('ko') })).toBeUndefined();
     expect(trackUrl(PLAYER_URL.replace(ORIGIN, 'https://evil.example'), ORIGIN, VID, { track: track('ko') })).toBeUndefined();
     expect(trackUrl(PLAYER_URL.replace('&pot=FAKE-POT-TOKEN', ''), ORIGIN, VID, { track: track('ko') })).toBeUndefined();
+  });
+});
+
+// 2026-11-03 用户报告：部分视频一直"正在读取字幕…"。实测 YouTube 的字幕接口（连同播放器自己的请求）20 秒后才回、多数 40 秒后 502（DECISIONS §42）
+describe('取字幕失败与重试', () => {
+  const o = { retryDelaysMs: [5_000, 15_000, 30_000], timeoutMs: 60_000 };
+
+  it('YouTube 服务器出错（5xx）、限流（429）、超时、连不上：暂时的，按 5 / 15 / 30 秒重试', () => {
+    expect(ccFetchRetry({ http: 502 }, 1, o)).toEqual({ message: 'YouTube 的字幕服务器出错（HTTP 502）', retryInMs: 5_000 });
+    expect(ccFetchRetry({ http: 503 }, 2, o).retryInMs).toBe(15_000);
+    expect(ccFetchRetry({ http: 429 }, 3, o)).toEqual({ message: 'YouTube 的字幕接口暂时限流（HTTP 429）', retryInMs: 30_000 });
+    expect(ccFetchRetry({ timeout: true }, 1, o)).toEqual({ message: 'YouTube 的字幕接口 60 秒没有回应', retryInMs: 5_000 });
+    expect(ccFetchRetry({ network: true }, 1, o)).toEqual({ message: '连不上 YouTube 的字幕接口', retryInMs: 5_000 });
+  });
+
+  it('重试用完：停下，说明重试了几次，并告诉你是 YouTube 那边的问题、怎么再试', () => {
+    const r = ccFetchRetry({ http: 502 }, 4, o);
+    expect(r.retryInMs).toBeUndefined();
+    expect(r.message).toBe('YouTube 的字幕服务器出错（HTTP 502），重试 3 次仍不行');
+    expect(r.hint).toContain('YouTube 那边');
+    expect(r.hint).toContain('关掉再打开多语字幕即重试');
+    expect(ccFetchRetry({ network: true }, 4, o).hint).toContain('检查网络');
+    // 不重试时（retryDelaysMs 为空）第一次失败就停下，不说"重试 0 次"
+    expect(ccFetchRetry({ http: 500 }, 1, { ...o, retryDelaysMs: [] }).message).toBe('YouTube 的字幕服务器出错（HTTP 500）');
+  });
+
+  it('其余 HTTP 错误（4xx）重试也没用：直接说明，不重试', () => {
+    expect(ccFetchRetry({ http: 403 }, 1, o)).toEqual({ message: 'YouTube 的字幕接口返回 HTTP 403' });
+    expect(ccFetchRetry({ http: 404 }, 1, o)).toEqual({ message: 'YouTube 的字幕接口返回 HTTP 404' });
+  });
+
+  it('默认参数来自配置：最多重试 3 次，一次最多等 60 秒（YouTube 自己的网关约 40 秒放弃）', () => {
+    expect(MULTI_CC.fetchRetryDelaysMs.length).toBe(3);
+    expect(MULTI_CC.fetchTimeoutMs).toBeGreaterThan(40_000);
+    expect(ccFetchRetry({ http: 502 }, 1).retryInMs).toBe(MULTI_CC.fetchRetryDelaysMs[0]);
+    expect(ccFetchRetry({ http: 502 }, MULTI_CC.fetchRetryDelaysMs.length + 1).retryInMs).toBeUndefined();
+  });
+});
+
+describe('等字幕时说明在等什么（不再一直"正在读取字幕…"）', () => {
+  const o = { slowFetchMs: 8_000, maxRetries: 3 };
+  const now = 1_000_000;
+  const loading = (ago: number, attempt = 1): CcLoad => ({ state: 'loading', since: now - ago, attempt });
+  const retry = (inMs: number, attempt: number): CcLoad => ({ state: 'retry', message: 'YouTube 的字幕服务器出错（HTTP 502）', at: now + inMs, attempt });
+
+  it('刚发出、或还没开始取：正在读取字幕…', () => {
+    expect(ccWaitStatus([loading(2_000), undefined], now, o)).toBe('正在读取字幕…');
+    expect(ccWaitStatus([], now, o)).toBe('正在读取字幕…');
+  });
+
+  it('请求等了 8 秒以上：说明是 YouTube 的字幕接口慢，按最早发出的那个算已等几秒；重试中的写明第几次', () => {
+    expect(ccWaitStatus([loading(3_000), loading(25_400)], now, o)).toBe('YouTube 的字幕接口响应很慢，已等 25 秒…');
+    expect(ccWaitStatus([loading(12_000, 2)], now, o)).toBe('YouTube 的字幕接口响应很慢，已等 12 秒…（第 1 次重试）');
+  });
+
+  it('都在等重试：出了什么错、几秒后重试、第几次（按最早到点的那个）', () => {
+    expect(ccWaitStatus([retry(14_200, 3), retry(4_100, 2)], now, o)).toBe('YouTube 的字幕服务器出错（HTTP 502），5 秒后重试（第 1 次，最多 3 次）');
+    expect(ccWaitStatus([retry(-300, 2)], now, o)).toBe('YouTube 的字幕服务器出错（HTTP 502），1 秒后重试（第 1 次，最多 3 次）');
+  });
+
+  it('有请求在途（还不算慢）、另一种在等重试：正在读取字幕…', () => {
+    expect(ccWaitStatus([loading(1_000, 2), retry(10_000, 2)], now, o)).toBe('正在读取字幕…');
   });
 });
 

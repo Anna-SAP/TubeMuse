@@ -3,6 +3,7 @@
 // 2. 字幕文字：复用播放器自己的字幕请求（带 YouTube 的 pot 令牌；地址经 PerformanceObserver 看到），只换语言参数，
 //    向同源的 /api/timedtext 取——与你在字幕菜单里换语言时播放器发的请求相同。只存在这个标签页的内存里，换视频即丢。
 //    播放器还没取过字幕时，请助手让播放器选一条轨，它就会自己发出这个请求。
+//    YouTube 的字幕接口出错（5xx、限流）、太久不回或连不上时隔一会儿重试（最多 3 次），等待期间在状态里说明在等什么（DECISIONS §42）。
 // 3. 显示期间关掉 YouTube 原生字幕（避免两层），关闭多语字幕时恢复；你自己按 C 打开原生字幕时，多语字幕先让开。
 // 4. 在播放器里叠加一层只读字幕（Shadow DOM，只用 textContent 写字），不改动 YouTube 自己的元素；
 //    TubeMuse 自动字幕层也在时，叠在它上面。
@@ -15,7 +16,9 @@ import {
   MULTICC_LINE_COLORS,
   MULTICC_MSG,
   ORIGINAL,
+  ccFetchRetry,
   ccOptions,
+  ccWaitStatus,
   fitLine,
   joinCueLines,
   parseJson3,
@@ -28,7 +31,8 @@ import {
   trackKey,
   trackUrl,
   type BridgeOp,
-  type CcCue,
+  type CcFetchFailure,
+  type CcLoad,
   type CcResolution,
   type CcSource,
   type CcTrackList,
@@ -70,9 +74,10 @@ let primeAttempts = 0;
 let nextPrimeAt = 0;
 /** 正在等播放器（被我们要求选了一条轨后）发出字幕请求：这期间原生字幕是我们打开的 */
 let primeOwnedSince = 0;
-type Loaded = { state: 'loading' } | { state: 'ok'; cues: CcCue[] } | { state: 'error'; message: string };
-const loaded = new Map<string, Loaded>();
+const loaded = new Map<string, CcLoad>();
 let fetching = 0;
+/** 在途的字幕请求：换视频时取消（YouTube 的字幕接口慢起来一次要等几十秒，不能让上一个视频的请求占着名额） */
+const inflight = new Set<AbortController>();
 
 // ── 开关 ──
 let active = false;
@@ -223,19 +228,28 @@ function askVideoLang(): void {
   }
 }
 
-async function load(s: CcSource): Promise<void> {
+/** attempt：第几次请求这种语言（YouTube 服务器出错、超时、连不上时会隔一会儿重试，见 ccFetchRetry） */
+async function load(s: CcSource, attempt: number): Promise<void> {
   const vid = videoId;
   const tpl = template;
   const url = vid && tpl ? trackUrl(tpl, location.origin, vid, s) : undefined;
   if (!url || !tpl) return;
   const token = tokenOf(tpl);
-  loaded.set(s.key, { state: 'loading' });
+  loaded.set(s.key, { state: 'loading', since: Date.now(), attempt });
   fetching++;
-  let result: Loaded | undefined;
+  const ctl = new AbortController();
+  inflight.add(ctl);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctl.abort();
+  }, MULTI_CC.fetchTimeoutMs);
+  let result: CcLoad | undefined;
+  let failure: CcFetchFailure | undefined;
   try {
-    const res = await fetch(url, { credentials: 'same-origin' });
+    const res = await fetch(url, { credentials: 'same-origin', signal: ctl.signal });
     const body = res.ok ? await res.text() : '';
-    if (!res.ok) result = { state: 'error', message: `YouTube 的字幕接口返回 HTTP ${res.status}` };
+    if (!res.ok) failure = { http: res.status };
     else if (body.length > MULTI_CC.maxResponseBytes) result = { state: 'error', message: '字幕文件太大，没有读取' };
     else if (!body.trim()) {
       if (goodTokens.has(token)) result = { state: 'error', message: 'YouTube 返回了空字幕' };
@@ -259,14 +273,29 @@ async function load(s: CcSource): Promise<void> {
       }
     }
   } catch {
-    result = { state: 'error', message: '连不上 YouTube 的字幕接口' };
+    // 换视频时我们取消的请求：不算失败（下面 vid !== videoId 直接丢掉）
+    failure = timedOut ? { timeout: true } : { network: true };
   } finally {
+    clearTimeout(timer);
+    inflight.delete(ctl);
     fetching--;
   }
   if (vid !== videoId) return;
+  if (failure) {
+    const r = ccFetchRetry(failure, attempt);
+    result =
+      r.retryInMs !== undefined
+        ? { state: 'retry', message: r.message, at: Date.now() + r.retryInMs, attempt: attempt + 1 }
+        : { state: 'error', message: r.message, ...(r.hint ? { hint: r.hint } : {}) };
+  }
   if (result) loaded.set(s.key, result);
   else loaded.delete(s.key);
   tick();
+}
+
+/** 已经停下的语言（出错、重试用完）重新取：你关掉再打开多语字幕时 */
+function retryFailed(): void {
+  for (const [k, v] of loaded) if (v.state === 'error' || v.state === 'retry') loaded.delete(k);
 }
 
 // ── 开启后的每一步 ──
@@ -345,10 +374,13 @@ function step(res: CcResolution): void {
     primeOwnedSince = 0;
     void nativeOp('hide-native', { save: false });
   }
-  // 4. 取每种语言（各取一次，存在内存里）
+  // 4. 取每种语言（各取一次，存在内存里；YouTube 那边暂时出错的，到点重试）
+  const now = Date.now();
   for (const s of res.sources) {
     if (fetching >= MULTI_CC.fetchConcurrency) break;
-    if (!loaded.has(s.key)) void load(s);
+    const ld = loaded.get(s.key);
+    if (!ld) void load(s, 1);
+    else if (ld.state === 'retry' && now >= ld.at) void load(s, ld.attempt);
   }
 }
 
@@ -513,9 +545,24 @@ function statusLine(res: CcResolution | undefined): { text: string; hint?: strin
   if (!list?.tracks.length) return { text: 'TubeMuse 多语字幕：这个视频没有 YouTube 字幕', hint: '可以在侧边栏"字幕"页用自动字幕（语音识别）' };
   if (!res.sources.length) return { text: 'TubeMuse 多语字幕：你选的语言这个视频都没有', hint: res.missing.map((m) => m.reason).join('；') };
   const states = res.sources.map((s) => loaded.get(s.key));
-  if (states.every((x) => x?.state === 'error')) return { text: `TubeMuse 多语字幕：没能读到字幕（${(states[0] as { message: string }).message}）` };
-  if (!states.some((x) => x?.state === 'ok')) return { text: 'TubeMuse 多语字幕：正在读取字幕…' };
+  const failed = allFailed(states);
+  if (failed) return { text: `TubeMuse 多语字幕：没能读到字幕——${failed.message}`, ...(failed.hint ? { hint: failed.hint } : {}) };
+  if (!states.some((x) => x?.state === 'ok')) return { text: `TubeMuse 多语字幕：${ccWaitStatus(states, Date.now())}` };
   return undefined;
+}
+
+/** 每种语言都停下了（出错且不再重试）：返回第一种的原因 */
+function allFailed(states: (CcLoad | undefined)[]): Extract<CcLoad, { state: 'error' }> | undefined {
+  const first = states[0];
+  return first?.state === 'error' && states.every((x) => x?.state === 'error') ? first : undefined;
+}
+
+/** 侧边栏每一行的说明：读到几句，或为什么还没有 */
+function lineNote(ld: CcLoad | undefined): { cues?: number; error?: string } {
+  if (ld?.state === 'ok') return { cues: ld.cues.length };
+  if (ld?.state === 'error') return { error: ld.message };
+  if (ld?.state === 'retry') return { error: `${ld.message}，稍后重试` };
+  return {};
 }
 
 function render(): void {
@@ -555,11 +602,12 @@ function phaseAndStatus(res: CcResolution | undefined): { phase: MultiCcPhase; s
   if (yielded) return { phase: 'yielded', status: '你打开了 YouTube 原生字幕，多语字幕先让开；按 C 关掉原生字幕即恢复' };
   if (!res.sources.length) return { phase: 'error', status: '你选的语言这个视频都没有' };
   const states = res.sources.map((s) => loaded.get(s.key));
-  if (!template && !states.some((x) => x?.state === 'ok')) return { phase: 'loading', status: '正在等播放器准备字幕…' };
-  if (states.every((x) => x?.state === 'error')) return { phase: 'error', status: '没能读到字幕' };
-  if (states.some((x) => !x || x.state === 'loading')) return { phase: 'loading', status: '正在读取字幕…' };
+  const failed = allFailed(states);
+  if (failed) return { phase: 'error', status: `没能读到字幕：${failed.message}` };
   const ok = states.filter((x) => x?.state === 'ok').length;
-  return { phase: 'showing', status: `正在显示 ${ok} 种语言` };
+  if (!ok) return { phase: 'loading', status: template ? ccWaitStatus(states, Date.now()) : '正在等播放器准备字幕…' };
+  const pending = states.filter((x) => x?.state !== 'ok' && x?.state !== 'error').length;
+  return { phase: 'showing', status: `正在显示 ${ok} 种语言${pending ? `，还有 ${pending} 种在读取` : ''}` };
 }
 
 function tabState(): MultiCcTabState {
@@ -568,9 +616,10 @@ function tabState(): MultiCcTabState {
   const m = videoId ? manual.get(videoId) : undefined;
   const options = (list && res ? ccOptions(list, res, effectiveLangs()) : []).map((o) => {
     const s = o.checked ? res?.sources.find((x) => x.pref === o.code) : undefined;
-    const ld = s ? loaded.get(s.key) : undefined;
-    return { ...o, ...(ld?.state === 'ok' ? { cues: ld.cues.length } : {}), ...(ld?.state === 'error' ? { error: ld.message } : {}) };
+    return { ...o, ...lineNote(s ? loaded.get(s.key) : undefined) };
   });
+  // 每种语言都停下了：侧边栏同样给出下一步怎么办（例如 YouTube 那边出错时"过几分钟关掉再打开即重试"）
+  const failed = active && !fatal && res?.sources.length ? allFailed(res.sources.map((s) => loaded.get(s.key))) : undefined;
   return {
     videoId,
     enabled: settings.enabled,
@@ -579,13 +628,10 @@ function tabState(): MultiCcTabState {
     phase,
     status,
     options,
-    lines: (res?.sources ?? []).map((s) => {
-      const ld = loaded.get(s.key);
-      return { key: s.key, label: s.label, autoTranslated: s.autoTranslated, ...(ld?.state === 'ok' ? { cues: ld.cues.length } : {}), ...(ld?.state === 'error' ? { error: ld.message } : {}) };
-    }),
+    lines: (res?.sources ?? []).map((s) => ({ key: s.key, label: s.label, autoTranslated: s.autoTranslated, ...lineNote(loaded.get(s.key)) })),
     overridden: !!videoId && override.has(videoId),
     nativeHidden,
-    ...(fatal ? { error: fatal } : {}),
+    ...(fatal ? { error: fatal } : failed?.hint ? { error: { message: failed.message, hint: failed.hint } } : {}),
   };
 }
 
@@ -635,6 +681,7 @@ function switchVideo(next: string | null): void {
   primed.clear();
   primeAttempts = 0;
   nextPrimeAt = 0;
+  for (const c of inflight) c.abort();
   loaded.clear();
   fatal = undefined;
   autoWindow.restart(Date.now());
@@ -709,6 +756,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (msg?.type === MULTICC_MSG.toggle && videoId) {
     const on = typeof msg.on === 'boolean' ? msg.on : !active;
     manual.set(videoId, on ? 'on' : 'off');
+    if (on) retryFailed();
     fatal = undefined;
     primeAttempts = 0;
     nextPrimeAt = 0;
