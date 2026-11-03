@@ -3,7 +3,7 @@
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { xhsPage } from './xhs-pages.mjs';
+import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
 
 export const PORT = 47321;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -515,6 +515,13 @@ export function startMockServer() {
         return res.end();
       }
       const p = url.pathname;
+      // 仿小红书网页版的视频笔记：视频是一段有声音的 WAV（同源，与真实页面的 blob: 流一样画面读得到）
+      const xhsSeconds = xhsMediaSeconds(p);
+      if (xhsSeconds !== undefined) {
+        const wav = speechWav(xhsSeconds);
+        res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
+        return res.end(wav);
+      }
       // 仿小红书网页版（小红书脚本只注入 /xhs/ 下的页面）
       if (p.startsWith('/xhs/')) {
         const html = xhsPage(p);

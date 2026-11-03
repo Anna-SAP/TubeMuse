@@ -293,6 +293,7 @@ section.note-item .author-wrapper:has(> [${ATTR}="xhs-time"]) > a.author { min-w
 section.note-item [${ATTR}="xhs-save"] { position: absolute; z-index: 3; left: 12px; margin-top: -46px; opacity: 0; transition: opacity .15s; }
 section.note-item:hover [${ATTR}="xhs-save"], section.note-item [${ATTR}="xhs-save"][data-saved], section.note-item [${ATTR}="xhs-save"]:focus-within { opacity: 1; }
 [${ATTR}="xhs-save-inline"] { display: inline-flex; vertical-align: middle; margin: 0 12px; flex: none; }
+[${ATTR}="xhs-save-inline"][data-for="note"] { margin: 0 8px 0 auto; }
 [${ATTR}="xhs-detail-time"] { margin-left: 8px; font-variant-numeric: tabular-nums; }
 `;
 
@@ -380,6 +381,18 @@ function scanProfile(): void {
   if (pop?.anchor === b.host) pop.target = b.target;
 }
 
+const shown = (e: Element): boolean => e.getClientRects().length > 0;
+
+/**
+ * 笔记详情里作者那一栏（头像、名字、"关注"）。页面里有两份：视频笔记顶上那份（.author）是藏起来的，
+ * 看得见的在右侧互动区（.interaction-container .author-container）——2026-11-04 实测。按钮放进看得见的那份，
+ * 否则会被一起藏起来。评论区每条评论也有 .author-wrapper，但里面没有 .info，不会认错。
+ */
+function detailAuthorRow(container: Element): Element | undefined {
+  const rows = [...container.querySelectorAll('.author-wrapper:has(> .info)')];
+  return rows.find(shown) ?? rows[0];
+}
+
 /** 笔记详情（单独的页面或弹出的浮层）：日期旁显示精确发布时间，"关注"旁一个"收藏"。返回还没在页面数据里找过的笔记 */
 function scanDetail(now: number): string | undefined {
   const container = document.querySelector('#noteContainer, .note-container');
@@ -391,7 +404,8 @@ function scanDetail(now: number): string | undefined {
   }
   const info: XhsCardInfo = { noteId: link.noteId, title: '' };
   const t = cardTime(info, times, now);
-  const authorA = container.querySelector<HTMLAnchorElement>('.author-wrapper a.name, .author-container a.name');
+  const row = detailAuthorRow(container);
+  const authorA = row?.querySelector<HTMLAnchorElement>('a.name') ?? container.querySelector<HTMLAnchorElement>('.author-wrapper a.name, .author-container a.name');
   const author = userFrom(authorA, text(authorA));
   const note: NoteTarget = { id: link.noteId, url: location.href, title: text(container.querySelector('#detail-title, .note-content .title')), ...(author ? { author } : {}), ...(t ? { time: t } : {}) };
 
@@ -407,15 +421,16 @@ function scanDetail(now: number): string | undefined {
     setTimeText(timeEl, t, '发布于 ');
   } else timeEl?.remove();
 
-  const follow = container.querySelector('.note-detail-follow-btn');
+  // 放在"关注"前面；没有"关注"（例如你自己的笔记）时放在这一栏末尾
+  const follow = row?.querySelector(':scope > .note-detail-follow-btn') ?? null;
   let host = container.querySelector<HTMLElement>(`[${ATTR}="xhs-save-inline"][data-for="note"]`);
-  if (follow && settings.showSave) {
+  if (row && settings.showSave) {
     let b = host ? buttons.get(host) : undefined;
-    if (!b || host!.nextElementSibling !== follow) {
+    if (!b || host!.parentElement !== row || host!.nextElementSibling !== follow) {
       host?.remove();
       b = makeButton('inline', 'xhs-save-inline');
       b.host.dataset.for = 'note';
-      follow.before(b.host);
+      row.insertBefore(b.host, follow);
       host = b.host;
     }
     b.target = { note };
@@ -727,4 +742,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['href', 'data-index'] });
 window.addEventListener('popstate', schedule);
+// 窗口宽窄变了，笔记详情里看得见的作者栏可能换成另一份：重新放按钮
+window.addEventListener('resize', schedule, { passive: true });
 schedule();

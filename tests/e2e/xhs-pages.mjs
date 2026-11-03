@@ -3,7 +3,9 @@
 // - 笔记卡片 section.note-item[data-index] > div > 隐藏链接 + a.cover + .footer(a.title, .author-wrapper(a.author, .like-wrapper))；
 // - 瀑布流：页面自己的脚本按当时量到的卡片高度算好位置（transform），之后卡片变高不会重排——卡片变高就会压住下面那张；
 // - 页面数据 window.__INITIAL_STATE__：个人主页的笔记列表是 Vue ref（_rawValue），列表项带 noteCard.time；首页卡片流不带时间；
-// - 未登录时卡片链接里没有笔记 ID（/user/profile/<用户>/），页面数据里 noteId 也是空的。
+// - 未登录时卡片链接里没有笔记 ID（/user/profile/<用户>/），页面数据里 noteId 也是空的；
+// - 笔记详情（2026-11-04 实测）：#noteContainer 下有两份作者栏，顶上的 .author 是藏起来的，看得见的在右侧互动区
+//   .interaction-container .author-container 里；视频笔记的播放器是 .media-container .player-container .player-el.xgplayer > video。
 // 页面记下小红书自己元素上的点击次数，用来确认 TubeMuse 从不替你点"关注"、点赞或打开笔记。
 
 export const XHS_UID = '67398f95000000001d02d725';
@@ -15,6 +17,8 @@ export const XHS_N2 = { time: Date.parse('2026-10-25T12:00:00Z'), title: '再也
 export const XHS_N3 = { id: '6ae12de4000000003401f5b2', idTime: Date.parse('2026-10-27T23:04:04Z'), title: '上海富民路咖啡 巨好喝！', token: 'ABtoken3=' };
 /** 虚拟列表把一张卡片换成这一篇 */
 export const XHS_N4 = { id: '6a6a0e23000000001b01db99', idTime: Date.parse('2026-07-29T14:28:51Z'), title: '换上来的新卡片' };
+/** 视频笔记：片段录制（视频是 /xhs/media/ 下的一段有声音的 WAV） */
+export const XHS_V1 = { id: '6ae9a4e000000000140281c6', time: Date.parse('2026-11-03T09:09:00Z'), title: '视频日记Day255｜一人公司怎么做?', token: 'ABvideo1=', seconds: 12 };
 
 const CSS = `
 body { margin: 0; font-family: system-ui, sans-serif; color: #333; }
@@ -30,8 +34,10 @@ section.note-item { position: absolute; left: 0; top: 0; width: 240px; }
 .name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .like-wrapper { display: flex; align-items: center; position: relative; gap: 2px; }
 .like-icon { width: 16px; height: 16px; border-radius: 50%; border: 1px solid #999; box-sizing: border-box; }
-#noteContainer { display: flex; flex-direction: column; gap: 12px; padding: 16px; width: 440px; }
+#noteContainer { display: flex; flex-direction: column; gap: 12px; padding: 16px; width: 380px; }
+#noteContainer > .author { display: none; }
 #noteContainer .author-wrapper { height: auto; }
+.player-el video { width: 320px; height: 180px; background: #000; }
 #noteContainer .info { display: flex; align-items: center; }
 .follow-button { border-radius: 999px; background: #ff2442; color: #fff; border: 0; padding: 8px 16px; }
 .bottom-container { font-size: 14px; color: rgba(51, 51, 51, .6); }
@@ -103,21 +109,37 @@ function profilePage() {
   );
 }
 
-function notePage() {
-  const state = { note: { firstNoteId: { __v_isRef: true, _rawValue: XHS_N1.id }, noteDetailMap: { [XHS_N1.id]: { note: { noteId: XHS_N1.id, title: XHS_N1.title, time: XHS_N1.time, lastUpdateTime: XHS_N1.time - 3600_000, type: 'video' } } } } };
+/** 作者栏：头像、名字、"关注"（详情页里有两份，见文件开头） */
+const authorRow = () =>
+  `<div class="author-wrapper"><div class="info">` +
+  `<a href="/xhs/user/profile/${XHS_UID}?channel_type=web_note_detail_r10&xsec_token=ABuser%3D&xsec_source=pc_note" class="name" target="_blank"><span class="username">李诞小卖部</span></a></div>` +
+  `<div class="note-detail-follow-btn"><button class="reds-button-new follow-button">关注</button></div></div>`;
+
+/** 评论区每条评论也有 .author-wrapper（里面没有 .info）：收藏按钮不该放到这里 */
+const comment = `<div class="comments-el"><div class="comment-item"><div class="right"><div class="author-wrapper"><div class="author"><a class="name" href="/xhs/user/profile/5c8347c70000000012001dde">自如签</a></div><div class="comment-menu"></div></div><div class="content">听了半天</div></div></div></div>`;
+
+/** @param {{ id: string; title: string; time: number; video?: boolean }} n */
+function notePage(n) {
+  const state = { note: { firstNoteId: { __v_isRef: true, _rawValue: n.id }, noteDetailMap: { [n.id]: { note: { noteId: n.id, title: n.title, time: n.time, lastUpdateTime: n.time - 3600_000, type: n.video ? 'video' : 'normal' } } } } };
+  const media = n.video ? `<div class="media-container video-player-media"><div class="player-container"><div class="player-el xgplayer xgplayer-pc"><video preload="auto" src="/xhs/media/${n.id}.wav"></video><xg-controls class="xgplayer-controls"></xg-controls></div></div></div>` : '';
   return (
-    `<!doctype html><html><head><meta charset="utf-8"><title>${XHS_N1.title} - 小红书</title><style>${CSS}</style><script>window.__INITIAL_STATE__ = ${JSON.stringify(state)};</script></head><body>` +
-    `<div id="noteContainer" class="note-container"><div class="author-container"><div class="author-wrapper"><div class="info">` +
-    `<a href="/xhs/user/profile/${XHS_UID}?channel_type=web_note_detail_r10&xsec_token=ABuser%3D&xsec_source=pc_note" class="name" target="_blank"><span class="username">李诞小卖部</span></a></div>` +
-    `<div class="note-detail-follow-btn"><button class="reds-button-new follow-button">关注</button></div></div></div>` +
-    `<div class="note-content"><div id="detail-title" class="title">${XHS_N1.title}</div><div class="bottom-container"><span class="date">2025-11-19</span></div></div></div>` +
+    `<!doctype html><html><head><meta charset="utf-8"><title>${n.title} - 小红书</title><style>${CSS}</style><script>window.__INITIAL_STATE__ = ${JSON.stringify(state)};</script></head><body>` +
+    `<div class="note-detail-mask"><div id="noteContainer" class="note-container"><div class="author">${authorRow()}</div>${media}` +
+    `<div class="interaction-container"><div class="author-container">${authorRow()}</div>` +
+    `<div class="note-scroller"><div class="note-content"><div id="detail-title" class="title">${n.title}</div><div class="bottom-container"><span class="date">2025-11-19</span></div></div>${comment}</div></div></div></div>` +
     `<script>${CLICK_COUNTER}</script></body></html>`
   );
+}
+
+/** /xhs/media/<笔记 ID>.wav：视频笔记的"视频"有多少秒；不是视频笔记返回 undefined */
+export function xhsMediaSeconds(/** @type {string} */ path) {
+  return path === `/xhs/media/${XHS_V1.id}.wav` ? XHS_V1.seconds : undefined;
 }
 
 /** @param {string} path /xhs/ 之后的路径；认不出的返回 undefined（mock 回 404） */
 export function xhsPage(path) {
   if (path.startsWith(`/xhs/user/profile/${XHS_UID}`)) return profilePage();
-  if (path === `/xhs/explore/${XHS_N1.id}`) return notePage();
+  if (path === `/xhs/explore/${XHS_N1.id}`) return notePage(XHS_N1);
+  if (path === `/xhs/explore/${XHS_V1.id}`) return notePage({ ...XHS_V1, video: true });
   return undefined;
 }

@@ -146,12 +146,13 @@ const manifest = {
   options_page: 'options.html',
   // 观看追踪：只读取本地播放器状态。自动字幕：播放时采集该视频音频交给后台转写，并在播放器内叠加只读字幕层。
   // 片段录制：你开始录制后才把这个视频的画面与声音录进内存，保存时交给浏览器存进下载文件夹。
+  // 2026-11-04 起也录小红书的视频笔记（DECISIONS §43）：YouTube 与小红书写在同一条里，同一个页面只注入一次
   // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
   // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
   content_scripts: [
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
-    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-clipper.js'], run_at: 'document_idle' },
+    { matches: [...new Set([...[...TRACKED_SITES].map((o) => `${o}/*`), ...XHS_PAGES.map((/** @type {string} */ p) => `${p}*`)])], js: ['content-clipper.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc.js'], run_at: 'document_idle' },
     { matches: XHS_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
@@ -199,8 +200,10 @@ for (const bad of [/\bfetch\(/, /XMLHttpRequest/, /\bWebSocket\b/, /sendBeacon/,
   if (bad.test(subtitles)) fail(`字幕脚本里出现了不允许的操作（${bad}）：它只能采音频、交给后台、画字幕层。`);
 }
 // 红线（2026-11-01 变更，DECISIONS §36）：片段录制脚本可以录这个视频的画面与声音、交给浏览器保存，
-// 但不得发网络请求、不得往页面里插入任何元素（画布和下载链接都不放进页面）、不得用 HTML 字符串写页面、不得读写 Cookie
+// 但不得发网络请求、不得往页面里插入任何元素（画布和下载链接都不放进页面）、不得用 HTML 字符串写页面、不得读写 Cookie。
+// 2026-11-04 起它也注入小红书（DECISIONS §43）：不得模拟事件；唯一的 .click() 是它自己不放进页面的下载链接
 const clipper = readFileSync(join(outdir, 'content-clipper.js'), 'utf8');
+if ((clipper.match(/\.click\(\)/g) ?? []).length !== 1) fail('片段录制脚本只能有一处 .click()（它自己的下载链接），不得点击页面上的任何东西。');
 for (const bad of [
   /\bfetch\(/,
   /XMLHttpRequest/,
@@ -219,6 +222,8 @@ for (const bad of [
   /attachShadow\(/,
   /document\.cookie/,
   /getUserMedia|getDisplayMedia/,
+  /dispatchEvent\(/,
+  /localStorage|sessionStorage|indexedDB/,
 ]) {
   if (bad.test(clipper)) fail(`片段录制脚本里出现了不允许的操作（${bad}）：它只能录这个视频、交给浏览器保存。`);
 }

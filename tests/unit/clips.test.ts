@@ -6,9 +6,11 @@ import { describe, expect, it } from 'vitest';
 import { CLIPS, DEFAULT_SETTINGS } from '../../src/config/defaults';
 import {
   addClipRecord,
+  atVideoEnd,
   checkClipStart,
   checkRange,
   clipFileName,
+  clipUnavailable,
   clipWatchUrl,
   decideClip,
   formatBytes,
@@ -71,6 +73,12 @@ describe('文件名', () => {
     expect(titleFromDocumentTitle('AI Safety Interview – YouTube')).toBe('AI Safety Interview');
     expect(titleFromDocumentTitle('YouTube')).toBe('YouTube');
   });
+  it('小红书：去掉" - 小红书" / " - rednote"，不动 YouTube 的写法', () => {
+    expect(titleFromDocumentTitle('视频日记Day255｜一人公司怎么做? - 小红书', 'xhs')).toBe('视频日记Day255｜一人公司怎么做?');
+    expect(titleFromDocumentTitle('npd父母宁愿你si - rednote', 'xhs')).toBe('npd父母宁愿你si');
+    expect(titleFromDocumentTitle('访谈 - YouTube', 'xhs')).toBe('访谈 - YouTube');
+    expect(titleFromDocumentTitle('访谈 - 小红书')).toBe('访谈 - 小红书');
+  });
   it('去掉文件系统不允许的字符，限长，避开 Windows 保留名', () => {
     expect(safeFileTitle('a/b\\c:d*e?f"g<h>i|j')).toBe('a b c d e f g h i j');
     expect(safeFileTitle('  ...hidden.  ')).toBe('hidden');
@@ -82,6 +90,7 @@ describe('文件名', () => {
     expect(clipFileName('AI: 安全访谈?', 'abc123DEF45', 723.9, 790.2, 'mp4')).toBe('AI 安全访谈_12m03s-13m10s.mp4');
     expect(clipFileName(undefined, 'abc123DEF45', 3723, 3730, 'webm')).toBe('youtube-abc123DEF45_1h02m03s-1h02m10s.webm');
     expect(clipFileName('???', 'abc123DEF45', 0, 5, 'mp4')).toBe('youtube-abc123DEF45_00m00s-00m05s.mp4');
+    expect(clipFileName(undefined, '6ae9a4e000000000140281c6', 1.6, 98.7, 'mp4', 'xhs')).toBe('xhs-6ae9a4e000000000140281c6_00m01s-01m38s.mp4');
   });
 });
 
@@ -186,6 +195,20 @@ describe('开录前检查', () => {
     expect(checkClipStart({ mode: 'free' }, ctx({ busy: true }))).toContain('已经在录');
     expect(checkClipStart({ mode: 'free' }, ctx({ ended: true }))).toContain('播完');
   });
+  it('小红书：不是笔记详情、图文笔记（没有视频）分别说清楚', () => {
+    const xhs = (over: Partial<ClipStartContext> = {}) => ctx({ site: 'xhs', videoId: '6ae9a4e000000000140281c6', duration: 23.8, ...over });
+    expect(checkClipStart({ mode: 'free' }, xhs())).toBeUndefined();
+    expect(checkClipStart({ mode: 'free' }, xhs({ videoId: null }))).toContain('不是笔记详情');
+    expect(checkClipStart({ mode: 'free' }, xhs({ hasVideo: false }))).toContain('图文笔记');
+    expect(checkClipStart({ mode: 'free' }, xhs({ enabled: false }))).toContain('设置中关闭');
+    expect(clipUnavailable('youtube', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是视频播放页');
+  });
+  it('离结尾不到半秒算到了结尾；时长未知不算', () => {
+    expect(atVideoEnd(23.61, 23.77)).toBe(true);
+    expect(atVideoEnd(23.2, 23.77)).toBe(false);
+    expect(atVideoEnd(5000, Infinity)).toBe(false);
+    expect(atVideoEnd(0, 0)).toBe(false);
+  });
   it('时间段：格式、先后、最短、超出时长、超过上限', () => {
     expect(checkClipStart({ mode: 'range', start: 10, end: 20 }, ctx())).toBeUndefined();
     expect(checkClipStart({ mode: 'range', end: 20 }, ctx())).toContain('起点格式');
@@ -258,6 +281,19 @@ describe('录 / 等 / 停', () => {
     // 还没录到东西时，位置在终点之后（起步前的旧位置）不算结束
     expect(decideClip(range(), sample({ currentTime: 80 }))).toEqual({ kind: 'wait', why: 'outside-range' });
   });
+  it('播放中进度卡住：当缓冲，不录静止画面；卡在结尾（小红书的播放器不报"播完"）：算播完', () => {
+    expect(decideClip(control(), sample({ stalled: true, duration: 600 }))).toEqual({ kind: 'wait', why: 'seeking' });
+    expect(decideClip(control(), sample({ stalled: true }))).toEqual({ kind: 'wait', why: 'seeking' });
+    // 2026-11-04 实测：停在 23.609 秒，时长 23.767 秒，既不暂停也不 ended
+    expect(decideClip(control(), sample({ stalled: true, currentTime: 23.609, duration: 23.767 }))).toEqual({ kind: 'stop', reason: 'ended' });
+    // 在结尾附近但还在往前走：照录
+    expect(decideClip(control(), sample({ currentTime: 23.4, duration: 23.767 }))).toEqual({ kind: 'record' });
+    const range = control({ mode: 'range', start: 10, end: 23.767, recordedSec: 5 });
+    expect(decideClip(range, sample({ stalled: true, currentTime: 23.609, duration: 23.767 }))).toEqual({ kind: 'stop', reason: 'range-end' });
+    // 你按了暂停、标签页在后台时，先说这些原因
+    expect(decideClip(control({ userPaused: true }), sample({ stalled: true }))).toEqual({ kind: 'wait', why: 'user' });
+    expect(decideClip(control(), sample({ stalled: true, visible: false }))).toEqual({ kind: 'wait', why: 'hidden' });
+  });
 });
 
 describe('字幕烧录排版', () => {
@@ -309,6 +345,8 @@ describe('字幕烧录排版', () => {
   });
 });
 
+const XHS_NOTE = '6ae9a4e000000000140281c6';
+
 describe('录制记录', () => {
   const good = {
     id: 'clip_1',
@@ -349,8 +387,23 @@ describe('录制记录', () => {
     expect(log.map((x) => `${x.id}@${x.savedAt}`)).toEqual(['a@3', 'b@2']);
     expect(addClipRecord(log, r('c', 4), 2).map((x) => x.id)).toEqual(['c', 'a']);
   });
-  it('回到这一段的地址', () => {
+  it('回到这一段的地址；小红书回到这篇笔记', () => {
     expect(clipWatchUrl({ videoId: 'abc123DEF45', start: 723.9 })).toBe('https://www.youtube.com/watch?v=abc123DEF45&t=723s');
+    expect(clipWatchUrl({ site: 'xhs', videoId: XHS_NOTE, url: `https://www.xiaohongshu.com/explore/${XHS_NOTE}?xsec_token=AB1%3D`, start: 5 })).toBe(`https://www.xiaohongshu.com/explore/${XHS_NOTE}?xsec_token=AB1%3D`);
+    expect(clipWatchUrl({ site: 'xhs', videoId: XHS_NOTE, start: 5 })).toBe(`https://www.xiaohongshu.com/explore/${XHS_NOTE}`);
+  });
+  it('小红书的记录：笔记 ID 与链接对得上才收，链接只留 xsec_token / xsec_source；站点由后台定，不信记录自己写的', () => {
+    const xhs = { ...good, videoId: XHS_NOTE, url: `https://www.xiaohongshu.com/explore/${XHS_NOTE}?xsec_token=AB1%3D&xsec_source=pc_feed&utm=x`, site: 'youtube' };
+    expect(sanitizeClipRecord(xhs, 'xhs')).toEqual({ ...good, site: 'xhs', videoId: XHS_NOTE, url: `https://www.xiaohongshu.com/explore/${XHS_NOTE}?xsec_token=AB1%3D&xsec_source=pc_feed` });
+    // 浮层从博主主页打开时的网址
+    expect(sanitizeClipRecord({ ...xhs, url: `https://www.rednote.com/user/profile/67398f95000000001d02d725/${XHS_NOTE}` }, 'xhs')?.url).toBe(`https://www.rednote.com/user/profile/67398f95000000001d02d725/${XHS_NOTE}`);
+    expect(sanitizeClipRecord({ ...xhs, url: 'https://www.xiaohongshu.com/explore/6abce5c40000000015002d3b' }, 'xhs')).toBeNull();
+    expect(sanitizeClipRecord({ ...xhs, url: `https://evil.example/explore/${XHS_NOTE}` }, 'xhs')).toBeNull();
+    expect(sanitizeClipRecord({ ...xhs, url: undefined }, 'xhs')).toBeNull();
+    expect(sanitizeClipRecord({ ...xhs, videoId: 'abc123DEF45' }, 'xhs')).toBeNull();
+    // YouTube 页面送来的记录：小红书的笔记 ID 不认；写了站点和链接也不收
+    expect(sanitizeClipRecord(xhs)).toBeNull();
+    expect(sanitizeClipRecord({ ...good, site: 'xhs', url: 'https://www.xiaohongshu.com/explore/x' })).toEqual(good);
   });
   it('后台：校验后存进本地，不合格的不存；可以清空', async () => {
     const ctx = { kv: memoryKV(), locker: memoryLocker() } as unknown as AppContext;
@@ -359,6 +412,9 @@ describe('录制记录', () => {
     expect(await recordSavedClip(ctx, good)).toEqual(good);
     expect(await recordSavedClip(ctx, { ...good, id: 'clip_2' })).not.toBeNull();
     expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_2', 'clip_1']);
+    const xhs = await recordSavedClip(ctx, { ...good, id: 'clip_3', videoId: XHS_NOTE, url: `https://www.rednote.com/explore/${XHS_NOTE}?xsec_token=AB1%3D` }, 'xhs');
+    expect(xhs?.site).toBe('xhs');
+    expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_3', 'clip_2', 'clip_1']);
     await clearClipLog(ctx);
     expect(await stores.clipLog.read(ctx.kv)).toEqual([]);
   });
