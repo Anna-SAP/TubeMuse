@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockServer, PORT } from './mock-server.mjs';
-import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID } from './xhs-pages.mjs';
+import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID, XHS_V1 } from './xhs-pages.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const extDir = join(root, 'dist-e2e');
@@ -1007,8 +1007,10 @@ try {
   await panel.screenshot({ path: join(shots, '31-multicc-panel.png'), fullPage: true });
 
   console.log('\n[多语字幕：侧边栏给这个视频加一种语言；YouTube 返回空字幕时说明原因]');
-  await panel.getByTestId('multicc-langs').getByRole('checkbox', { name: /Indonesian/ }).check();
+  // 勾选框的状态要等页面里的脚本回话后才变（受控的勾选框）：用 click 再等结果，不用 check()（它点完立刻核对，会和回话赛跑）
+  await panel.getByTestId('multicc-langs').getByRole('checkbox', { name: /Indonesian/ }).click();
   await panel.getByTestId('multicc-langs').getByText('YouTube 返回了空字幕').waitFor({ timeout: 10000 });
+  check(await panel.getByTestId('multicc-langs').getByRole('checkbox', { name: /Indonesian/ }).isChecked(), '勾选印尼语后勾选框保持勾上');
   check(ourTt('ccMulti0001').filter((r) => r.query.lang === 'id').length === 1, '加了印尼语：立即用同一个请求取来（这条轨是空的）');
   check((await ccLines(cc)).filter((l) => !l.hidden).length === 3, '空的那一行不显示，其余三行照常');
   check(((await panel.getByTestId('multicc-panel').textContent()) ?? '').includes('这个视频改回默认语言'), '这个视频用的是单独选的语言：可以一键改回默认');
@@ -1613,6 +1615,25 @@ try {
     return { text: t.textContent, iso: t.dateTime, afterDate: t.previousElementSibling?.classList.contains('date') };
   });
   check(detail.iso === new Date(XHS_N1.time).toISOString() && /^发布于 \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/.test(detail.text ?? '') && !!detail.afterDate, `详情页日期旁：${detail.text}`);
+  // 2026-11-04 用户报告：详情页里看不到"收藏"。页面里有两份作者栏，按钮被放进了顶上藏起来的那份
+  const placed = await xhs.evaluate(() => {
+    const all = document.querySelectorAll('[data-tubemuse="xhs-save-inline"][data-for="note"]');
+    const h = /** @type {HTMLElement | undefined} */ (all[0]);
+    const follow = h?.nextElementSibling;
+    const a = h?.getBoundingClientRect();
+    const b = follow?.getBoundingClientRect();
+    return {
+      count: all.length,
+      visible: !!h && h.getClientRects().length > 0,
+      inPanel: !!h?.closest('.interaction-container .author-container'),
+      nextToFollow: !!follow?.classList.contains('note-detail-follow-btn') && !!a && !!b && a.right <= b.left + 0.5 && a.bottom > b.top && a.top < b.bottom,
+      inComments: !!h?.closest('.comments-el'),
+    };
+  });
+  check(
+    placed.count === 1 && placed.visible && placed.inPanel && placed.nextToFollow && !placed.inComments,
+    `笔记详情里有两份作者栏（顶上那份藏着）："收藏"放在看得见的那份里、紧挨"关注"左边，不进评论区（${JSON.stringify(placed)}）`,
+  );
   const inline = xhs.locator('[data-tubemuse="xhs-save-inline"][data-for="note"] button');
   check(((await inline.textContent()) ?? '').includes('已收藏 · 1'), '"关注"旁的按钮显示这篇已收藏');
   await inline.click();
@@ -1644,6 +1665,81 @@ try {
   await panel.getByRole('button', { name: '撤销' }).click();
   check(await untilStored((s) => JSON.stringify(s.notes[XHS_N3.id]?.tags) === '["读书"]'), '撤销后原样放回（标签还在）');
   await panel.screenshot({ path: join(shots, '26-xhs-panel.png'), fullPage: true });
+
+  console.log('\n[小红书：视频笔记 → 片段页录一段 → 卡住时不录 → 停在最后一帧算播完 → 自动保存，记录能回到这篇笔记]');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '片段', exact: true }).click();
+  // 把侧边栏拿到前台时，当前标签页变成了侧边栏自己：切回小红书那个标签页（就像你点回它）
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/xhs/explore/'));
+    await c.tabs.update(t.id, { active: true });
+  });
+  await clipStatus.filter({ hasText: '这篇笔记里没有视频' }).waitFor({ timeout: 10000 });
+  check(true, '图文笔记：说明没有视频可录');
+  const xhsVideoUrl = `${MOCK}/xhs/explore/${XHS_V1.id}?xsec_token=${encodeURIComponent(XHS_V1.token)}&xsec_source=pc_feed`;
+  await xhs.goto(xhsVideoUrl);
+  await xhs.waitForFunction(() => (document.querySelector('.player-el video') instanceof HTMLVideoElement ? /** @type {HTMLVideoElement} */ (document.querySelector('.player-el video')).readyState : 0) >= 2, null, { timeout: 30000 });
+  /** 在小红书页面里对播放器的视频做点什么（模拟你播放、拖动，或播放器自己的行为） */
+  const onXhsVideo = (/** @type {string} */ code) => xhs.evaluate(`(() => { const v = document.querySelector('.player-el video'); ${code} })()`);
+  await onXhsVideo('return v.play();');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  check(
+    ((await panel.getByTestId('clip-title').textContent()) ?? '') === XHS_V1.title && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-no-burn').count()) === 1,
+    '小红书视频笔记：侧边栏显示笔记标题（来自页面标题），不提供字幕烧录并说明原因',
+  );
+  const xhsPlayerHtml = () => xhs.evaluate(() => /** @type {HTMLElement} */ (document.querySelector('.media-container')).outerHTML);
+  const xhsPlayerBefore = await xhsPlayerHtml();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  const xhsBadge = await sw2.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/xhs/explore/'));
+    return c.action.getBadgeText({ tabId: t.id });
+  });
+  check(xhsBadge === 'REC', `小红书上录制中，工具栏图标也显示 REC（实际："${xhsBadge}"）`);
+  await xhs.waitForTimeout(2000);
+  // 进度卡住（倍速 0：没暂停，进度不动）：当缓冲，不录静止画面
+  await onXhsVideo('v.playbackRate = 0;');
+  await clipStatus.filter({ hasText: '缓冲中' }).waitFor({ timeout: 5000 });
+  const atStall = await recordedSec();
+  await xhs.waitForTimeout(1500);
+  check((await recordedSec()) === atStall, `播放中进度卡住：自动暂停录制，不录静止画面（停在 ${atStall} 秒）`);
+  await onXhsVideo('v.playbackRate = 1;');
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 5000 });
+  await xhs.waitForTimeout(1500);
+  // 小红书的播放器放到最后一帧就停住，既不暂停也不报"播完"（2026-11-04 实测）：模拟成倍速 0、停在结尾前 0.2 秒
+  const [xhsDl] = await Promise.all([xhs.waitForEvent('download', { timeout: 15000 }), onXhsVideo('v.playbackRate = 0; v.currentTime = v.duration - 0.2;')]);
+  const xhsName = xhsDl.suggestedFilename();
+  check(/^视频日记Day255｜一人公司怎么做_00m0\ds-00m1\ds\.(mp4|webm)$/.test(xhsName), `停在最后一帧算播完，自动结束并保存；文件名用笔记标题与起止时间：${xhsName}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '视频播完了' }).waitFor({ timeout: 5000 });
+  const xhsClip = await analyzeClip(xhs, /** @type {string} */ (await xhsDl.path()));
+  check(
+    container(xhsClip.head) === xhsName.split('.').pop() && xhsClip.duration > 2.5 && xhsClip.rms > 0.02,
+    `录到了这篇笔记视频的画面与声音（${xhsClip.duration.toFixed(1)} 秒，响度 ${xhsClip.rms.toFixed(3)}）`,
+  );
+  const xhsLog = (await clipLog())[0];
+  check(
+    xhsLog?.site === 'xhs' && xhsLog.videoId === XHS_V1.id && xhsLog.title === XHS_V1.title && xhsLog.url === `${MOCK}/xhs/explore/${XHS_V1.id}?xsec_token=ABvideo1%3D&xsec_source=pc_feed` && xhsLog.fileName === xhsName,
+    '"最近录过的片段"记下这是小红书笔记，带上能回到这篇笔记的链接（含 xsec_token）',
+  );
+  check(((await panel.getByTestId('clip-log').textContent()) ?? '').includes('小红书 · '), '侧边栏的片段清单标出小红书');
+  check(
+    JSON.stringify(await xhsPlayerHtml()) === JSON.stringify(xhsPlayerBefore) && (await xhs.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0,
+    '录制没有往小红书页面里加任何元素，没有点到小红书自己的任何东西',
+  );
+
+  console.log('\n[小红书：录制中关掉这篇笔记（站内跳走）→ 这一段自动结束并保存]');
+  await onXhsVideo('v.playbackRate = 1; v.currentTime = 0; return v.play();');
+  await clipStatus.filter({ hasText: '已保存' }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await xhs.waitForTimeout(1500);
+  const [closeDl] = await Promise.all([xhs.waitForEvent('download', { timeout: 10000 }), xhs.evaluate(() => history.pushState(null, '', '/xhs/explore'))]);
+  check(/^视频日记Day255｜一人公司怎么做_.*\.(mp4|webm)$/.test(closeDl.suggestedFilename()), `关掉笔记时自动结束这一段并保存：${closeDl.suggestedFilename()}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '关掉了这篇笔记' }).waitFor({ timeout: 5000 });
+  check(true, '侧边栏说明这一段为什么结束');
+  await panel.getByRole('tab', { name: '小红书' }).click();
 
   console.log('\n[小红书：网络红线]');
   const xhsPageReqs = requests.slice(xhsReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/xhs/`));

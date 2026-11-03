@@ -556,7 +556,7 @@ function App() {
 
       <Section title="14. 片段录制" id="clips">
         <p class="muted small">
-          在侧边栏"片段"页（或按 Alt+Shift+R）录下正在看的 YouTube 视频的一段：画面和声音都来自这个视频本身，在本机编码，由浏览器存进下载文件夹。不经过网络，TubeMuse 不保留视频副本，只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
+          在侧边栏"片段"页（或按 Alt+Shift+R）录下正在看的 YouTube 视频或小红书视频笔记的一段：画面和声音都来自这个视频本身，在本机编码，由浏览器存进下载文件夹。不经过网络，TubeMuse 不保留视频副本，只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
         </p>
         <label class="inline">
           <input type="checkbox" data-testid="clips-enabled" checked={settings.clips.enabled} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, enabled: e.currentTarget.checked } }))} />
@@ -568,7 +568,7 @@ function App() {
         </label>
         <label class="inline">
           <input type="checkbox" checked={settings.clips.burnSubtitles} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, burnSubtitles: e.currentTarget.checked } }))} />
-          把字幕烧进画面：录的是播放器里当时显示的字幕（YouTube 原生字幕、TubeMuse 多语字幕或自动字幕），字号跟"12. 自动字幕"的字号倍数；更费电脑
+          把字幕烧进画面：录的是播放器里当时显示的字幕（YouTube 原生字幕、TubeMuse 多语字幕或自动字幕），字号跟"12. 自动字幕"的字号倍数；更费电脑。小红书的视频没有单独的字幕层，不适用
         </label>
         <div class="grid">
           <NumField
@@ -701,7 +701,7 @@ function App() {
           注入小红书网页版（www.xiaohongshu.com、www.rednote.com）的脚本不发任何网络请求：页面内助手只读页面数据里各笔记的发布时间；另一个脚本在笔记卡片作者那一行、笔记详情的日期旁写上发布时间，放"收藏"按钮和弹窗（只用文字写入，不改动小红书自己的元素，不点击小红书的任何按钮）。收藏经扩展后台校验后存在本机。
         </p>
         <p class="muted small">
-          注入 youtube.com 的片段录制脚本只在你开始录制后工作：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字。
+          注入 youtube.com 与小红书网页版的片段录制脚本只在你开始录制后工作：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕，只限 YouTube），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、不点击页面上的任何东西、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字；按时间段截取时会把这个视频跳到起点并播放。
         </p>
       </Section>
     </div>

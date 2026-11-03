@@ -126,10 +126,12 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
     multiCcVideoLanguage(ctx, (m as { videoId?: unknown }).videoId).then(sendResponse, () => sendResponse({}));
     return true;
   }
-  // 片段录制：录制脚本存好了一个片段，记一笔（只有元数据；视频文件由浏览器存进下载文件夹，不经过这里）
+  // 片段录制：录制脚本存好了一个片段，记一笔（只有元数据；视频文件由浏览器存进下载文件夹，不经过这里）。
+  // 是哪个站的片段按发消息的页面定（YouTube 播放页或小红书网页版），不信记录里自己写的
   if (m?.type === CLIP_MSG.saved) {
-    if (!fromTrackedSite(sender)) return false;
-    void recordSavedClip(ctx, (m as { record?: unknown }).record).catch(() => undefined);
+    const site = fromXhsPage(sender) ? 'xhs' : fromTrackedSite(sender) ? 'youtube' : undefined;
+    if (!site) return false;
+    void recordSavedClip(ctx, (m as { record?: unknown }).record, site).catch(() => undefined);
     return false;
   }
   // 小红书：页面上点了收藏 / 移出 / 加减标签。页面内容不可信，校验后写入本机；不向小红书发任何请求
@@ -140,7 +142,7 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
   }
   // 片段录制状态：在工具栏图标上标出正在录（用快捷键录制时不打开侧边栏也看得见）
   if (m?.type === CLIP_MSG.state) {
-    if (!fromTrackedSite(sender) || sender.tab?.id === undefined) return false;
+    if (!(fromTrackedSite(sender) || fromXhsPage(sender)) || sender.tab?.id === undefined) return false;
     showClipBadge(sender.tab.id, (m as { state?: ClipTabState }).state);
     return false;
   }
@@ -175,7 +177,8 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((m) => void keepAlive(() => handle(m)).catch((e) => console.warn('[TubeMuse] 字幕处理失败', e instanceof Error ? e.message : e)));
 });
 
-// 快捷键：开关当前标签页这个视频的自动字幕 / 多语字幕 / 开始或停止录制片段（只发给本扩展的内容脚本；不是 YouTube 页面时什么也不做）
+// 快捷键：开关当前标签页这个视频的自动字幕 / 多语字幕 / 开始或停止录制片段（只发给本扩展的内容脚本；
+// 不是 YouTube 页面时什么也不做；录制也认小红书的视频笔记）
 chrome.commands.onCommand.addListener((command, tab) => {
   if (tab?.id === undefined) return;
   if (command === 'toggle-subtitles') void chrome.tabs.sendMessage(tab.id, { type: 'tubemuse:subtitles:toggle' }).catch(() => undefined);

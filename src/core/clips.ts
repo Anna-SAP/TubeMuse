@@ -2,8 +2,13 @@
 // 录制本身（画布、MediaRecorder、保存）在 content/clipper.ts；侧边栏"片段"页只经消息控制它。
 
 import { CLIPS } from '../config/defaults';
+import { XHS_PAGES } from '../config/endpoints';
+import { canonicalXhsUrl, isXhsId } from './xhs';
 
 export type ClipMode = 'free' | 'range';
+
+/** 录的是哪个站的视频：YouTube 播放页，或小红书网页版的视频笔记（2026-11-04 新增，见 DECISIONS §43） */
+export type ClipSite = 'youtube' | 'xhs';
 
 /** 侧边栏 → 内容脚本、内容脚本 → 侧边栏 / 后台 的消息类型 */
 export const CLIP_MSG = {
@@ -71,11 +76,11 @@ export function formatBytes(n: number): string {
 
 // ── 文件名 ──
 
-/** 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube" */
-export function titleFromDocumentTitle(docTitle: string): string {
+/** 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"） */
+export function titleFromDocumentTitle(docTitle: string, site: ClipSite = 'youtube'): string {
   return docTitle
     .replace(/^\(\d+\+?\)\s*/, '')
-    .replace(/\s*[-–—]\s*YouTube\s*$/i, '')
+    .replace(site === 'xhs' ? /\s*[-–—]\s*(?:小红书|rednote)\s*$/i : /\s*[-–—]\s*YouTube\s*$/i, '')
     .trim();
 }
 
@@ -91,9 +96,9 @@ export function safeFileTitle(title: string): string {
   return WINDOWS_RESERVED.test(cut) ? `_${cut}` : cut;
 }
 
-/** 片段文件名：标题_起点-终点.扩展名；没有标题时用视频 ID */
-export function clipFileName(title: string | undefined, videoId: string, start: number, end: number, ext: string): string {
-  const base = safeFileTitle(title ?? '') || `youtube-${videoId}`;
+/** 片段文件名：标题_起点-终点.扩展名；没有标题时用视频（笔记）ID */
+export function clipFileName(title: string | undefined, videoId: string, start: number, end: number, ext: string, site: ClipSite = 'youtube'): string {
+  const base = safeFileTitle(title ?? '') || `${site === 'xhs' ? 'xhs' : 'youtube'}-${videoId}`;
   return `${base}_${fileStamp(start)}-${fileStamp(end)}.${ext}`;
 }
 
@@ -180,6 +185,8 @@ export interface ClipStartRequest {
 }
 
 export interface ClipStartContext {
+  /** 不给时是 YouTube */
+  site?: ClipSite;
   enabled: boolean;
   videoId: string | null;
   shorts: boolean;
@@ -204,12 +211,24 @@ export function checkRange(start: number | null | undefined, end: number | null 
   return undefined;
 }
 
-/** 开始录制前的检查：返回问题说明（用人话），没问题返回 undefined */
-export function checkClipStart(req: ClipStartRequest, c: ClipStartContext): string | undefined {
+/** 这个页面现在为什么录不了（侧边栏显示、开录前检查共用）；能录返回 undefined */
+export function clipUnavailable(site: ClipSite, c: Pick<ClipStartContext, 'enabled' | 'videoId' | 'shorts' | 'hasVideo'>): string | undefined {
   if (!c.enabled) return '片段录制已在设置中关闭';
   if (c.shorts) return 'Shorts 暂不支持录制';
-  if (!c.videoId) return '这个页面不是视频播放页';
-  if (!c.hasVideo) return '没找到播放器里的视频，等视频开始播放后再试';
+  if (!c.videoId) return site === 'xhs' ? '这个页面不是笔记详情：打开一篇视频笔记再录' : '这个页面不是视频播放页';
+  if (!c.hasVideo) return site === 'xhs' ? '这篇笔记里没有视频（图文笔记录不了）；视频笔记等画面出来后再试' : '没找到播放器里的视频，等视频开始播放后再试';
+  return undefined;
+}
+
+/** 播放位置已到视频结尾（离结尾不到 CLIPS.endSlackSec）；时长未知时不算 */
+export function atVideoEnd(currentTime: number, duration: number): boolean {
+  return Number.isFinite(duration) && duration > 0 && currentTime >= duration - CLIPS.endSlackSec;
+}
+
+/** 开始录制前的检查：返回问题说明（用人话），没问题返回 undefined */
+export function checkClipStart(req: ClipStartRequest, c: ClipStartContext): string | undefined {
+  const unavailable = clipUnavailable(c.site ?? 'youtube', c);
+  if (unavailable) return unavailable;
   if (c.busy) return '已经在录一段了：先停止这一段';
   if (req.mode === 'range') {
     // 时长未知（直播等）时不限制起点
@@ -247,6 +266,10 @@ export interface ClipSample {
   ad: boolean;
   /** 标签页在前台（后台时浏览器不再刷新画面） */
   visible: boolean;
+  /** 在播放（没暂停、没在跳转）但进度超过 CLIPS.stallMs 没动：卡住了 */
+  stalled?: boolean;
+  /** 视频总时长（秒）；未知时不给 */
+  duration?: number;
 }
 
 export type ClipStopReason = 'user' | 'video-changed' | 'max-duration' | 'max-bytes' | 'range-end' | 'ended' | 'error';
@@ -265,7 +288,7 @@ export const CLIP_WAIT_LABELS: Record<ClipWaitReason, string> = {
 
 export const CLIP_STOP_LABELS: Record<ClipStopReason, string> = {
   user: '你停止了录制',
-  'video-changed': '切到了别的视频，这一段已结束',
+  'video-changed': '切到了别的视频（或关掉了这篇笔记），这一段已结束',
   'max-duration': '到了单段时长上限（设置页可改）',
   'max-bytes': '片段太大了，已自动结束（保存前都在内存里）',
   'range-end': '已录到终点',
@@ -279,13 +302,16 @@ export function decideClip(c: ClipControl, s: ClipSample, tolerance: number = CL
   if (c.recordedSec >= c.maxSec) return { kind: 'stop', reason: 'max-duration' };
   if (c.bytes >= c.maxBytes) return { kind: 'stop', reason: 'max-bytes' };
   const range = c.mode === 'range' && c.start !== undefined && c.end !== undefined;
+  // 卡在结尾也算播完：小红书的播放器放到最后一帧就停在那里，既不暂停也不报"播完"（2026-11-04 实测）
+  const finished = s.ended || (!!s.stalled && atVideoEnd(s.currentTime, s.duration ?? 0));
   // 时间段：已经录到东西、又到了终点（含拖过终点、播完）就结束
-  if (range && c.recordedSec > 0 && (s.currentTime >= c.end! || s.ended)) return { kind: 'stop', reason: 'range-end' };
-  if (!range && s.ended) return { kind: 'stop', reason: 'ended' };
+  if (range && c.recordedSec > 0 && (s.currentTime >= c.end! || finished)) return { kind: 'stop', reason: 'range-end' };
+  if (!range && finished) return { kind: 'stop', reason: 'ended' };
   if (c.userPaused) return { kind: 'wait', why: 'user' };
   if (s.ad) return { kind: 'wait', why: 'ad' };
   if (!s.visible) return { kind: 'wait', why: 'hidden' };
-  if (s.seeking || !s.ready) return { kind: 'wait', why: 'seeking' };
+  // 卡住（缓冲）时画面停在一帧上：不录这段静止画面
+  if (s.seeking || !s.ready || s.stalled) return { kind: 'wait', why: 'seeking' };
   if (s.paused) return { kind: 'wait', why: 'paused' };
   if (range) {
     if (s.currentTime < c.start! - tolerance) return { kind: 'wait', why: c.recordedSec > 0 ? 'outside-range' : 'before-range' };
@@ -401,10 +427,12 @@ export interface ReadyClipInfo {
 }
 
 export interface ClipTabState {
+  site: ClipSite;
+  /** YouTube 的视频 ID，或小红书的笔记 ID */
   videoId: string | null;
-  /** 视频标题（页面标题去掉" - YouTube"，只用来显示和起文件名） */
+  /** 视频标题（页面标题去掉" - YouTube" / " - 小红书"，只用来显示和起文件名） */
   title?: string;
-  /** 不能录的原因（不是视频页、Shorts、设置里关了） */
+  /** 不能录的原因（不是视频页、Shorts、设置里关了、图文笔记） */
   unavailable?: string;
   /** 当前播放位置与总时长（秒） */
   position: number;
@@ -430,7 +458,12 @@ export interface ClipTabState {
 
 export interface ClipRecord {
   id: string;
+  /** 只有小红书的记录带 'xhs'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
+  site?: ClipSite;
+  /** YouTube 的视频 ID，或小红书的笔记 ID */
   videoId: string;
+  /** 小红书：笔记链接（只留站点、路径与 xsec_token / xsec_source，从外面打开笔记要带 xsec_token） */
+  url?: string;
   title?: string;
   mode: ClipMode;
   start: number;
@@ -445,14 +478,19 @@ export interface ClipRecord {
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{6,20}$/;
 
-/** 校验内容脚本送来的记录（来自网页环境，字段逐一检查、截断） */
-export function sanitizeClipRecord(raw: unknown): ClipRecord | null {
+/**
+ * 校验内容脚本送来的记录（来自网页环境，字段逐一检查、截断）。
+ * site 由后台按发消息的页面决定（不信记录里自己写的）：小红书的笔记 ID 与链接必须对得上。
+ */
+export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): ClipRecord | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
   const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
   const str = (v: unknown, max: number) => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null);
   const id = str(r.id, 64);
-  const videoId = typeof r.videoId === 'string' && VIDEO_ID.test(r.videoId) ? r.videoId : null;
+  const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : VIDEO_ID.test(r.videoId)) ? r.videoId : null;
+  const note = site === 'xhs' && typeof r.url === 'string' ? canonicalXhsUrl(r.url) : undefined;
+  if (site === 'xhs' && (note?.link.kind !== 'note' || note.link.noteId !== videoId)) return null;
   const mode = r.mode === 'free' || r.mode === 'range' ? r.mode : null;
   const start = num(r.start, 1e6);
   const end = num(r.end, 1e6);
@@ -463,7 +501,7 @@ export function sanitizeClipRecord(raw: unknown): ClipRecord | null {
   const format = str(r.format, 60);
   if (!id || !videoId || !mode || start === null || end === null || durationSec === null || bytes === null || savedAt === null || !fileName || !format) return null;
   const title = str(r.title, 200);
-  return { id, videoId, ...(title ? { title } : {}), mode, start, end, durationSec, bytes, format, fileName, burned: r.burned === true, savedAt };
+  return { id, ...(note ? { site, url: note.url } : {}), videoId, ...(title ? { title } : {}), mode, start, end, durationSec, bytes, format, fileName, burned: r.burned === true, savedAt };
 }
 
 /** 新记录放最前；同一个片段再存一次只更新时间；最多保留 max 条 */
@@ -471,7 +509,8 @@ export function addClipRecord(log: ClipRecord[], rec: ClipRecord, max: number = 
   return [rec, ...log.filter((r) => r.id !== rec.id)].slice(0, max);
 }
 
-/** 回到视频里这一段的地址 */
-export function clipWatchUrl(r: Pick<ClipRecord, 'videoId' | 'start'>): string {
+/** 回到视频里这一段的地址；小红书没有按时间打开的地址，回到这篇笔记 */
+export function clipWatchUrl(r: Pick<ClipRecord, 'videoId' | 'start' | 'site' | 'url'>): string {
+  if (r.site === 'xhs') return r.url ?? `${XHS_PAGES[0]}explore/${encodeURIComponent(r.videoId)}`;
   return `https://www.youtube.com/watch?v=${encodeURIComponent(r.videoId)}&t=${Math.floor(r.start)}s`;
 }

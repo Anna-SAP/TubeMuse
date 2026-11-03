@@ -1,5 +1,5 @@
 // 片段录制：当前标签页这个视频的录制控制（自由录制 / 按时间段截取）、录好的片段（保存 / 丢弃）、最近录过的片段。
-// 录制在 YouTube 页面里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
+// 录制在 YouTube 播放页或小红书笔记详情里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
 
 import { useEffect, useState } from 'preact/hooks';
 import {
@@ -45,7 +45,7 @@ export function ClipsView() {
     try {
       return (await chrome.tabs.sendMessage(tabId, msg)) as ClipTabState | undefined;
     } catch {
-      setLocalError('这个标签页没有响应：刷新一下 YouTube 页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）');
+      setLocalError('这个标签页没有响应：刷新一下那个页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）');
       return undefined;
     } finally {
       setBusy(false);
@@ -87,6 +87,7 @@ export function ClipsView() {
   const setBurn = (on: boolean) => void stores.settings.update(appCtx().kv, appCtx().locker, (s) => ({ ...s, clips: { ...s.clips, burnSubtitles: on } }));
 
   const recording = state?.phase === 'recording' || state?.phase === 'finishing';
+  const xhs = state?.site === 'xhs';
   const ready = state?.ready;
   const error = localError ? { message: localError } : state?.error;
   const rangeLen = (() => {
@@ -111,8 +112,8 @@ export function ClipsView() {
         {state ? (
           <>
             <dl class="kv">
-              <dt>视频</dt>
-              <dd>{state.title ?? state.videoId ?? '—'}</dd>
+              <dt>{xhs ? '笔记' : '视频'}</dt>
+              <dd data-testid="clip-title">{state.title ?? state.videoId ?? '—'}</dd>
               {state.videoId && (
                 <>
                   <dt>当前位置</dt>
@@ -165,10 +166,16 @@ export function ClipsView() {
                     </p>
                   </>
                 )}
-                <label class="inline">
-                  <input type="checkbox" data-testid="clip-burn" checked={settings.clips.burnSubtitles} onChange={(e) => setBurn(e.currentTarget.checked)} />
-                  把字幕烧进画面（录的是播放器里当时显示的字幕：TubeMuse 自动字幕或 YouTube 原生字幕；更费电脑）
-                </label>
+                {xhs ? (
+                  <p class="muted small" data-testid="clip-no-burn">
+                    小红书的视频没有单独的字幕层：字幕如果有，是做在画面里的，会原样录下。
+                  </p>
+                ) : (
+                  <label class="inline">
+                    <input type="checkbox" data-testid="clip-burn" checked={settings.clips.burnSubtitles} onChange={(e) => setBurn(e.currentTarget.checked)} />
+                    把字幕烧进画面（录的是播放器里当时显示的字幕：TubeMuse 自动字幕或 YouTube 原生字幕；更费电脑）
+                  </label>
+                )}
                 <div class="row">
                   <button class="btn primary" data-testid="clip-start" disabled={busy || tabId === undefined} onClick={() => void start()}>
                     ● {mode === 'range' ? '开始截取' : '开始录制'}
@@ -228,7 +235,7 @@ export function ClipsView() {
                     已在 {formatClock(ready.savedAt)} 交给浏览器存进下载文件夹。没看到文件？浏览器可能拦下了"自动下载多个文件"：在地址栏右侧允许后点"再存一次"。
                   </p>
                 ) : (
-                  <p class="small warn-text">还没保存：片段只在那个 YouTube 标签页的内存里，关掉或刷新页面就没了。</p>
+                  <p class="small warn-text">还没保存：片段只在那个标签页的内存里，关掉或刷新页面就没了。</p>
                 )}
                 <div class="row">
                   <button class={`btn${ready.savedAt ? '' : ' primary'}`} data-testid="clip-save" disabled={busy} onClick={() => void send({ type: CLIP_MSG.save })}>
@@ -242,7 +249,7 @@ export function ClipsView() {
             )}
           </>
         ) : (
-          <p class="muted small">当前标签页不是 YouTube 视频页。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。</p>
+          <p class="muted small">当前标签页不是 YouTube 视频页或小红书网页版。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。</p>
         )}
         <p class="muted small">快捷键 Alt+Shift+R 开始 / 停止（可在 chrome://extensions/shortcuts 修改）；录制中工具栏图标上显示 REC。</p>
       </section>
@@ -253,10 +260,11 @@ export function ClipsView() {
           <ul class="clip-log">
             {log.slice(0, 30).map((r) => (
               <li>
-                <button class="btn link" title="在当前标签页打开视频的这一段" onClick={() => void chrome.tabs.update({ url: clipWatchUrl(r) })}>
+                <button class="btn link" title={r.site === 'xhs' ? '在当前标签页打开这篇小红书笔记' : '在当前标签页打开视频的这一段'} onClick={() => void chrome.tabs.update({ url: clipWatchUrl(r) })}>
                   {r.title ?? r.videoId}
                 </button>
                 <span class="muted small">
+                  {r.site === 'xhs' ? '小红书 · ' : ''}
                   {formatTimecode(r.start)}–{formatTimecode(r.end)} · {formatBytes(r.bytes)}
                   {r.burned ? ' · 带字幕' : ''} · {formatRelative(r.savedAt, Date.now())}
                 </span>
@@ -275,7 +283,7 @@ export function ClipsView() {
 
       <section class="panel">
         <p class="muted small">
-          录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
+          可以录 YouTube 播放页与小红书笔记详情里的视频。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
         </p>
       </section>
     </div>

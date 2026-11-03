@@ -1,22 +1,26 @@
-// 注入 YouTube 播放页的视频片段录制脚本（用户 2026-11-01 批准的红线变更，见 DECISIONS §36）：
+// 注入 YouTube 播放页的视频片段录制脚本（用户 2026-11-01 批准的红线变更，见 DECISIONS §36）；
+// 2026-11-04 起也注入小红书网页版，录笔记详情里的视频（用户要求，见 DECISIONS §43）：
 // 1. 只在你从侧边栏"片段"页或快捷键开始录制后工作：把正在播放的这个视频逐帧画到一块不放进页面的画布上
-//    （开启字幕烧录时再叠加播放器里当时显示的字幕），声音经 video.captureStream() 取这个视频的音轨，
-//    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载 YouTube 的音视频流。
-// 2. 广告、暂停、缓冲、标签页在后台时自动暂停录制；切到别的视频时这一段自动结束。
+//    （开启字幕烧录时再叠加播放器里当时显示的字幕，只限 YouTube），声音经 video.captureStream() 取这个视频的音轨，
+//    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载 YouTube / 小红书的音视频流。
+// 2. 广告、暂停、缓冲、标签页在后台时自动暂停录制；切到别的视频（小红书：关掉这篇笔记）时这一段自动结束。
 // 3. 录好的片段只在这个页面的内存里；你点"保存"（或开着"停止后直接保存"）时由浏览器存进下载文件夹，
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
-//    （画布和下载链接都不放进页面），构建时自动检查。
+//    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
 // 4. 读取的页面信息只有：播放器状态、页面标题（只用来显示和起文件名）、开启字幕烧录时播放器里当时显示的字幕文字。
 // 受版权保护（DRM）的视频浏览器不允许录制，本脚本不绕过。
 
 import { CLIPS, DEFAULT_SETTINGS } from '../config/defaults';
 import { MULTICC_LINE_COLORS } from '../core/multi-captions';
+import { parseXhsUrl, xhsPath } from '../core/xhs';
 import {
   CLIP_MSG,
   CLIP_STOP_LABELS,
   CLIP_WAIT_LABELS,
+  atVideoEnd,
   checkClipStart,
   clipFileName,
+  clipUnavailable,
   decideClip,
   formatTimecode,
   layoutBurnIn,
@@ -30,6 +34,7 @@ import {
   type ClipFormat,
   type ClipMode,
   type ClipRecord,
+  type ClipSite,
   type ClipStartRequest,
   type ClipStopReason,
   type ClipTabState,
@@ -42,6 +47,9 @@ type ClipSettings = typeof DEFAULT_SETTINGS.clips;
 
 const FONT = '"YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", sans-serif';
 
+/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）或 YouTube */
+const SITE: ClipSite = xhsPath(location.href) ? 'xhs' : 'youtube';
+
 let settings: ClipSettings = { ...DEFAULT_SETTINGS.clips };
 let fontScale = DEFAULT_SETTINGS.subtitles.fontScale;
 
@@ -49,6 +57,8 @@ interface Recording {
   id: string;
   mode: ClipMode;
   videoId: string;
+  /** 开始录制时的网址（小红书：记下笔记链接，关掉笔记后再保存也对得上） */
+  pageUrl: string;
   title?: string;
   start?: number;
   end?: number;
@@ -80,6 +90,9 @@ interface Recording {
   /** 录到的第一刻与最后一刻（视频时间），用来给文件起名 */
   mediaFirst?: number;
   mediaLast?: number;
+  /** 上一次看到播放进度变化：进度在播放中久不动算卡住（见 CLIPS.stallMs） */
+  seenTime: number;
+  seenAt: number;
   lastDrawAt: number;
   frameHandle?: number;
   fallbackTimer?: ReturnType<typeof setInterval>;
@@ -97,6 +110,7 @@ interface ReadyClip extends ReadyClipInfo {
   blob: Blob;
   url?: string;
   videoId: string;
+  pageUrl: string;
   title?: string;
   mode: ClipMode;
 }
@@ -116,11 +130,29 @@ function alive(): boolean {
 }
 
 function playerEl(): HTMLElement | null {
-  return document.getElementById('movie_player');
+  return SITE === 'youtube' ? document.getElementById('movie_player') : null;
 }
 
+/** 小红书笔记详情（单独的页面或弹出的浮层）里播放器的视频；找不到播放器时退而求其次，取笔记里的视频 */
+const XHS_PLAYER_VIDEO = '#noteContainer .player-container video, #noteContainer .xgplayer video, .note-container .xgplayer video';
+const XHS_ANY_VIDEO = '#noteContainer video, .note-container video';
+
 function videoEl(): HTMLVideoElement | null {
-  return playerEl()?.querySelector('video') ?? null;
+  if (SITE === 'youtube') return playerEl()?.querySelector('video') ?? null;
+  let all = document.querySelectorAll<HTMLVideoElement>(XHS_PLAYER_VIDEO);
+  if (!all.length) all = document.querySelectorAll<HTMLVideoElement>(XHS_ANY_VIDEO);
+  if (all.length <= 1) return all[0] ?? null;
+  // 不止一个：取画面最大的那个（藏起来的面积是 0）
+  let best = all[0]!;
+  let bestArea = -1;
+  for (const v of all) {
+    const r = v.getBoundingClientRect();
+    if (r.width * r.height > bestArea) {
+      bestArea = r.width * r.height;
+      best = v;
+    }
+  }
+  return best;
 }
 
 function adShowing(): boolean {
@@ -128,13 +160,31 @@ function adShowing(): boolean {
   return !!p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting'));
 }
 
+/** YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时） */
 function currentIds(): { videoId: string | null; shorts: boolean } {
-  return videoIdFromUrl(location.href);
+  if (SITE === 'youtube') return videoIdFromUrl(location.href);
+  const link = parseXhsUrl(location.href);
+  return { videoId: link?.kind === 'note' ? link.noteId : null, shorts: false };
 }
 
 function pageTitle(): string | undefined {
-  const t = titleFromDocumentTitle(document.title || '');
-  return t && t !== 'YouTube' ? t : undefined;
+  const t = titleFromDocumentTitle(document.title || '', SITE);
+  return t && !/^(?:YouTube|小红书|rednote)$/i.test(t) ? t : undefined;
+}
+
+/** 画面读得到吗：来自别的网站、又没有放行的视频，画到画布上会被浏览器标为"不可读"，录不了（YouTube、小红书现在都是同源的 blob: 流） */
+function framesReadable(v: HTMLVideoElement): boolean {
+  try {
+    const c = document.createElement('canvas');
+    c.width = 1;
+    c.height = 1;
+    const g = c.getContext('2d');
+    g?.drawImage(v, 0, 0, 1, 1);
+    g?.getImageData(0, 0, 1, 1);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function fail(message: string, hint?: string): void {
@@ -280,6 +330,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   const { videoId, shorts } = currentIds();
   const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
   const problem = checkClipStart(req, {
+    site: SITE,
     enabled: settings.enabled,
     videoId,
     shorts,
@@ -287,7 +338,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     busy: !!rec,
     duration: video?.duration ?? 0,
     currentTime: video?.currentTime ?? 0,
-    ended: !!video?.ended,
+    // 停在最后一帧也算播完（小红书的播放器不报"播完"）
+    ended: !!video && (video.ended || atVideoEnd(video.currentTime, video.duration)),
     maxSec,
   });
   if (problem || !video || !videoId) return fail(problem ?? '没找到播放器里的视频');
@@ -295,6 +347,9 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   if (req.mode === 'range' && adShowing()) return fail('正在播广告：广告结束后再开始截取');
   if ((video as HTMLVideoElement & { mediaKeys?: unknown }).mediaKeys) {
     return fail('这个视频受版权保护（DRM），浏览器不允许录制', '付费电影、部分音乐视频等受保护的内容录不了；TubeMuse 不会绕过这项保护');
+  }
+  if (!framesReadable(video)) {
+    return fail('浏览器不允许读取这个视频的画面：视频来自别的网站，没有放行', '这种视频录不了；TubeMuse 不会绕过这项限制');
   }
   const format = pickClipFormat((m) => MediaRecorder.isTypeSupported(m));
   if (!format) return fail('这个浏览器不支持录制视频（MediaRecorder 不支持 MP4 或 WebM）', '请用最新版 Google Chrome');
@@ -355,6 +410,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     id: randomId(),
     mode: req.mode,
     videoId,
+    pageUrl: location.href,
     ...(title ? { title } : {}),
     ...(req.mode === 'range' ? { start: req.start!, end: req.end! } : {}),
     video,
@@ -362,7 +418,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     g,
     width: size.width,
     height: size.height,
-    burn: settings.burnSubtitles,
+    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）
+    burn: SITE === 'youtube' && settings.burnSubtitles,
     format,
     maxSec,
     source,
@@ -378,6 +435,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     recordedSec: 0,
     lastTick: performance.now(),
     userPaused: false,
+    seenTime: video.currentTime,
+    seenAt: performance.now(),
     lastDrawAt: 0,
     burnLines: [],
     burnKey: '',
@@ -494,7 +553,7 @@ function finish(r: Recording): void {
   ready = {
     id: r.id,
     blob: new Blob(r.chunks, { type: r.format.mimeType.split(';')[0] }),
-    fileName: clipFileName(r.title, r.videoId, start, end, r.format.ext),
+    fileName: clipFileName(r.title, r.videoId, start, end, r.format.ext, SITE),
     bytes: r.bytes,
     durationSec: Math.round(r.recordedSec * 10) / 10,
     start,
@@ -503,6 +562,7 @@ function finish(r: Recording): void {
     burned: r.burn,
     endedBy: reason,
     videoId: r.videoId,
+    pageUrl: r.pageUrl,
     ...(r.title ? { title: r.title } : {}),
     mode: r.mode,
   };
@@ -524,6 +584,8 @@ function saveReady(): void {
   c.savedAt = Date.now();
   const record: ClipRecord = {
     id: c.id,
+    // 小红书：带上笔记链接，"最近录过的片段"里点标题能回到这篇笔记（后台核对链接与笔记 ID）
+    ...(SITE === 'xhs' ? { site: SITE, url: c.pageUrl } : {}),
     videoId: c.videoId,
     ...(c.title ? { title: c.title } : {}),
     mode: c.mode,
@@ -554,6 +616,10 @@ function tick(): void {
     r.lastTick = now;
     const v = r.video;
     const { videoId } = currentIds();
+    if (v.currentTime !== r.seenTime || v.paused || v.seeking) {
+      r.seenTime = v.currentTime;
+      r.seenAt = now;
+    }
     const d = decideClip(
       { mode: r.mode, videoId: r.videoId, ...(r.mode === 'range' ? { start: r.start!, end: r.end! } : {}), recordedSec: r.recordedSec, bytes: r.bytes, maxSec: r.maxSec, maxBytes: CLIPS.maxBytes, userPaused: r.userPaused },
       {
@@ -566,6 +632,8 @@ function tick(): void {
         ready: v.readyState >= 2,
         ad: adShowing(),
         visible: document.visibilityState === 'visible',
+        stalled: now - r.seenAt > CLIPS.stallMs,
+        duration: v.duration,
       },
     );
     if (d.kind === 'stop') stopRecording(d.reason);
@@ -593,7 +661,8 @@ function tabState(precise = false): ClipTabState {
   const video = videoEl();
   const r = rec;
   const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
-  const unavailable = !settings.enabled ? '片段录制已在设置中关闭' : shorts ? 'Shorts 暂不支持录制' : !videoId ? '这个页面不是视频播放页' : undefined;
+  // YouTube 播放页上视频元素几乎立刻就有，沿用原来的判断（不因"还没有视频"挡住）；小红书的图文笔记没有视频
+  const unavailable = clipUnavailable(SITE, { enabled: settings.enabled, videoId, shorts, hasVideo: SITE === 'youtube' || !!video });
   const t = video?.currentTime ?? 0;
   let status: string;
   if (r?.stopping) status = '正在收尾…';
@@ -602,8 +671,9 @@ function tabState(precise = false): ClipTabState {
   else if (ready) status = ready.savedAt ? `已保存：${ready.fileName}` : `录好了（${CLIP_STOP_LABELS[ready.endedBy]}），还没保存`;
   else status = '可以开始录制';
   const title = r?.title ?? (videoId ? pageTitle() : undefined);
-  const { blob: _b, url: _u, videoId: _v, title: _t, mode: _m, ...readyInfo } = ready ?? ({} as ReadyClip);
+  const { blob: _b, url: _u, videoId: _v, pageUrl: _p, title: _t, mode: _m, ...readyInfo } = ready ?? ({} as ReadyClip);
   return {
+    site: SITE,
     videoId,
     ...(title ? { title } : {}),
     ...(unavailable ? { unavailable } : {}),
@@ -617,7 +687,7 @@ function tabState(precise = false): ClipTabState {
     bytes: r ? Math.floor(r.bytes / 100_000) * 100_000 : 0,
     ...(r?.waiting ? { waiting: r.waiting } : {}),
     status,
-    burn: r ? r.burn : settings.burnSubtitles,
+    burn: r ? r.burn : SITE === 'youtube' && settings.burnSubtitles,
     autoSave: settings.autoSave,
     maxSec,
     ...(r ? { format: r.format.label } : {}),
