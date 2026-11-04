@@ -196,6 +196,13 @@ export const DEFAULT_SETTINGS = {
     /** 笔记卡片封面、博主主页名字旁、笔记详情"关注"旁显示"收藏"按钮 */
     showSave: true,
   },
+  /**
+   * eMails（用户 2026-11-04 要求，见 DECISIONS §44）：读 Gmail 里当前打开的文章汇总邮件，用大模型给每篇打 0–10 分，一键收藏。
+   * 只在侧边栏 eMails 页开着时读邮件；只有你点"评估"才把文章的标题、摘要和元数据发给大模型。
+   */
+  email: {
+    enabled: true,
+  },
   /** 侧边栏界面偏好 */
   ui: {
     /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
@@ -356,6 +363,13 @@ export const DOUBAN = {
   ratingStars: { 力荐: 5, 推荐: 4, 还行: 3, 较差: 2, 很差: 1 } as Record<string, number>,
 } as const;
 
+/** 收藏的标签（小红书、eMails 共用，见 core/collection.ts） */
+export const TAGS = {
+  /** 每条收藏最多几个标签、每个标签最多几个字 */
+  maxPerItem: 20,
+  maxChars: 20,
+} as const;
+
 /** 小红书：笔记发布时间与收藏 / 标签（见 DECISIONS §40） */
 export const XHS = {
   /**
@@ -364,9 +378,8 @@ export const XHS = {
    */
   idTimeMin: Date.UTC(2013, 0, 1),
   futureSlackMs: 2 * 24 * 3_600_000,
-  /** 每条收藏最多几个标签、每个标签最多几个字 */
-  maxTagsPerItem: 20,
-  maxTagChars: 20,
+  maxTagsPerItem: TAGS.maxPerItem,
+  maxTagChars: TAGS.maxChars,
   /** 笔记、博主各自最多收藏多少条 */
   maxItems: 5000,
   titleMaxChars: 200,
@@ -379,6 +392,32 @@ export const XHS = {
   scanDelayMs: 120,
   /** 有新卡片时最多多久重读一次页面数据（页面内助手每次最多读多少条见 core/xhs-protocol.ts） */
   timesRefreshMs: 800,
+} as const;
+
+/** eMails：文章汇总邮件的解析、评分与收藏（见 DECISIONS §44） */
+export const EMAIL = {
+  /** 少于这么多篇就不算文章汇总（普通邮件里偶尔有一两个长链接） */
+  minArticles: 2,
+  /** 一封邮件最多列多少篇 */
+  maxArticles: 60,
+  /** 一次最多读邮件正文里多少个文字 / 图片节点（邮件再长也不卡页面） */
+  maxNodes: 8000,
+  titleMaxChars: 240,
+  excerptMaxChars: 400,
+  nameMaxChars: 80,
+  reasonMaxChars: 120,
+  /** 发给大模型的摘要最多多少字（数据最小化） */
+  promptExcerptChars: 240,
+  /** 一次请求最多评多少篇：更长的汇总分批，先评完的先显示 */
+  batchSize: 20,
+  /** 分档：≥ read 值得精读；≤ skip 建议跳过；其余一般 */
+  bands: { read: 7, skip: 3 },
+  /** 最多缓存多少篇的评分（同一篇隔天再出现时不再花钱） */
+  maxScores: 2000,
+  /** 最多收藏多少篇 */
+  maxSaved: 5000,
+  /** 侧边栏 eMails 页开着时，每隔多久看一次当前打开的是哪封邮件（Gmail 分栏阅读时换邮件，网址不变） */
+  pollMs: 1500,
 } as const;
 
 /**

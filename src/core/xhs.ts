@@ -7,9 +7,12 @@
 
 import { XHS } from '../config/defaults';
 import { XHS_PAGES } from '../config/endpoints';
+import { cleanText, countTags, mergeTags, normalizeTag, retag, tagKey, tagList, withTags, type TagCount } from './collection';
 import { clip } from './text';
 import { formatDateTime } from './time';
 import { XHS_BRIDGE_LIMITS } from './xhs-protocol';
+
+export { normalizeTag, splitTags, tagKey } from './collection';
 
 export const XHS_MSG = {
   /** 页面脚本 → 后台：收藏 / 移出 / 加减标签（后台校验后写入） */
@@ -205,48 +208,6 @@ export interface XhsState {
 
 export const emptyXhsState = (): XhsState => ({ notes: {}, users: {} });
 
-/** 页面上的文字：去掉控制字符、合并空白、截断（不劈开 emoji） */
-function cleanText(x: unknown, max: number): string {
-  return typeof x === 'string' ? clip(x.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim(), max).trim() : '';
-}
-
-/** 标签：去掉开头的 #、合并空白，最多 maxTagChars 个字；空的不要 */
-export function normalizeTag(raw: unknown): string | undefined {
-  if (typeof raw !== 'string') return undefined;
-  const t = raw
-    .normalize('NFC')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/^[\s#＃]+/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!t) return undefined;
-  return Array.from(t).slice(0, XHS.maxTagChars).join('').trim() || undefined;
-}
-
-/** 输入框里一次写好几个标签：逗号、顿号、分号、换行分开（空格不分，标签里可以有空格） */
-export function splitTags(input: string): string[] {
-  return input
-    .split(/[,，、;；\n]/)
-    .map(normalizeTag)
-    .filter((t): t is string => !!t);
-}
-
-/** 标签比较不分大小写：AI 和 ai 是同一个标签（保留先出现的写法） */
-export const tagKey = (t: string): string => t.toLocaleLowerCase();
-
-function mergeTags(current: readonly string[], add: readonly string[], remove: readonly string[] = []): string[] {
-  const drop = new Set(remove.map(tagKey));
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const t of [...current, ...add]) {
-    const k = tagKey(t);
-    if (drop.has(k) || seen.has(k)) continue;
-    seen.add(k);
-    out.push(t);
-  }
-  return out;
-}
-
 export interface XhsNoteInput {
   id: string;
   title: string;
@@ -302,7 +263,6 @@ function sanitizeUserInput(raw: unknown): XhsUserInput | undefined {
   return { id: r.id, name: cleanText(r.name, XHS.nameMaxChars), url: canon.url };
 }
 
-const tagList = (x: unknown): string[] => (Array.isArray(x) ? x.slice(0, XHS.maxTagsPerItem * 2).map(normalizeTag).filter((t): t is string => !!t) : []);
 const isKind = (x: unknown): x is XhsKind => x === 'note' || x === 'user';
 
 function sanitizeSavedNote(raw: unknown, now: number): XhsSavedNote | undefined {
@@ -365,12 +325,6 @@ export function parseXhsOp(raw: unknown, now: number, fromPage: boolean): XhsOp 
   }
 }
 
-function withTags<T extends { tags: string[] }>(item: T, add: readonly string[], remove: readonly string[] = []): { item: T; error?: string } {
-  const tags = mergeTags(item.tags, add, remove);
-  if (tags.length > XHS.maxTagsPerItem) return { item, error: `每条收藏最多 ${XHS.maxTagsPerItem} 个标签` };
-  return { item: { ...item, tags } };
-}
-
 /** 执行一条操作；超出上限等情况返回原状态与人话原因 */
 export function applyXhsOp(state: XhsState, op: XhsOp, now: number): { state: XhsState; error?: string } {
   switch (op.op) {
@@ -418,17 +372,7 @@ export function applyXhsOp(state: XhsState, op: XhsOp, now: number): { state: Xh
     case 'deleteTag': {
       const from = op.op === 'renameTag' ? op.from : op.tag;
       const replace = op.op === 'renameTag' ? [op.to] : [];
-      const fix = <T extends { tags: string[] }>(m: Record<string, T>): Record<string, T> =>
-        Object.fromEntries(
-          Object.entries(m).map(([id, item]) => {
-            const i = item.tags.findIndex((t) => tagKey(t) === tagKey(from));
-            if (i < 0) return [id, item];
-            // 改名：放在原来的位置；新名字已经有了就合并成一个
-            const tags = mergeTags([...item.tags.slice(0, i), ...replace, ...item.tags.slice(i + 1)], []);
-            return [id, { ...item, tags }];
-          }),
-        );
-      return { state: { notes: fix(state.notes), users: fix(state.users) } };
+      return { state: { notes: retag(state.notes, from, replace), users: retag(state.users, from, replace) } };
     }
     case 'restore':
       return op.kind === 'note'
@@ -453,22 +397,11 @@ export function sanitizeXhsState(raw: unknown, now: number): XhsState {
   return { notes, users };
 }
 
-export interface XhsTagCount {
-  tag: string;
-  count: number;
-}
+export type XhsTagCount = TagCount;
 
 /** 所有标签与用了几次：多的在前，一样多按名字 */
 export function tagCounts(state: XhsState): XhsTagCount[] {
-  const counts = new Map<string, XhsTagCount>();
-  for (const item of [...Object.values(state.notes), ...Object.values(state.users)]) {
-    for (const t of item.tags) {
-      const c = counts.get(tagKey(t));
-      if (c) c.count++;
-      else counts.set(tagKey(t), { tag: t, count: 1 });
-    }
-  }
-  return [...counts.values()].sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'zh-Hans-CN'));
+  return countTags([...Object.values(state.notes), ...Object.values(state.users)]);
 }
 
 /** 收藏弹窗里的"常用标签"：还没打在这一条上的、最常用的几个 */

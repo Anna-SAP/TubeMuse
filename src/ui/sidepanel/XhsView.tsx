@@ -3,12 +3,13 @@
 // 只读写本机存储；链接在新标签页打开（不把正在看的页面换掉）。
 
 import { useState } from 'preact/hooks';
-import { XHS_MSG, filterXhs, formatXhsTime, parseXhsOp, splitTags, tagCounts, type XhsKind, type XhsListItem, type XhsTabState } from '../../core/xhs';
+import { XHS_MSG, filterXhs, formatXhsTime, parseXhsOp, tagCounts, type XhsKind, type XhsListItem, type XhsTabState } from '../../core/xhs';
 import { stores } from '../../services/repo';
 import { applyXhs } from '../../services/xhs-service';
 import { appCtx, useStore } from '../shared/app';
 import { Notice } from '../shared/components';
 import { useActiveTabState } from '../shared/tab-state';
+import { TagChips, TagEditor, TagFilterBar, TagManager } from '../shared/tags';
 
 const PAGE_NAMES: Record<XhsTabState['page'], string> = { profile: '博主主页', note: '笔记详情', feed: '笔记列表', other: '小红书页面' };
 
@@ -38,33 +39,6 @@ function TabStatus({ s }: { s: XhsTabState }) {
   );
 }
 
-function TagEditor({ kind, id }: { kind: XhsKind; id: string }) {
-  const [text, setText] = useState('');
-  const [error, setError] = useState<string>();
-  const add = async () => {
-    const tags = splitTags(text);
-    if (!tags.length) return;
-    const e = await run({ op: 'tags', kind, id, add: tags, remove: [] });
-    setError(e);
-    if (!e) setText('');
-  };
-  return (
-    <>
-      <input
-        class="input small xhs-tag-input"
-        placeholder="加标签，回车"
-        aria-label="加标签"
-        value={text}
-        onInput={(e) => setText(e.currentTarget.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.isComposing) void add();
-        }}
-      />
-      {error && <div class="xhs-warn small">{error}</div>}
-    </>
-  );
-}
-
 function Item({ x, onTag, onRemove }: { x: XhsListItem; onTag: (t: string) => void; onRemove: () => void }) {
   const ctx = appCtx();
   const { kind, item } = x;
@@ -87,17 +61,8 @@ function Item({ x, onTag, onRemove }: { x: XhsListItem; onTag: (t: string) => vo
         <span>收藏于 {new Date(item.savedAt).toLocaleDateString('zh-CN')}</span>
       </div>
       <div class="xhs-tags">
-        {item.tags.map((t) => (
-          <span class="xhs-chip" key={t}>
-            <button class="xhs-chip-name" title={`只看 #${t}`} onClick={() => onTag(t)}>
-              #{t}
-            </button>
-            <button class="xhs-chip-x" aria-label={`去掉标签 ${t}`} title="去掉这个标签" onClick={() => void run({ op: 'tags', kind, id: item.id, add: [], remove: [t] })}>
-              ×
-            </button>
-          </span>
-        ))}
-        <TagEditor kind={kind} id={item.id} />
+        <TagChips tags={item.tags} onPick={onTag} onRemove={(t) => void run({ op: 'tags', kind, id: item.id, add: [], remove: [t] })} />
+        <TagEditor onAdd={(add) => run({ op: 'tags', kind, id: item.id, add, remove: [] })} />
       </div>
       <div class="xhs-actions">
         <button class="btn small" data-testid="xhs-remove" onClick={onRemove}>
@@ -105,84 +70,6 @@ function Item({ x, onTag, onRemove }: { x: XhsListItem; onTag: (t: string) => vo
         </button>
       </div>
     </li>
-  );
-}
-
-/** 管理标签：改名（新名字已有时合并成一个）、删除（从所有收藏上去掉，要再点一次确认） */
-function TagManager({ onRenamed }: { onRenamed: (from: string, to: string) => void }) {
-  const state = useStore(stores.xhs);
-  const [editing, setEditing] = useState<string>();
-  const [name, setName] = useState('');
-  const [confirm, setConfirm] = useState<string>();
-  const [error, setError] = useState<string>();
-  if (!state) return null;
-  const tags = tagCounts(state);
-  if (!tags.length) return <p class="muted small">还没有标签：在小红书页面上点"收藏"，或在下面的收藏里加。</p>;
-  const rename = async (from: string) => {
-    const e = await run({ op: 'renameTag', from, to: name });
-    setError(e);
-    if (!e) {
-      onRenamed(from, name.trim());
-      setEditing(undefined);
-    }
-  };
-  return (
-    <ul class="xhs-tag-list" data-testid="xhs-tag-manager">
-      {tags.map(({ tag, count }) => (
-        <li key={tag}>
-          {editing === tag ? (
-            <>
-              <input
-                class="input small"
-                value={name}
-                aria-label={`把 #${tag} 改名为`}
-                onInput={(e) => setName(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.isComposing) void rename(tag);
-                  if (e.key === 'Escape') setEditing(undefined);
-                }}
-              />
-              <button class="btn small primary" onClick={() => void rename(tag)}>
-                保存
-              </button>
-              <button class="btn small" onClick={() => setEditing(undefined)}>
-                取消
-              </button>
-            </>
-          ) : (
-            <>
-              <span class="xhs-tag-name">#{tag}</span>
-              <span class="muted small">{count} 条</span>
-              <button
-                class="btn link small"
-                onClick={() => {
-                  setEditing(tag);
-                  setName(tag);
-                  setConfirm(undefined);
-                }}
-              >
-                改名
-              </button>
-              {confirm === tag ? (
-                <>
-                  <button class="btn small danger" onClick={() => void run({ op: 'deleteTag', tag }).then(setError)}>
-                    确认从 {count} 条收藏上去掉
-                  </button>
-                  <button class="btn small" onClick={() => setConfirm(undefined)}>
-                    取消
-                  </button>
-                </>
-              ) : (
-                <button class="btn link small" onClick={() => setConfirm(tag)}>
-                  删除
-                </button>
-              )}
-            </>
-          )}
-        </li>
-      ))}
-      {error && <li class="xhs-warn small">{error}</li>}
-    </ul>
   );
 }
 
@@ -236,20 +123,18 @@ export function XhsView() {
         <input class="input xhs-search" type="search" placeholder="搜标题、作者、标签" aria-label="搜索收藏" value={q} onInput={(e) => setQ(e.currentTarget.value)} />
       </div>
       {tags.length > 0 && (
-        <div class="xhs-tag-filter" data-testid="xhs-tag-filter">
-          {tags.map(({ tag: t, count }) => (
-            <button class={`xhs-filter-chip${tag === t ? ' on' : ''}`} aria-pressed={tag === t} onClick={() => setTag(tag === t ? undefined : t)}>
-              #{t} <span class="muted">{count}</span>
-            </button>
-          ))}
-          <button class="btn link small" aria-expanded={manage} onClick={() => setManage(!manage)}>
-            {manage ? '收起' : '管理标签'}
-          </button>
-        </div>
+        <TagFilterBar tags={tags} active={tag} onPick={setTag} manage={manage} onToggleManage={() => setManage(!manage)} testId="xhs-tag-filter" />
       )}
       {manage && (
         <section class="panel">
-          <TagManager onRenamed={(from, to) => tag === from && setTag(to)} />
+          <TagManager
+            tags={tags}
+            empty='还没有标签：在小红书页面上点"收藏"，或在下面的收藏里加。'
+            testId="xhs-tag-manager"
+            onRename={(from, to) => run({ op: 'renameTag', from, to })}
+            onDelete={(t) => run({ op: 'deleteTag', tag: t })}
+            onRenamed={(from, to) => tag === from && setTag(to)}
+          />
         </section>
       )}
       {removed && (
