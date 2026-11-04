@@ -9,6 +9,7 @@ import type { SubtitleLedger } from '../core/subtitles';
 import type { ClipRecord } from '../core/clips';
 import { sanitizeCcLangs } from '../core/multi-captions';
 import { emptyXhsState, sanitizeXhsState, type XhsState } from '../core/xhs';
+import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState } from '../core/email';
 import type {
   Adjustment,
   ClusterState,
@@ -80,6 +81,7 @@ export function mergeSettings(stored: unknown): Settings {
     },
     clips: { ...d.clips, ...(s.clips as object) },
     xhs: { ...d.xhs, ...(s.xhs as object) },
+    email: { ...d.email, ...(s.email as object) },
     ui: { ...d.ui, ...(s.ui as object) },
   } as Settings;
 }
@@ -154,6 +156,10 @@ export const stores = {
   clipLog: new Store<ClipRecord[]>('clipLog', () => []),
   /** 小红书：收进 TubeMuse 的笔记与博主，各自的标签（只存在本机，与小红书账号里的收藏、关注无关） */
   xhs: new Store<XhsState>('xhs', emptyXhsState, (v) => sanitizeXhsState(v, Date.now())),
+  /** eMails：收藏的文章与各自的标签（只存在本机，与邮箱、Medium 账号无关） */
+  emailSaved: new Store<EmailState>('emailSaved', emptyEmailState, sanitizeEmailState),
+  /** eMails：大模型给每篇文章打的分（按文章缓存：同一篇隔天再出现时不再花钱） */
+  emailScores: new Store<EmailScores>('emailScores', () => ({})),
   /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
   /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */

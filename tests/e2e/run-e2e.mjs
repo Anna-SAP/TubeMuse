@@ -84,6 +84,7 @@ try {
     await options.goto(optionsUrl);
   }
   options.on('console', (m) => m.type() === 'error' && consoleErrors.push(`options: ${m.text()}`));
+  options.on('pageerror', (e) => consoleErrors.push(`options pageerror: ${e.message}`));
   await options.waitForLoadState('domcontentloaded');
   check(true, '首次安装自动打开设置页');
   await options.getByTestId('anthropic-key').fill(FAKE_KEY);
@@ -1259,7 +1260,8 @@ try {
     xhsSection.includes('15. 小红书') && (await options.getByTestId('xhs-enabled').isChecked()) && (await options.getByTestId('xhs-show-time').isChecked()) && (await options.getByTestId('xhs-show-save').isChecked()),
     '设置页有"小红书"一节（片段录制之后为 15），默认启用、显示时间与收藏按钮',
   );
-  check(((await options.locator('#data').textContent()) ?? '').includes('16. 数据'), '"数据"一节顺延为 16');
+  check(((await options.locator('#data').textContent()) ?? '').includes('17. 数据'), '"数据"一节顺延为 17');
+  check(((await options.locator('#email').textContent()) ?? '').includes('16. eMails') && (await options.getByTestId('email-enabled').isChecked()), '设置页有"eMails"一节（小红书之后为 16），默认启用');
   const sw2 = context.serviceWorkers()[0] ?? sw;
   const manifest2 = await sw2.evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());
   check(manifest2.commands?.['toggle-clip-recording']?.suggested_key?.default === 'Alt+Shift+R', '快捷键 Alt+Shift+R 开始 / 停止录制');
@@ -1749,6 +1751,173 @@ try {
   );
   await xhs.close();
   await panel.bringToFront();
+
+  // ───────────────────────── eMails ─────────────────────────
+  console.log('\n[eMails：不在 Gmail 时说明怎么开始；打开邮件才列出文章，换邮件网址不变也跟得上]');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: 'eMails' }).click();
+  await panel.getByTestId('email-no-script').waitFor({ timeout: 5000 });
+  check(((await panel.getByTestId('email-no-script').textContent()) ?? '').includes('当前标签页不是 Gmail'), '当前标签页不是 Gmail：说明怎么开始，并提示页面可能要刷新');
+  const emailReqStart = requests.length;
+  const llmCount = () => requests.filter((r) => r.path === '/anthropic/v1/messages').length;
+  const llmAtStart = llmCount();
+  const [gmail] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/gmail/mail`)]);
+  gmail.on('pageerror', (e) => consoleErrors.push(`gmail pageerror: ${e.message}`));
+  gmail.on('console', (m) => m.type() === 'error' && consoleErrors.push(`gmail: ${m.text()}`));
+  await gmail.waitForLoadState('load');
+  await panel.getByTestId('email-no-mail').waitFor({ timeout: 8000 });
+  check(true, '打开了 Gmail 但还没点开邮件：说明要先打开一封（藏在页面里的上一封不算）');
+  await gmail.evaluate(() => /** @type {any} */ (globalThis).openMail('digest'));
+  await gmail.evaluate(() => /** @type {any} */ (globalThis).watchPage());
+  const gmailUrl = gmail.url();
+  await panel.getByTestId('email-found').filter({ hasText: '找到 5 篇文章' }).waitFor({ timeout: 8000 });
+  const found = (await panel.getByTestId('email-found').textContent()) ?? '';
+  check(found.includes('Medium Daily Digest'), `列出当前邮件：${found}`);
+  const titles = await panel.getByTestId('email-title').allTextContents();
+  check(titles[0]?.includes('A Postmortem of Our Two-Year Postgres Migration Across 40 Nodes') === true, '标题被邮件截断时显示配图 alt 里的完整标题');
+  check(!titles.some((t) => t.includes('Hidden')), '藏在页面里的上一封邮件不会被读到');
+  check(titles.length === 5 && !titles.some((t) => /Control your|Read from|Unsubscribe|Stories for/.test(t)), '页头、页脚、退订链接都不算文章');
+  const firstCard = ((await panel.getByTestId('email-item').first().textContent()) ?? '');
+  check(['Ada Writer', 'Systems Weekly', '14 分钟', '1,300 掌声', '25 回应', '会员文章', 'Three outages'].every((t) => firstCard.includes(t)), `卡片上有作者、刊物、阅读时长、互动数和摘要：${firstCard.slice(0, 120)}`);
+  const firstHref = (await panel.getByTestId('email-title').first().getAttribute('href')) ?? '';
+  check(firstHref === 'https://medium.com/@writer/postmortem-abc123', `链接去掉了带收件人信息的 source 参数：${firstHref}`);
+  check(llmCount() === llmAtStart, '只是打开邮件：什么都没有发给大模型');
+  check(((await panel.getByTestId('email-disclosure').textContent()) ?? '').includes('发给 Anthropic'), '说明点"评估"后发什么、发给谁，以及大模型没有读正文');
+
+  console.log('\n[eMails：评估 → 分数与理由，按分数排序、筛选]');
+  await panel.getByTestId('email-evaluate').click();
+  await panel.getByTestId('email-score').nth(4).waitFor({ timeout: 8000 });
+  await panel.getByTestId('email-result').waitFor({ timeout: 5000 });
+  const scored = await panel.getByTestId('email-score').allTextContents();
+  check(JSON.stringify(scored) === JSON.stringify(['9', '8', '5', '2', '0']), `按分数从高到低：${scored.join(' ')}`);
+  check(((await panel.getByTestId('email-reason').first().textContent()) ?? '').includes('一手数据'), '每篇都有简短理由');
+  check(((await panel.getByTestId('email-result').textContent()) ?? '').includes('评完 5 篇'), '说明这次评了几篇、用的模型和大约花了多少');
+  const emailCall = requests.filter((r) => r.path === '/anthropic/v1/messages').at(-1);
+  check(llmCount() === llmAtStart + 1 && emailCall.body.includes('Testing Agents With Replayed Traces'), '评估发了一次请求，带着文章标题');
+  const emailLeaks = ['source=', 'https://', 'noreply@medium.com', 'Medium Daily Digest', 'Ada Writer in Systems Weekly', 'Test Reader', 'test.reader@example.com', 'Stories for', 'e2e-unsubscribe-token', 'Lunch on Friday'].filter((t) => emailCall.body.includes(t));
+  check(emailLeaks.length === 0, `发给大模型的整个请求体不含链接、邮件主题、发件人和收件人${emailLeaks.length ? `，却出现了：${emailLeaks.join('、')}` : ''}`);
+  const bands = panel.getByTestId('email-bands');
+  check(((await bands.textContent()) ?? '').includes('值得精读 2') && ((await bands.textContent()) ?? '').includes('一般 1') && ((await bands.textContent()) ?? '').includes('建议跳过 2'), `按分档计数：${await bands.textContent()}`);
+  await bands.getByRole('button', { name: /建议跳过/ }).click();
+  check((await panel.getByTestId('email-item').count()) === 2 && (await panel.getByTestId('email-item').first().getAttribute('data-band')) === 'skip', '筛选"建议跳过"：只看低分');
+  await bands.getByRole('button', { name: /全部/ }).click();
+  await panel.screenshot({ path: join(shots, '30-emails-scored.png'), fullPage: true });
+
+  console.log('\n[eMails：一键收藏、打标签，收藏页筛选、移出可撤销]');
+  await panel.getByTestId('email-save').first().click();
+  await panel.getByTestId('email-unsave').first().waitFor({ timeout: 5000 });
+  const emailStored = () => panel.evaluate(async () => (await /** @type {any} */ (globalThis).chrome.storage.local.get('emailSaved')).emailSaved ?? { articles: {} });
+  const savedArticle = Object.values((await emailStored()).articles)[0];
+  check(/** @type {any} */ (savedArticle)?.score === 9 && /** @type {any} */ (savedArticle)?.url === 'https://medium.com/@writer/postmortem-abc123', '收藏时带上分数与理由，存的是干净的链接');
+  const tagBox = panel.getByTestId('email-item').first().getByRole('textbox', { name: '加标签' });
+  await tagBox.fill('数据库, 长文');
+  await tagBox.press('Enter');
+  await panel.getByTestId('email-item').first().getByText('#长文').waitFor({ timeout: 5000 });
+  await panel.getByTestId('email-mode-saved').click();
+  check((await panel.getByTestId('email-saved-item').count()) === 1, '收藏页列出这篇');
+  check(((await panel.getByTestId('email-tag-filter').textContent()) ?? '').includes('#数据库'), '标签筛选条与小红书同一套');
+  await panel.getByTestId('email-remove').click();
+  await panel.getByTestId('email-saved-empty').waitFor({ timeout: 5000 });
+  await panel.getByTestId('email-undo').click();
+  await panel.getByTestId('email-saved-item').waitFor({ timeout: 5000 });
+  check(/** @type {any} */ (Object.values((await emailStored()).articles)[0])?.tags?.length === 2, '移出后撤销：标签还在');
+  await panel.getByTestId('email-mode-mail').click();
+
+  console.log('\n[eMails：换邮件、普通邮件、被截断、读不到正文]');
+  await gmail.evaluate(() => /** @type {any} */ (globalThis).openMail('digest2'));
+  await panel.getByTestId('email-found').filter({ hasText: '找到 2 篇文章' }).waitFor({ timeout: 8000 });
+  check(gmail.url() === gmailUrl, '换邮件时网址没有变（分栏阅读），侧边栏照样跟上');
+  check((await panel.getByTestId('email-score').count()) === 1 && ((await panel.getByTestId('email-evaluate').textContent()) ?? '').includes('评估剩下的 1 篇'), '上一封评过的文章直接显示分数，只需要评新的那篇');
+  await panel.getByTestId('email-evaluate').click();
+  await panel.getByTestId('email-score').nth(1).waitFor({ timeout: 8000 });
+  const secondCall = requests.filter((r) => r.path === '/anthropic/v1/messages').at(-1);
+  check(llmCount() === llmAtStart + 2 && secondCall.body.includes('Benchmark') && !secondCall.body.includes('Postmortem'), '第二次只发新的那篇，评过的不再花钱');
+  await gmail.evaluate(() => /** @type {any} */ (globalThis).openMail('personal'));
+  await panel.getByTestId('email-no-articles').waitFor({ timeout: 8000 });
+  check(((await panel.getByTestId('email-no-articles').textContent()) ?? '').includes('没有发给大模型') && (await panel.getByTestId('email-evaluate').count()) === 0, '普通邮件：说明不像文章汇总，没有"评估"按钮');
+  await gmail.evaluate(() => /** @type {any} */ (globalThis).openMail('clipped'));
+  await panel.getByTestId('email-clipped').waitFor({ timeout: 8000 });
+  check(true, 'Gmail 截断了邮件：说明后面的文章读不到');
+  await gmail.evaluate(() => /** @type {any} */ (globalThis).openMail('broken'));
+  await panel.getByTestId('email-unreadable').waitFor({ timeout: 8000 });
+  check(((await panel.getByTestId('email-unreadable').textContent()) ?? '').includes('Gmail 可能改版了'), '读不到正文：说明可能是 Gmail 改版，不静默');
+
+  console.log('\n[eMails：红线]');
+  const gmailMutationsBefore = await gmail.evaluate(() => /** @type {any} */ (globalThis).__clicks);
+  check(gmailMutationsBefore === 0, 'TubeMuse 没有点击 Gmail 页面上的任何东西');
+  await gmail.evaluate(() => /** @type {any} */ (globalThis).openMail('digest'));
+  await gmail.evaluate(() => /** @type {any} */ (globalThis).watchPage());
+  await panel.getByTestId('email-found').filter({ hasText: '找到 5 篇文章' }).waitFor({ timeout: 8000 });
+  await panel.waitForTimeout(2000);
+  check((await gmail.evaluate(() => /** @type {any} */ (globalThis).__mutations)) === 0, 'TubeMuse 读邮件时没有改动 Gmail 页面（DOM 没有任何变化）');
+  const emailReqs = requests.slice(emailReqStart);
+  const gmailPageReqs = emailReqs.filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/gmail/`));
+  check(
+    gmailPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/gmail/') || r.path === '/favicon.ico')),
+    `Gmail 页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${gmailPageReqs.length ? `：${gmailPageReqs.map((r) => r.path).join(', ')}` : ''}`,
+  );
+  check(emailReqs.every((r) => !JSON.stringify(r).includes('e2e-private-mail-text')), '普通邮件的内容没有发到任何地方');
+  await options.getByTestId('email-enabled').uncheck();
+  await panel.getByText('eMails 已在设置里关闭').waitFor({ timeout: 5000 });
+  check(true, '在设置里关掉 eMails：这一页说明已关闭，不再读邮件');
+  await options.getByTestId('email-enabled').check();
+  await gmail.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── 设置页 ─────────────────────────
+  // 回归：事件处理函数在异步回调里才读 e.currentTarget 时，设置存不上、也不报错（DECISIONS §45）。遍历所有勾选框，新加的开关也覆盖到
+  console.log('\n[设置页：每一项改了都真的存进去，改回来能复原]');
+  /** @param {unknown} v @returns {unknown} */
+  const sortKeys = (v) => (Array.isArray(v) ? v.map(sortKeys) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(/** @type {Record<string, unknown>} */ (v)[k])])) : v);
+  const storedSettings = async () => sortKeys(await options.evaluate(async () => (await /** @type {any} */ (globalThis).chrome.storage.local.get('settings')).settings));
+  const settingsJson = async () => JSON.stringify(await storedSettings());
+  /**
+   * 等到 ok 成立（后台标签页里 requestAnimationFrame 不走，不能用 waitForFunction）
+   * @param {() => Promise<boolean>} ok
+   */
+  const settled = async (ok) => {
+    for (let i = 0; i < 60; i++) {
+      if (await ok()) return true;
+      await options.waitForTimeout(50);
+    }
+    return false;
+  };
+  const boxes = options.locator('input[type="checkbox"]');
+  // 前面的自动字幕一节切到了 OpenAI 转写，"优先本机识别"那一项是藏着的：切回浏览器识别，让所有勾选框都在
+  const asrEngine = options.locator('input[type="radio"][name="asr-engine"]');
+  await asrEngine.first().check();
+  await settled(async () => (await boxes.count()) >= 28);
+  const boxCount = await boxes.count();
+  /** @type {string[]} */
+  const badBoxes = [];
+  for (let i = 0; i < boxCount; i++) {
+    const before = await settingsJson();
+    await boxes.nth(i).click();
+    const saved = await settled(async () => (await settingsJson()) !== before);
+    await boxes.nth(i).click();
+    const restored = await settled(async () => (await settingsJson()) === before);
+    if (!saved || !restored) badBoxes.push(`#${i}${saved ? '' : ' 存不上'}${restored ? '' : ' 复原不了'} ${await boxes.nth(i).evaluate((el) => el.closest('label')?.textContent?.trim().slice(0, 30) ?? '')}`);
+  }
+  check(boxCount >= 28 && badBoxes.length === 0, `${boxCount} 个勾选框都存得上、都能复原${badBoxes.length ? `，有问题：${badBoxes.join('；')}` : ''}`);
+  await asrEngine.nth(1).check();
+  const voiceLang = options.getByTestId('voice-lang');
+  await voiceLang.selectOption('en-US');
+  const voiceSaved = await settled(async () => /** @type {any} */ (await storedSettings()).voice.lang === 'en-US');
+  await voiceLang.selectOption('zh-CN');
+  check(voiceSaved && (await settled(async () => /** @type {any} */ (await storedSettings()).voice.lang === 'zh-CN')), '语音默认语言存得上');
+  for (const provider of ['anthropic', 'openai']) {
+    const input = options.getByTestId(`model-${provider}`);
+    const original = await input.inputValue();
+    // 输入框的值跟着存储走：刚存完时界面还要重绘一次，这时候输入会被盖掉（实测不等时 25 轮只过 12–18 轮，等 200 毫秒 25 轮全过；人的手速碰不到）
+    await options.waitForTimeout(200);
+    await input.fill('e2e-test-model');
+    await input.blur();
+    const modelSaved = await settled(async () => /** @type {any} */ (await storedSettings()).llm.models[provider] === 'e2e-test-model');
+    await options.waitForTimeout(200);
+    await input.fill('');
+    await input.blur();
+    check(modelSaved && (await settled(async () => /** @type {any} */ (await storedSettings()).llm.models[provider] === original)), `${provider} 模型名存得上，清空后回到默认模型`);
+  }
 
   console.log('\n[Phase 3：X 网络红线]');
   const xr = requests.filter((r) => r.path.startsWith('/x/'));

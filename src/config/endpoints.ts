@@ -35,3 +35,10 @@ export const TRACKED_SITES = ['https://www.youtube.com'] as const;
  * 只用于内容脚本的 matches 与核对消息来源：扩展不向这两个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
  */
 export const XHS_PAGES: readonly string[] = ['https://www.xiaohongshu.com/', 'https://www.rednote.com/'];
+
+/**
+ * Gmail 网页版（2026-11-04 新增，见 DECISIONS §44）：侧边栏 eMails 页读当前打开的邮件。
+ * 只用于内容脚本的 matches：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里；
+ * 也不用 Gmail API（OAuth 只申请 youtube.readonly）。
+ */
+export const EMAIL_PAGES: readonly string[] = ['https://mail.google.com/'];

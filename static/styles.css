@@ -1644,3 +1644,58 @@ a.db-title:hover {
 .xhs-tag-name {
   font-weight: 600;
 }
+
+/* ── eMails ── */
+.email-mail {
+  margin: 4px 0 8px;
+}
+.email-subject {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.email-actions {
+  margin: 6px 0;
+}
+.email-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.email-score {
+  flex: none;
+  min-width: 26px;
+  height: 26px;
+  line-height: 26px;
+  padding: 0 4px;
+  box-sizing: border-box;
+  text-align: center;
+  border-radius: var(--radius);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--border);
+  color: var(--text);
+}
+.email-score.read {
+  background: var(--ok);
+  color: #fff;
+}
+.email-score.maybe {
+  background: var(--warn);
+  color: #fff;
+}
+.email-score.skip {
+  background: var(--no);
+  color: #fff;
+}
+.email-excerpt {
+  margin: 4px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.email-reason {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.email-item[data-band='skip'] .xhs-title {
+  color: var(--muted);
+}

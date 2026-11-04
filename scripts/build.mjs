@@ -38,7 +38,7 @@ if (!e2e && existsSync(configPath)) {
 // ── 读取网络出口（把 endpoints.ts 临时编译成 JS 再导入）──
 const endpointsFile = join(root, 'src', 'config', e2e ? 'endpoints.e2e.ts' : 'endpoints.ts');
 const compiled = await esbuild.build({ entryPoints: [endpointsFile], bundle: true, write: false, format: 'esm', platform: 'neutral' });
-const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XHS_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XHS_PAGES, EMAIL_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 /** @type {string[]} */
 const origins = [...new Set(Object.values(ENDPOINTS).map((u) => new URL(String(u)).origin))];
 const imgOrigins = ['https://i.ytimg.com', ...DOUBAN_IMAGE_ORIGINS, ...(e2e ? origins.filter((o) => o.startsWith('http://127.0.0.1')) : [])];
@@ -100,6 +100,7 @@ await esbuild.build({
     'content-multicc-bridge': join(root, 'src', 'content', 'multi-captions-bridge.ts'),
     'content-xhs': join(root, 'src', 'content', 'xhs.ts'),
     'content-xhs-bridge': join(root, 'src', 'content', 'xhs-bridge.ts'),
+    'content-email': join(root, 'src', 'content', 'email.ts'),
   },
   outdir,
   bundle: true,
@@ -149,6 +150,7 @@ const manifest = {
   // 2026-11-04 起也录小红书的视频笔记（DECISIONS §43）：YouTube 与小红书写在同一条里，同一个页面只注入一次
   // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
   // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
+  // eMails（DECISIONS §44）：只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"，不发网络请求，不写页面
   content_scripts: [
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
@@ -157,6 +159,7 @@ const manifest = {
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc.js'], run_at: 'document_idle' },
     { matches: XHS_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
     { matches: XHS_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-xhs.js'], run_at: 'document_idle' },
+    { matches: EMAIL_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-email.js'], run_at: 'document_idle' },
   ],
   commands: {
     'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕' },
@@ -304,6 +307,39 @@ for (const bad of [
   /\bchrome\./,
 ]) {
   if (bad.test(xhsBridge)) fail(`小红书的页面内助手里出现了不允许的操作（${bad}）：它只能读页面数据里的发布时间。`);
+}
+
+// eMails（2026-11-04 新增，DECISIONS §44）：注入 Gmail 的脚本只读打开的这封邮件：不得发网络请求、不得写页面（一个元素都不加）、
+// 不得点击或模拟事件（不会替你归档、删除、标记）、不得碰 Cookie / 本地存储 / 扩展存储、不得读收件人与发件人地址、不得自己观察页面
+const email = readFileSync(join(outdir, 'content-email.js'), 'utf8');
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /innerHTML|outerHTML|insertAdjacent/,
+  /appendChild\(/,
+  /\.append\(/,
+  /\.prepend\(/,
+  /insertBefore\(/,
+  /replaceChildren\(/,
+  /replaceWith\(/,
+  /createElement\(/,
+  /attachShadow\(/,
+  /setAttribute\(/,
+  /\.click\(\)/,
+  /dispatchEvent\(/,
+  /document\.cookie/,
+  /localStorage|sessionStorage|indexedDB/,
+  /chrome\.storage/,
+  /sendMessage\(/,
+  /MutationObserver|setInterval/,
+  /getAttribute\(["']email["']\)/,
+  /\beval\(|new Function\(/,
+  /window\.open\(/,
+]) {
+  if (bad.test(email)) fail(`邮件脚本里出现了不允许的操作（${bad}）：它只能在被问到时读打开的这封邮件。`);
 }
 
 for (const file of walk(outdir)) {

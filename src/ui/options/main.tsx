@@ -18,6 +18,7 @@ import { pingLlm } from '../../services/llm-factory';
 import { mutedDaysLeft, reminderActions } from '../../services/reminder-service';
 import { reclassifyRecords } from '../../services/watch-service';
 import { stores, type Secrets, type Settings } from '../../services/repo';
+import type { LlmProvider } from '../../services/llm';
 import { appCtx, asAppError, requestYouTubeConnect, useQuota, useStore } from '../shared/app';
 import { AuthAttemptNote, ErrorBox, Notice, QuotaMeter } from '../shared/components';
 
@@ -149,6 +150,17 @@ function App() {
   if (!settings || !secrets) return null;
 
   const updateSettings = (fn: (s: Settings) => Settings) => void stores.settings.update(ctx.kv, ctx.locker, fn);
+  /**
+   * 改设置里的一节。事件处理函数里一律用它：参数在调用时就算好。
+   * 不要在 updateSettings 的回调里读 e.currentTarget：回调要等拿到锁才运行，那时事件已经派发完，currentTarget 是 null，
+   * 设置存不上，错误还被 void 吞掉，界面上什么也看不出来（DECISIONS §45）。
+   */
+  const updateSection = <K extends keyof Settings>(key: K, patch: Partial<Settings[K]>) => updateSettings((s) => ({ ...s, [key]: { ...s[key], ...patch } }));
+  /** 模型名：清空时回到默认模型 */
+  const updateModel = (provider: LlmProvider, raw: string) => {
+    const model = raw.trim() || DEFAULT_SETTINGS.llm.models[provider];
+    updateSettings((s) => ({ ...s, llm: { ...s.llm, models: { ...s.llm.models, [provider]: model } } }));
+  };
   const updateTracking = (patch: Partial<Settings['tracking']>) =>
     void stores.settings
       .update(ctx.kv, ctx.locker, (s) => ({ ...s, tracking: { ...s.tracking, ...patch } }))
@@ -226,7 +238,8 @@ function App() {
           <input
             class="input"
             value={settings.llm.models.anthropic}
-            onChange={(e) => updateSettings((s) => ({ ...s, llm: { ...s.llm, models: { ...s.llm.models, anthropic: e.currentTarget.value.trim() || DEFAULT_SETTINGS.llm.models.anthropic } } }))}
+            data-testid="model-anthropic"
+            onChange={(e) => updateModel('anthropic', e.currentTarget.value)}
           />
         </label>
         <KeyField label="OpenAI API Key" testid="openai-key" saved={!!secrets.openaiApiKey} onSave={(v) => updateSecrets({ openaiApiKey: v })} onClear={() => updateSecrets({ openaiApiKey: '' })} />
@@ -235,7 +248,8 @@ function App() {
           <input
             class="input"
             value={settings.llm.models.openai}
-            onChange={(e) => updateSettings((s) => ({ ...s, llm: { ...s.llm, models: { ...s.llm.models, openai: e.currentTarget.value.trim() || DEFAULT_SETTINGS.llm.models.openai } } }))}
+            data-testid="model-openai"
+            onChange={(e) => updateModel('openai', e.currentTarget.value)}
           />
         </label>
         <button class="btn" disabled={busy} onClick={() => act(() => pingLlm(ctx))}>
@@ -323,13 +337,13 @@ function App() {
       <Section title="4. 语音" id="voice">
         <label class="field">
           <span>默认识别语言</span>
-          <select class="input" value={settings.voice.lang} onChange={(e) => updateSettings((s) => ({ ...s, voice: { ...s.voice, lang: e.currentTarget.value as Settings['voice']['lang'] } }))}>
+          <select class="input" data-testid="voice-lang" value={settings.voice.lang} onChange={(e) => updateSection('voice', { lang: e.currentTarget.value as Settings['voice']['lang'] })}>
             <option value="zh-CN">中文（zh-CN）</option>
             <option value="en-US">English（en-US）</option>
           </select>
         </label>
         <label class="inline">
-          <input type="checkbox" checked={settings.voice.preferLocal} onChange={(e) => updateSettings((s) => ({ ...s, voice: { ...s.voice, preferLocal: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.voice.preferLocal} onChange={(e) => updateSection('voice', { preferLocal: e.currentTarget.checked })} />
           优先本地识别（浏览器支持且已下载语音包时，音频不离开本机；否则使用浏览器的云端语音服务，侧边栏会明示）
         </label>
         <p class="muted small">
@@ -343,11 +357,11 @@ function App() {
 
       <Section title="5. 评分学习" id="learning">
         <label class="inline">
-          <input type="checkbox" checked={settings.learning.autoAdjustRanking} onChange={(e) => updateSettings((s) => ({ ...s, learning: { ...s.learning, autoAdjustRanking: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.learning.autoAdjustRanking} onChange={(e) => updateSection('learning', { autoAdjustRanking: e.currentTarget.checked })} />
           根据评分自动调整排序参数（频道偏好、因子权重、兴趣簇权重）
         </label>
         <label class="inline">
-          <input type="checkbox" checked={settings.learning.useUnderstandingCorrections} onChange={(e) => updateSettings((s) => ({ ...s, learning: { ...s.learning, useUnderstandingCorrections: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.learning.useUnderstandingCorrections} onChange={(e) => updateSection('learning', { useUnderstandingCorrections: e.currentTarget.checked })} />
           解析口令时参考我记下的"理解纠正"
         </label>
       </Section>
@@ -358,7 +372,7 @@ function App() {
             type="checkbox"
             data-testid="tracking-enabled"
             checked={settings.tracking.enabled}
-            onChange={(e) => updateSettings((s) => ({ ...s, tracking: { ...s.tracking, enabled: e.currentTarget.checked } }))}
+            onChange={(e) => updateSection('tracking', { enabled: e.currentTarget.checked })}
           />
           记录我在 YouTube 上真正看了什么（只在 youtube.com 读取播放器状态；暂停、广告、拖动进度条不计；后台标签页的播放计入并标为"后台收听"）
         </label>
@@ -384,7 +398,7 @@ function App() {
 
       <Section title="7. 每日总结与每周自省" id="summary">
         <label class="inline">
-          <input type="checkbox" checked={settings.summary.enabled} onChange={(e) => updateSettings((s) => ({ ...s, summary: { ...s.summary, enabled: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.summary.enabled} onChange={(e) => updateSection('summary', { enabled: e.currentTarget.checked })} />
           每天自动生成学习总结（今日学了什么 / 值得回看 / 只是路过 / 与近期目标的关联）
         </label>
         <label class="field">
@@ -414,7 +428,7 @@ function App() {
           />
         </label>
         <label class="inline">
-          <input type="checkbox" checked={settings.weekly.enabled} onChange={(e) => updateSettings((s) => ({ ...s, weekly: { ...s.weekly, enabled: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.weekly.enabled} onChange={(e) => updateSection('weekly', { enabled: e.currentTarget.checked })} />
           每周生成自省报告（低分案例的共性 + 本周已自动调整了什么），在每周
           <select
             class="input small"
@@ -434,7 +448,7 @@ function App() {
 
       <Section title="8. 导师提醒" id="reminder">
         <label class="inline">
-          <input type="checkbox" checked={settings.reminder.enabled} onChange={(e) => updateSettings((s) => ({ ...s, reminder: { ...s.reminder, enabled: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.reminder.enabled} onChange={(e) => updateSection('reminder', { enabled: e.currentTarget.checked })} />
           娱乐过多时在侧边栏顶部轻声提醒（一条可关闭的横幅，附一个具体的学习视频；不弹窗）
         </label>
         <div class="grid">
@@ -479,7 +493,7 @@ function App() {
           X 按读到的帖子条数收费（$0.005/条，同一条帖子在同一 UTC 日内重复读取不再收费）。Token 只保存在本机，只随请求发往 <code>{new URL(ENDPOINTS.x).host}</code>。
         </p>
         <label class="inline">
-          <input type="checkbox" checked={settings.x.enabled} onChange={(e) => updateSettings((s) => ({ ...s, x: { ...s.x, enabled: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.x.enabled} onChange={(e) => updateSection('x', { enabled: e.currentTarget.checked })} />
           启用 X 热点
         </label>
         <KeyField label="X Bearer Token（App-only）" testid="x-token" saved={!!secrets.xBearerToken} onSave={(v) => updateSecrets({ xBearerToken: v })} onClear={() => updateSecrets({ xBearerToken: '' })} />
@@ -506,7 +520,7 @@ function App() {
           <NumField label="每次最多几条热点" value={settings.x.maxItems} min={settings.x.minItems} max={12} onChange={(v) => updateSettings((s) => ({ ...s, x: { ...s.x, maxItems: v } }))} />
         </div>
         <label class="inline">
-          <input type="checkbox" checked={settings.x.autoRefresh} onChange={(e) => updateSettings((s) => ({ ...s, x: { ...s.x, autoRefresh: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.x.autoRefresh} onChange={(e) => updateSection('x', { autoRefresh: e.currentTarget.checked })} />
           打开侧边栏"发现"页、且缓存已过期时自动刷新（会产生费用；关掉后只在你点"刷新"时读取）
         </label>
         <p class="muted small">建议同时在 X 开发者后台设置花费上限，作为双重保险。达到 TubeMuse 的每日预算时会立即停止调用并提示；X 那边返回余额不足或达到上限时，当天也不再尝试。</p>
@@ -514,7 +528,7 @@ function App() {
 
       <Section title="10. 新博主发现" id="discovery">
         <label class="inline">
-          <input type="checkbox" checked={settings.discovery.enabled} onChange={(e) => updateSettings((s) => ({ ...s, discovery: { ...s.discovery, enabled: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.discovery.enabled} onChange={(e) => updateSection('discovery', { enabled: e.currentTarget.checked })} />
           每周推荐值得关注的新博主（在"每周自省"的同一周期里自动运行一次；只推荐，不订阅）
         </label>
         <div class="grid">
@@ -534,18 +548,18 @@ function App() {
           侧边栏"豆瓣"页读取你订阅的条目的公开评论 RSS。只向 <code>{new URL(ENDPOINTS.douban).host}</code> 发 GET 请求：不登录、不带你的豆瓣 Cookie、不带来源页；海报直接从豆瓣图片服务器加载，被防盗链拒绝时换成本地生成的封面。
         </p>
         <label class="inline">
-          <input type="checkbox" checked={settings.douban.enabled} onChange={(e) => updateSettings((s) => ({ ...s, douban: { ...s.douban, enabled: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.douban.enabled} onChange={(e) => updateSection('douban', { enabled: e.currentTarget.checked })} />
           启用豆瓣评论
         </label>
         <div class="grid">
           <NumField label="缓存（分钟）" value={settings.douban.cacheMinutes} min={5} max={1440} onChange={(v) => updateSettings((s) => ({ ...s, douban: { ...s.douban, cacheMinutes: v } }))} />
         </div>
         <label class="inline">
-          <input type="checkbox" checked={settings.douban.autoRefresh} onChange={(e) => updateSettings((s) => ({ ...s, douban: { ...s.douban, autoRefresh: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.douban.autoRefresh} onChange={(e) => updateSection('douban', { autoRefresh: e.currentTarget.checked })} />
           打开"豆瓣"页、且当前条目的缓存已过期时自动读取（关掉后只在你点"刷新"时读取）
         </label>
         <label class="inline">
-          <input type="checkbox" checked={settings.douban.followActiveTab} onChange={(e) => updateSettings((s) => ({ ...s, douban: { ...s.douban, followActiveTab: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.douban.followActiveTab} onChange={(e) => updateSection('douban', { followActiveTab: e.currentTarget.checked })} />
           跟随当前标签页：浏览 www.douban.com 上的条目或它的评论 RSS 时，"豆瓣"页自动切到该条目（只读标签页地址，不读页面内容，不会自动订阅）
         </label>
       </Section>
@@ -559,15 +573,15 @@ function App() {
           在侧边栏"片段"页（或按 Alt+Shift+R）录下正在看的 YouTube 视频或小红书视频笔记的一段：画面和声音都来自这个视频本身，在本机编码，由浏览器存进下载文件夹。不经过网络，TubeMuse 不保留视频副本，只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
         </p>
         <label class="inline">
-          <input type="checkbox" data-testid="clips-enabled" checked={settings.clips.enabled} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, enabled: e.currentTarget.checked } }))} />
+          <input type="checkbox" data-testid="clips-enabled" checked={settings.clips.enabled} onChange={(e) => updateSection('clips', { enabled: e.currentTarget.checked })} />
           启用片段录制
         </label>
         <label class="inline">
-          <input type="checkbox" checked={settings.clips.autoSave} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, autoSave: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.clips.autoSave} onChange={(e) => updateSection('clips', { autoSave: e.currentTarget.checked })} />
           停止后直接保存到下载文件夹（关掉后，停止时先留在内存里，由你点"保存"或"丢弃"）
         </label>
         <label class="inline">
-          <input type="checkbox" checked={settings.clips.burnSubtitles} onChange={(e) => updateSettings((s) => ({ ...s, clips: { ...s.clips, burnSubtitles: e.currentTarget.checked } }))} />
+          <input type="checkbox" checked={settings.clips.burnSubtitles} onChange={(e) => updateSection('clips', { burnSubtitles: e.currentTarget.checked })} />
           把字幕烧进画面：录的是播放器里当时显示的字幕（YouTube 原生字幕、TubeMuse 多语字幕或自动字幕），字号跟"12. 自动字幕"的字号倍数；更费电脑。小红书的视频没有单独的字幕层，不适用
         </label>
         <div class="grid">
@@ -587,21 +601,36 @@ function App() {
           在小红书网页版（www.xiaohongshu.com，及其国际域名 www.rednote.com）上：笔记卡片作者那一行显示发布时间，笔记详情的日期旁显示精确到分钟的发布时间；页面上的"收藏"按钮把笔记 / 博主收进 TubeMuse 并打标签，在侧边栏"小红书"页管理。发布时间读自页面里已有的数据（个人主页、笔记详情），没有时由笔记 ID 推算（标"≈"，定时发布的笔记实际发布时间会晚一些）。不向小红书发任何请求，不会在小红书上收藏、点赞或关注；收藏只存在本机。
         </p>
         <label class="inline">
-          <input type="checkbox" data-testid="xhs-enabled" checked={settings.xhs.enabled} onChange={(e) => updateSettings((s) => ({ ...s, xhs: { ...s.xhs, enabled: e.currentTarget.checked } }))} />
+          <input type="checkbox" data-testid="xhs-enabled" checked={settings.xhs.enabled} onChange={(e) => updateSection('xhs', { enabled: e.currentTarget.checked })} />
           启用小红书功能（关掉后页面上不再出现 TubeMuse 的时间与按钮，已有收藏保留）
         </label>
         <label class="inline">
-          <input type="checkbox" data-testid="xhs-show-time" checked={settings.xhs.showTime} onChange={(e) => updateSettings((s) => ({ ...s, xhs: { ...s.xhs, showTime: e.currentTarget.checked } }))} />
+          <input type="checkbox" data-testid="xhs-show-time" checked={settings.xhs.showTime} onChange={(e) => updateSection('xhs', { showTime: e.currentTarget.checked })} />
           显示笔记发布时间
         </label>
         <label class="inline">
-          <input type="checkbox" data-testid="xhs-show-save" checked={settings.xhs.showSave} onChange={(e) => updateSettings((s) => ({ ...s, xhs: { ...s.xhs, showSave: e.currentTarget.checked } }))} />
+          <input type="checkbox" data-testid="xhs-show-save" checked={settings.xhs.showSave} onChange={(e) => updateSection('xhs', { showSave: e.currentTarget.checked })} />
           显示"收藏"按钮
         </label>
       </Section>
 
-      <Section title="16. 数据" id="data">
-        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
+      <Section title="16. eMails" id="email">
+        <p class="muted small">
+          在侧边栏"eMails"页列出 Gmail（mail.google.com）里当前打开的文章汇总邮件中的文章，用大模型给每篇打 0–10 分，并一键收藏、打标签。只有这一页开着时才读邮件，只读打开的这一封；只有点"评估"才把文章的标题、摘要、作者、刊物、站点名、阅读时长和互动数发给你选的大模型（不发邮件主题、发件人、收件人和链接）。大模型没有读正文，分数只是预判。不向 Gmail 发任何请求，不改动邮箱里的任何东西，不用 Gmail API；收藏只存在本机。
+        </p>
+        <label class="inline">
+          <input
+            type="checkbox"
+            data-testid="email-enabled"
+            checked={settings.email.enabled}
+            onChange={(e) => updateSection('email', { enabled: e.currentTarget.checked })}
+          />
+          启用 eMails（关掉后不再读邮件，已有收藏保留）
+        </label>
+      </Section>
+
+      <Section title="17. 数据" id="data">
+        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签、eMails 收藏的文章与评分），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
         <div class="row">
           <button
             class="btn"
@@ -699,6 +728,9 @@ function App() {
         </p>
         <p class="muted small">
           注入小红书网页版（www.xiaohongshu.com、www.rednote.com）的脚本不发任何网络请求：页面内助手只读页面数据里各笔记的发布时间；另一个脚本在笔记卡片作者那一行、笔记详情的日期旁写上发布时间，放"收藏"按钮和弹窗（只用文字写入，不改动小红书自己的元素，不点击小红书的任何按钮）。收藏经扩展后台校验后存在本机。
+        </p>
+        <p class="muted small">
+          注入 Gmail（mail.google.com）的脚本只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"：只读打开的这一封的主题、发件人名字和正文，不读发件人地址、收件人和邮件列表；不发任何网络请求，不往 Gmail 页面写任何东西，不点击任何按钮，不碰 Cookie 与本地存储。
         </p>
         <p class="muted small">
           注入 youtube.com 与小红书网页版的片段录制脚本只在你开始录制后工作：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕，只限 YouTube），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、不点击页面上的任何东西、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字；按时间段截取时会把这个视频跳到起点并播放。

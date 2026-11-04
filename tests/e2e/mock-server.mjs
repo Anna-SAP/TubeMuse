@@ -1,9 +1,10 @@
 // @ts-check
-// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI（含语音转写）、X、豆瓣评论 RSS，以及 YouTube 播放页与小红书网页版（/xhs/）。
+// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI（含语音转写）、X、豆瓣评论 RSS，以及 YouTube 播放页、小红书网页版（/xhs/）与 Gmail（/gmail/）。
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
+import { gmailPage } from './email-pages.mjs';
 
 export const PORT = 47321;
 const ORIGIN = `http://127.0.0.1:${PORT}`;
@@ -348,6 +349,15 @@ function llmAnswer(/** @type {string} */ system, /** @type {string} */ user) {
       ],
     };
   }
+  if (system.includes('文章价值评估员')) {
+    const items = /** @type {{ id: string; title: string }[]} */ (JSON.parse(user.slice(user.indexOf('\n') + 1)));
+    return {
+      items: items.map((i) => {
+        const score = /Postmortem|Benchmark/.test(i.title) ? 9 : /Replayed Traces/.test(i.title) ? 8 : /Introduction/.test(i.title) ? 5 : /Best AI Tools/.test(i.title) ? 2 : 0;
+        return { id: i.id, score, reason: score >= 7 ? '有具体的一手数据' : score === 0 ? '典型的标题党' : '常见的入门内容' };
+      }),
+    };
+  }
   if (system.includes('只回复')) return { ok: true };
   if (system.includes('视频字幕翻译')) {
     // 当前这句形如"第 N 句：……"：译文带上同一个编号，便于断言哪句对哪句
@@ -521,6 +531,13 @@ export function startMockServer() {
         const wav = speechWav(xhsSeconds);
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
         return res.end(wav);
+      }
+      // 仿 Gmail（邮件脚本只注入 /gmail/ 下的页面）
+      if (p.startsWith('/gmail/')) {
+        const html = gmailPage(p);
+        if (!html) return send(404, {});
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(html);
       }
       // 仿小红书网页版（小红书脚本只注入 /xhs/ 下的页面）
       if (p.startsWith('/xhs/')) {
