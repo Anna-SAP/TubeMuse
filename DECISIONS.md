@@ -723,9 +723,11 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 
 ## 46. GitHub Actions CI（2026-11-04，用户要求）
 
-- **选了什么**：`.github/workflows/ci.yml` 只有一个 job `verify`，依次跑 `npm ci`、`npm run setup`、类型检查、单元测试、装 Chromium、e2e（含正式版冒烟），与 `npm run verify` 检查内容相同。`main` 加分支保护：`verify` 必须通过，管理员不例外，不要求 review。
+- **选了什么**：`.github/workflows/ci.yml` 只有一个 job `verify`，依次跑 `npm ci`、`npm run setup`、类型检查、单元测试、装 Chromium、e2e（含正式版冒烟），与 `npm run verify` 检查内容相同。`main` 加分支保护：必须走 PR（0 个审批，不要求 review）、`verify` 必须通过，管理员不例外，禁止强推和删除。
 - **参考 IPCountryWatcher，沿用的**：只读权限、`persist-credentials: false`、Action 固定到 commit SHA、同分支新提交取消旧运行、超时限制、`if: always()` 上传诊断结果。
 - **为什么分支保护是必须的**：IPCountryWatcher 的 `main` 没有分支保护也没有 ruleset，CI 红了照样能合。工作流本身只会报告结果，真正挡住合并的是必过项。管理员不例外，因为这个仓库的管理员就是唯一的使用者，否则这道挡板对谁都不起作用。
+- **为什么还要"必须走 PR"**：只设必过项时，已经通过检查的提交仍能直接 push 到 `main`，挡不住绕过 PR。审批数设为 0：一个人的仓库不需要审批，但每个改动都要经过 PR。
+- **实测（2026-11-04）**：临时 PR 里放一个故意失败的测试，`verify` 失败在单元测试这一步后，管理员合并被拒绝（HTTP 405）。在另一个配了同样规则的临时分支上，管理员直接 push 一个已通过 `verify` 的提交被拒绝（GH006）。两者都已删除，探针测试没有进 `main`。
 - **为什么跑在 `windows-2022`**：和日常开发同系统，`npm run verify` 本地过了基本等于 CI 过；e2e 依赖真实 Chromium 的音频、录制与下载，事先只在 Windows 上验证过。公开仓库的 Windows runner 也免费。
 - **触发条件**：所有分支的 push，加上指向 `main` 的 PR，代价是 PR 分支每次 push 跑两遍。两次检查的对象不同：push 查分支本身，PR 查与 `main` 合并后的结果。
 - **密钥**：构建需要 `local/manifest-key.txt`，CI 用 `npm run setup` 现场生成，只活在这台 runner 上，不需要任何 Secret。这个密钥对应的扩展 ID 与本机的不同，所以 CI 只验证，不产出可安装的包。
