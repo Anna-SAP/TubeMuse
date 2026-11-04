@@ -297,6 +297,9 @@ try {
   }
 
   await panel.getByRole('tab', { name: '改进记录' }).click();
+  // 两个列表都是切到这页后才从本地存储读出来的，等它们渲染完再数；条数仍要求正好相等
+  await panel.locator('.adjust-log > li').nth(2).waitFor();
+  await panel.locator('.corrections > li').first().waitFor();
   const logCount = await panel.locator('.adjust-log > li').count();
   check(logCount === 3, `改进记录里有 ${logCount} 条（3 分、10 分、理解纠正）`);
   check((await panel.locator('.corrections > li').count()) === 1, '理解纠正列表有 1 条');
@@ -1120,13 +1123,14 @@ try {
   await panel.getByRole('button', { name: '显示多语字幕' }).click();
   await waitCcText(cc, ['I was a government major,', '[zh-Hans] I was a government major,']);
   await cc.waitForFunction(() => !(/** @type {any} */ (document.getElementById('movie_player')).getOption('captions', 'track')?.languageCode), null, { timeout: 5000 });
-  // 你是在看的过程中按 C 的：先播两秒（正片刚开始那一下，原生字幕被打开算播放器按你的偏好自动打开的，见下一场景）
+  // 你是在看的过程中按 C 的：先播三秒，明确越过 2 秒的宽限期（autoCaptionGracePlaySec）。
+  // 正片刚开始那一下，原生字幕被打开算播放器按你的偏好自动打开的，见下一场景；只播 2 秒正好卡在边界上，机器一慢就算错。
   await cc.evaluate(() => {
     const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
     v.currentTime = 0.5;
     return v.play();
   });
-  await cc.waitForTimeout(2000);
+  await cc.waitForTimeout(3000);
   await cc.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).pause());
   await waitCcLines(cc, 2);
   // 模拟你在 YouTube 的字幕菜单里选了韩语（播放器自己的操作）

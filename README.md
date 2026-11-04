@@ -797,6 +797,7 @@ npm run verify      # 以上全部
 ```
 
 - **测试不出网**：单测把全局 `fetch` 换成直接报错的函数，所有外部服务都用注入的假实现；e2e 把所有外部服务指向本机 mock（127.0.0.1:47321），其他任何请求都会被拦截并判失败。
+- **CI**：每次 push 和指向 `main` 的 PR 都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上跑 `verify`：类型检查、单元测试、e2e、正式版冒烟。不需要任何 Secret，扩展密钥在 runner 上临时生成。`main` 有分支保护：`verify` 不通过不能合并，也不能直接 push，管理员不例外。提交前先在本地跑 `npm run verify`。失败时的截图在这次运行的 Artifacts 里，保留 14 天。
 - `dist-e2e/` 是测试专用构建（Google 授权页与所有接口都指向本机 mock），**不要**在日常浏览器里加载它。e2e 会真实调用 `launchWebAuthFlow`，走完"弹窗 → mock 授权页 → 回跳 → 取令牌"的整条链路。正式构建 `dist/` 的构建脚本会自检：产物里出现疑似 Key、令牌或测试地址就构建失败。
 - 技术栈：TypeScript（strict）· esbuild · Preact · Vitest · Playwright；大模型用 Anthropic / OpenAI 官方 SDK。
 - 关键设计与取舍（为什么这样选、放弃了什么、以后怎么替换）见 [DECISIONS.md](DECISIONS.md)；产品规格见 [CLAUDE.md](CLAUDE.md)。
