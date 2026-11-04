@@ -720,3 +720,18 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 - **测试**：e2e 新增"设置页：每一项都存得上"：遍历设置页所有勾选框（28 个，以后新加的也会被覆盖；"优先本机识别"只在选浏览器识别时显示，所以先切过去），点一下核对存储变了，再点一下核对复原；语音语言与两个模型名单独核对（清空后回到默认模型）。设置页补了 `pageerror` 监听，回调里的异常会让 e2e 失败。
 - **测试时碰到的两个时序问题**（都不是这次的产品 bug）：① 模型名的输入框值跟着存储走，刚存完时界面还要重绘一次，自动化输入快过重绘就会被盖掉（实测不等时 25 轮只过 12–18 轮，两次写入前各等 200 毫秒 25 轮全过），e2e 已按此等待，人的手速碰不到这个窗口。② 多语字幕"按 C 打开原生字幕"那一项偶发失败（这次 7 轮完整运行里 1 次，同样的代码重跑就过）：测试只播 2000 毫秒，判定却要实际播满 2 秒，机器忙时差一点；是已有问题，没有改。
 - **用户能感觉到的变化**：从这一版起这些设置真的会生效。关掉的功能会停，改过的模型名会被用上。之前点过的不算数，要重新设一次。
+
+## 46. GitHub Actions CI（2026-11-04，用户要求）
+
+- **选了什么**：`.github/workflows/ci.yml` 只有一个 job `verify`，依次跑 `npm ci`、`npm run setup`、类型检查、单元测试、装 Chromium、e2e（含正式版冒烟），与 `npm run verify` 检查内容相同。`main` 加分支保护：`verify` 必须通过，管理员不例外，不要求 review。
+- **参考 IPCountryWatcher，沿用的**：只读权限、`persist-credentials: false`、Action 固定到 commit SHA、同分支新提交取消旧运行、超时限制、`if: always()` 上传诊断结果。
+- **为什么分支保护是必须的**：IPCountryWatcher 的 `main` 没有分支保护也没有 ruleset，CI 红了照样能合。工作流本身只会报告结果，真正挡住合并的是必过项。管理员不例外，因为这个仓库的管理员就是唯一的使用者，否则这道挡板对谁都不起作用。
+- **为什么跑在 `windows-2022`**：和日常开发同系统，`npm run verify` 本地过了基本等于 CI 过；e2e 依赖真实 Chromium 的音频、录制与下载，事先只在 Windows 上验证过。公开仓库的 Windows runner 也免费。
+- **触发条件**：所有分支的 push，加上指向 `main` 的 PR，代价是 PR 分支每次 push 跑两遍。两次检查的对象不同：push 查分支本身，PR 查与 `main` 合并后的结果。
+- **密钥**：构建需要 `local/manifest-key.txt`，CI 用 `npm run setup` 现场生成，只活在这台 runner 上，不需要任何 Secret。这个密钥对应的扩展 ID 与本机的不同，所以 CI 只验证，不产出可安装的包。
+- **放弃**
+  - 路径过滤（IPCountryWatcher 有）：设成必过项后，被过滤掉的 PR 不产生 `verify`，会一直等下去。
+  - 发布 job（IPCountryWatcher 有）：CI 的包用临时密钥，扩展 ID 不对，OAuth 也走不通，发布出来没用。
+  - `ubuntu-latest`：快一些，但公开仓库两种 runner 都免费，e2e 也没在 Linux 上验证过，日常开发又不用 Linux。
+  - 用 `npm run verify` 一步跑完：内容一样，但红了看不出是哪一段。
+- **日后如何替换**：换系统只改 `runs-on`（Linux 需加 `playwright install --with-deps`）。改 job 名要同时改分支保护的必过项，否则所有 PR 都会卡住。不想要这道挡板时，在仓库 Settings → Branches 删掉 `main` 的规则，工作流照常运行。
