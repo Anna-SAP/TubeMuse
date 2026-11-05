@@ -1699,3 +1699,17 @@ a.db-title:hover {
 .email-item[data-band='skip'] .xhs-title {
   color: var(--muted);
 }
+.email-verdict {
+  overflow-wrap: anywhere;
+}
+.email-verdict[data-none] {
+  border-left: 3px solid var(--warn);
+}
+.email-verdict-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.email-verdict-text {
+  margin: 6px 0 0;
+}

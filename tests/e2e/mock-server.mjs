@@ -349,6 +349,12 @@ function llmAnswer(/** @type {string} */ system, /** @type {string} */ user) {
       ],
     };
   }
+  if (system.includes('汇总邮件总评员')) {
+    const { counts } = /** @type {{ counts: { read: number } }} */ (JSON.parse(user.slice(user.indexOf('\n') + 1)));
+    return counts.read > 0
+      ? { summary: '这一封以数据库和智能体的实战复盘为主，先看 Postgres 迁移那篇。', whyNone: '' }
+      : { summary: '这一封全是工具清单和入门介绍，没有实战内容。', whyNone: '这些文章都没有一手经验或数据，分数最高的那篇也只是常见的入门介绍。' };
+  }
   if (system.includes('文章价值评估员')) {
     const items = /** @type {{ id: string; title: string }[]} */ (JSON.parse(user.slice(user.indexOf('\n') + 1)));
     return {

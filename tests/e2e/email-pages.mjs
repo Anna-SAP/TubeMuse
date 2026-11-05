@@ -72,6 +72,8 @@ function digestBody(articles) {
 const MAILS = {
   digest: { subject: 'A Postmortem of Our Two-Year Postgres Migration | Ada Writer in Systems Weekly', sender: 'Medium Daily Digest', address: 'noreply@medium.com', body: digestBody(DIGEST_ARTICLES) },
   digest2: { subject: 'A Benchmark of Five Embedding Stores | Fay Deep in Systems Weekly', sender: 'Medium Daily Digest', address: 'noreply@medium.com', body: digestBody(DIGEST2_ARTICLES) },
+  /** 第三封：文章都在第一封里评过了，而且一篇精读都没有（你截图里那种情况：有分数，还没有总体结论） */
+  weak: { subject: 'The Best AI Tools for 2026 | Bo Lister', sender: 'Medium Daily Digest', address: 'noreply@medium.com', body: digestBody([DIGEST_ARTICLES[1], DIGEST_ARTICLES[3], DIGEST_ARTICLES[4]]) },
   personal: {
     subject: 'Lunch on Friday?',
     sender: 'A Friend',

@@ -299,10 +299,10 @@ export function parseScores(value: unknown, refs: ReadonlyMap<string, string>): 
   return out;
 }
 
-/** 只留最近评的 max 篇 */
-export function pruneScores(scores: EmailScores, max: number = EMAIL.maxScores): EmailScores {
-  const entries = Object.entries(scores);
-  if (entries.length <= max) return scores;
+/** 评分、总体结论的缓存：只留最近的 max 条 */
+export function keepLatest<T extends { at: number }>(records: Record<string, T>, max: number): Record<string, T> {
+  const entries = Object.entries(records);
+  if (entries.length <= max) return records;
   return Object.fromEntries(entries.sort((a, b) => b[1].at - a[1].at).slice(0, max));
 }
 
@@ -332,6 +332,71 @@ export function bandCounts(rows: readonly EmailRow[]): Record<EmailBand, number>
   const c: Record<EmailBand, number> = { read: 0, maybe: 0, skip: 0 };
   for (const r of rows) if (r.score) c[scoreBand(r.score.score)]++;
   return c;
+}
+
+// ── 总体结论（见 DECISIONS §47）──
+
+export interface EmailDigestStats {
+  /** 这封邮件的文章数 */
+  total: number;
+  /** 其中评过分的篇数 */
+  scored: number;
+  counts: Record<EmailBand, number>;
+  /** 平均分（保留一位小数）；一篇都没评过时是 0 */
+  avg: number;
+  /** 最高分；一篇都没评过时是 0 */
+  top: number;
+}
+
+export function digestStats(rows: readonly EmailRow[]): EmailDigestStats {
+  const scores = rows.flatMap((r) => (r.score ? [r.score.score] : []));
+  const sum = scores.reduce((a, b) => a + b, 0);
+  return {
+    total: rows.length,
+    scored: scores.length,
+    counts: bandCounts(rows),
+    avg: scores.length ? Math.round((sum / scores.length) * 10) / 10 : 0,
+    top: scores.length ? Math.max(...scores) : 0,
+  };
+}
+
+/** 一句话结论。不靠大模型：大模型写不出来、还没写时，这一句照样在 */
+export function verdictHeadline(s: EmailDigestStats): string {
+  const scope = s.scored < s.total ? `已评的 ${s.scored} 篇里` : `这 ${s.total} 篇里`;
+  return s.counts.read > 0 ? `${scope}有 ${s.counts.read} 篇值得精读` : `${scope}没有值得精读的`;
+}
+
+/** 分数分布说明了什么。"值得精读"是 0 篇时，先说最高分离精读线还差多少：这是能确定的那部分原因 */
+export function verdictFacts(s: EmailDigestStats): string {
+  const gap = s.counts.read === 0 ? `，离精读线（${EMAIL.bands.read} 分）还差 ${EMAIL.bands.read - s.top} 分` : '';
+  return `平均 ${s.avg} 分，最高 ${s.top} 分${gap}；${s.counts.maybe} 篇一般，${s.counts.skip} 篇建议跳过`;
+}
+
+export interface EmailVerdict {
+  /** 这封邮件的整体质量 */
+  summary: string;
+  /** 只在"值得精读"是 0 篇时有：为什么一篇都没有 */
+  whyNone?: string;
+  at: number;
+  model: string;
+}
+
+/** 键是 verdictKey：哪些文章、各得几分都一样，才算同一份结论 */
+export type EmailVerdicts = Record<string, EmailVerdict>;
+
+/** 这封邮件这一次评分结果的指纹。分数变了（重新评估、别的邮件里重评过同一篇）或多评了几篇，旧结论就不再对应，不拿出来显示 */
+export function verdictKey(rows: readonly EmailRow[]): string {
+  const parts = rows.flatMap((r) => (r.score ? [`${r.article.id}:${r.score.score}`] : []));
+  return hashString(parts.sort().join('|'));
+}
+
+/** 大模型的回答：总体结论要有；"值得精读"是 0 篇时必须说明原因，缺了算没写好（不拿别的话顶替） */
+export function parseVerdict(value: unknown, needWhy: boolean): { summary: string; whyNone?: string } | undefined {
+  const r = value as { summary?: unknown; whyNone?: unknown } | undefined;
+  const summary = cleanText(r?.summary, EMAIL.verdictMaxChars);
+  const whyNone = cleanText(r?.whyNone, EMAIL.verdictMaxChars);
+  if (!summary || (needWhy && !whyNone)) return undefined;
+  return { summary, ...(needWhy ? { whyNone } : {}) };
 }
 
 // ── 收藏与标签（结构与小红书的笔记收藏一样：id / 标题 / 链接 / 作者 / 收藏时间 / 标签）──
