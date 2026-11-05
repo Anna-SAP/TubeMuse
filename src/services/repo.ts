@@ -9,7 +9,7 @@ import type { SubtitleLedger } from '../core/subtitles';
 import type { ClipRecord } from '../core/clips';
 import { sanitizeCcLangs } from '../core/multi-captions';
 import { emptyXhsState, sanitizeXhsState, type XhsState } from '../core/xhs';
-import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState } from '../core/email';
+import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState, type EmailVerdicts } from '../core/email';
 import type {
   Adjustment,
   ClusterState,
@@ -160,6 +160,8 @@ export const stores = {
   emailSaved: new Store<EmailState>('emailSaved', emptyEmailState, sanitizeEmailState),
   /** eMails：大模型给每篇文章打的分（按文章缓存：同一篇隔天再出现时不再花钱） */
   emailScores: new Store<EmailScores>('emailScores', () => ({})),
+  /** eMails：每封邮件的总体结论（键是 verdictKey：文章和分数都对得上才显示） */
+  emailVerdicts: new Store<EmailVerdicts>('emailVerdicts', () => ({})),
   /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
   /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */

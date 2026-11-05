@@ -1,25 +1,31 @@
-// eMails：列出 Gmail 里当前打开的文章汇总邮件中的文章，评 0–10 分、按分数筛选，一键收藏并打标签。
-// 这一页开着时才向邮件脚本要内容；只有点"评估"才发给大模型。收藏只存在本机，链接在新标签页打开（不把正在看的邮件换掉）。
+// eMails：列出 Gmail 里当前打开的文章汇总邮件中的文章，评 0–10 分、给总体结论、按分数筛选，一键收藏并打标签。
+// 这一页开着时才向邮件脚本要内容；只有点"评估"或"生成总体结论"才发给大模型。收藏只存在本机，链接在新标签页打开（不把正在看的邮件换掉）。
 
 import { useState } from 'preact/hooks';
 import { EMAIL } from '../../config/defaults';
 import {
   EMAIL_MSG,
   bandCounts,
+  digestStats,
   emailTagCounts,
   filterEmail,
   rankArticles,
   sanitizeArticle,
   scoreBand,
+  verdictFacts,
+  verdictHeadline,
+  verdictKey,
   type EmailArticle,
   type EmailBand,
+  type EmailDigestStats,
   type EmailOp,
   type EmailRow,
   type EmailSavedArticle,
   type EmailTabState,
+  type EmailVerdict,
 } from '../../core/email';
 import { formatCount } from '../../core/format';
-import { applyEmail, scoreArticles, type EmailScoreResult } from '../../services/email-service';
+import { applyEmail, concludeArticles, scoreArticles, type EmailScoreResult } from '../../services/email-service';
 import type { AppError } from '../../services/errors';
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
@@ -102,26 +108,68 @@ function ArticleCard({ row, saved, onTag, onRemove, onError }: { row: EmailRow; 
 }
 
 function Sent({ r }: { r: EmailScoreResult }) {
-  if (!r.asked) return <>这些文章都评过了，没有发给大模型。</>;
+  if (!r.asked && r.verdict !== 'written') return <>这些文章都评过了，没有发给大模型。</>;
+  const cost = `（${r.model}，约 $${r.usd.toFixed(4)}${r.estimatedPrice ? '，这个模型不在价格表里，按最贵一档估算' : ''}）`;
+  if (!r.asked) return <>写好了总体结论{cost}。</>;
   return (
     <>
-      评完 {r.scored} 篇（{r.model}，约 ${r.usd.toFixed(4)}
-      {r.estimatedPrice ? '，这个模型不在价格表里，按最贵一档估算' : ''}）{r.cached > 0 && `，${r.cached} 篇用了之前的评分`}。
+      评完 {r.scored} 篇{r.verdict === 'written' ? '并写好了总体结论' : ''}
+      {cost}
+      {r.cached > 0 && `，${r.cached} 篇用了之前的评分`}。
       {r.missing > 0 && ` 还有 ${r.missing} 篇大模型没有给出分数：再点一次"评估"。`}
     </>
+  );
+}
+
+/** 总体结论。分数分布由本地算，一定有；大模型写的那段没有时（之前评的、上次没写成）可以单独生成 */
+function VerdictPanel({ stats, verdict, busy, onConclude }: { stats: EmailDigestStats; verdict: EmailVerdict | undefined; busy: boolean; onConclude: () => void }) {
+  return (
+    <section class="panel email-verdict" data-testid="email-verdict" data-none={stats.counts.read === 0 ? 'true' : undefined}>
+      <div class="email-verdict-head">
+        <span class="muted small">总体结论</span>
+        <strong data-testid="email-verdict-headline">{verdictHeadline(stats)}</strong>
+      </div>
+      <p class="small muted email-verdict-text" data-testid="email-verdict-facts">
+        {verdictFacts(stats)}
+      </p>
+      {verdict ? (
+        <>
+          <p class="small email-verdict-text" data-testid="email-verdict-summary">
+            {verdict.summary}
+          </p>
+          {verdict.whyNone && (
+            <p class="small email-verdict-text" data-testid="email-verdict-why">
+              <strong>为什么一篇都没有：</strong>
+              {verdict.whyNone}
+            </p>
+          )}
+          <p class="muted small email-verdict-text">{verdict.model} 写于 {new Date(verdict.at).toLocaleDateString('zh-CN')}，只根据标题、摘要和分数，没有读正文。</p>
+        </>
+      ) : (
+        !busy && (
+          <div class="row email-actions">
+            <button class="btn small" data-testid="email-conclude" onClick={onConclude}>
+              生成总体结论
+            </button>
+            <span class="muted small">{stats.counts.read === 0 ? '让大模型说说为什么一篇都没有。' : '让大模型概述这一封的整体质量。'}不重新打分。</span>
+          </div>
+        )
+      )}
+    </section>
   );
 }
 
 function CurrentMail({ onTag, onRemove, onError }: { onTag: (t: string) => void; onRemove: (item: EmailSavedArticle) => void; onError: (e: string | undefined) => void }) {
   const settings = useStore(stores.settings);
   const scores = useStore(stores.emailScores);
+  const verdicts = useStore(stores.emailVerdicts);
   const saved = useStore(stores.emailSaved);
   const { state: tab } = useActiveTabState<EmailTabState>(EMAIL_MSG.getState, EMAIL_MSG.state, EMAIL.pollMs);
   const [band, setBand] = useState<'all' | EmailBand>('all');
-  const [progress, setProgress] = useState<{ done: number; total: number }>();
+  const [progress, setProgress] = useState<string>();
   const [result, setResult] = useState<EmailScoreResult>();
   const [error, setError] = useState<AppError>();
-  if (!settings || !scores || !saved || tab === undefined) return null;
+  if (!settings || !scores || !verdicts || !saved || tab === undefined) return null;
   if (tab === null) {
     return (
       <p class="muted small" data-testid="email-no-script">
@@ -168,13 +216,30 @@ function CurrentMail({ onTag, onRemove, onError }: { onTag: (t: string) => void;
   const scoredCount = counts.read + counts.maybe + counts.skip;
   const unscored = articles.length - scoredCount;
   const shown = band === 'all' ? rows : rows.filter((r) => r.score && scoreBand(r.score.score) === band);
+  const verdict = verdicts[verdictKey(rows)];
+  // 还有没评的文章时，分数分布说明不了这封邮件（大模型漏评、已经写过结论的除外）
+  const showVerdict = scoredCount > 0 && (unscored === 0 || !!verdict);
   const provider = PROVIDERS[settings.llm.provider];
   const evaluate = async (force: boolean) => {
     setError(undefined);
     setResult(undefined);
-    setProgress({ done: 0, total: force ? articles.length : unscored });
+    setProgress(`正在评估（0/${force ? articles.length : unscored}）…`);
     try {
-      setResult(await scoreArticles(appCtx(), articles, { force, onProgress: (done, total) => setProgress({ done, total }) }));
+      const r = await scoreArticles(appCtx(), articles, { force, onProgress: (done, total) => setProgress(done < total ? `正在评估（${done}/${total}）…` : '正在写总体结论…') });
+      setResult(r);
+      if (r.verdict === 'failed') setError(await asAppError(r.verdictError));
+    } catch (e) {
+      setError(await asAppError(e));
+    } finally {
+      setProgress(undefined);
+    }
+  };
+  const conclude = async () => {
+    setError(undefined);
+    setResult(undefined);
+    setProgress('正在写总体结论…');
+    try {
+      setResult(await concludeArticles(appCtx(), articles));
     } catch (e) {
       setError(await asAppError(e));
     } finally {
@@ -190,7 +255,7 @@ function CurrentMail({ onTag, onRemove, onError }: { onTag: (t: string) => void;
         </Notice>
       )}
       {progress ? (
-        <Spinner label={`正在评估（${progress.done}/${progress.total}）…`} />
+        <Spinner label={progress} />
       ) : (
         <div class="row email-actions">
           {unscored > 0 ? (
@@ -205,7 +270,7 @@ function CurrentMail({ onTag, onRemove, onError }: { onTag: (t: string) => void;
         </div>
       )}
       <p class="muted small" data-testid="email-disclosure">
-        点"评估"后，文章的标题、摘要、作者、刊物、站点名、阅读时长和互动数发给 {provider}；不发邮件主题、发件人、收件人和链接。大模型没有读正文，分数只是预判。
+        点"评估"后，文章的标题、摘要、作者、刊物、站点名、阅读时长和互动数发给 {provider}；评完再把每篇的标题、分数和理由发过去，写总体结论。不发邮件主题、发件人、收件人和链接。大模型没有读正文，分数和结论都只是预判。
       </p>
       {result && (
         <Notice kind="info" onClose={() => setResult(undefined)}>
@@ -215,6 +280,7 @@ function CurrentMail({ onTag, onRemove, onError }: { onTag: (t: string) => void;
         </Notice>
       )}
       {error && <ErrorBox error={error} onClose={() => setError(undefined)} />}
+      {showVerdict && <VerdictPanel stats={digestStats(rows)} verdict={verdict} busy={!!progress} onConclude={() => void conclude()} />}
       {scoredCount > 0 && (
         <div class="seg" role="group" aria-label="按分数筛选" data-testid="email-bands">
           {(
@@ -238,7 +304,9 @@ function CurrentMail({ onTag, onRemove, onError }: { onTag: (t: string) => void;
           ))}
         </ul>
       ) : (
-        <p class="muted small">这一档没有文章。</p>
+        <p class="muted small" data-testid="email-band-empty">
+          {band === 'read' && showVerdict ? '这封邮件没有值得精读的文章，原因见上面的总体结论。' : '这一档没有文章。'}
+        </p>
       )}
     </>
   );
