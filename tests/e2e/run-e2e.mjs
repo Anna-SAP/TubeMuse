@@ -1678,9 +1678,9 @@ try {
   });
   check(shotVideo.videoWidth === 1920 && shotVideo.shownWidth === 320, `片源 ${shotVideo.videoWidth}×${shotVideo.videoHeight}，页面上只显示 ${shotVideo.shownWidth}×${shotVideo.shownHeight}`);
   /** 读 PNG 文件：签名、文件头里的宽高位深，再在页面里解码，取左右两边的像素 */
-  const readPng = async (/** @type {string} */ file) => {
+  const readPng = async (/** @type {string} */ file, page = clipPage) => {
     const b = readFileSync(file);
-    const pixels = await clipPage.evaluate(async (b64) => {
+    const pixels = await page.evaluate(async (b64) => {
       const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
       const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
       const c = document.createElement('canvas');
@@ -1693,6 +1693,44 @@ try {
     }, b.toString('base64'));
     return { signature: b.subarray(0, 8).toString('hex'), width: b.readUInt32BE(16), height: b.readUInt32BE(20), depth: b[24], ...pixels };
   };
+  /** WAV 没有画面，截不了：现场录一段左红右蓝的 720×1280 视频换给播放器（页面上显示的尺寸不变），放一下再暂停 */
+  const useFramedVideo = (/** @type {import('playwright').Page} */ page, /** @type {string} */ selector) =>
+    page.evaluate(async (sel) => {
+      const c = document.createElement('canvas');
+      c.width = 720;
+      c.height = 1280;
+      const g = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+      let n = 0;
+      const paint = () => {
+        g.fillStyle = '#e00000';
+        g.fillRect(0, 0, 360, 1280);
+        g.fillStyle = '#0000e0';
+        g.fillRect(360, 0, 360, 1280);
+        // 每帧动一点，画布才持续出帧
+        g.fillStyle = '#e00000';
+        g.fillRect(360, 0, 2, 2 + (n++ % 8));
+      };
+      paint();
+      const rec = new MediaRecorder(c.captureStream(15), { mimeType: 'video/webm;codecs=vp8' });
+      /** @type {Blob[]} */
+      const chunks = [];
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      const stopped = new Promise((r) => (rec.onstop = r));
+      rec.start();
+      const timer = setInterval(paint, 50);
+      await new Promise((r) => setTimeout(r, 1500));
+      clearInterval(timer);
+      rec.stop();
+      await stopped;
+      const v = /** @type {HTMLVideoElement} */ (document.querySelector(sel));
+      v.muted = true;
+      const loaded = new Promise((r) => (v.onloadeddata = r));
+      v.src = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+      await loaded;
+      await v.play();
+      await new Promise((r) => setTimeout(r, 400));
+      v.pause();
+    }, selector);
   /** @type {import('playwright').Download[]} */
   const pageDownloads = [];
   clipPage.on('download', (d) => pageDownloads.push(d));
@@ -1941,7 +1979,7 @@ try {
     ((await panel.getByTestId('clip-title').textContent()) ?? '') === XHS_V1.title && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-no-burn').count()) === 1,
     '小红书视频笔记：侧边栏显示笔记标题（来自页面标题），不提供字幕烧录并说明原因',
   );
-  check((await panel.getByTestId('clip-capture').count()) === 0, '小红书视频笔记：没有 Capture 按钮（截图只限 YouTube）');
+  check((await panel.getByTestId('clip-capture').count()) === 1, '小红书视频笔记：有 Capture 按钮');
   const xhsPlayerHtml = () => xhs.evaluate(() => /** @type {HTMLElement} */ (document.querySelector('.media-container')).outerHTML);
   const xhsPlayerBefore = await xhsPlayerHtml();
   await panel.getByTestId('clip-start').click();
@@ -1993,6 +2031,27 @@ try {
   check(/^视频日记Day255｜一人公司怎么做_.*\.(mp4|webm)$/.test(closeDl.suggestedFilename()), `关掉笔记时自动结束这一段并保存：${closeDl.suggestedFilename()}`);
   await panel.getByTestId('clip-ready').filter({ hasText: '关掉了这篇笔记' }).waitFor({ timeout: 5000 });
   check(true, '侧边栏说明这一段为什么结束');
+
+  console.log('\n[小红书：Capture → 按视频的真实尺寸存无损 PNG，由侧边栏交给浏览器；不动页面]');
+  await xhs.goto(xhsVideoUrl);
+  await xhs.waitForFunction(() => (document.querySelector('.player-el video') instanceof HTMLVideoElement ? /** @type {HTMLVideoElement} */ (document.querySelector('.player-el video')).readyState : 0) >= 2, null, { timeout: 30000 });
+  await useFramedVideo(xhs, '.player-el video');
+  await panel.getByTestId('clip-capture').waitFor({ timeout: 10000 });
+  /** @type {import('playwright').Download[]} */
+  const xhsPageDownloads = [];
+  const onXhsPageDownload = (/** @type {import('playwright').Download} */ d) => xhsPageDownloads.push(d);
+  xhs.on('download', onXhsPageDownload);
+  const xhsShotHtmlBefore = await xhsPlayerHtml();
+  const xhsSeqBefore = await captureSeq();
+  const xhsShot = await capture();
+  const xhsShotName = xhsShot.suggestedFilename();
+  check(xhsShotName.startsWith('视频日记Day255｜一人公司怎么做_00-00-0') && xhsShotName.endsWith(`_original_${String(xhsSeqBefore + 1).padStart(5, '0')}.png`), `文件名：笔记标题_时间戳_original_序号.png，序号接着往下排：${xhsShotName}`);
+  const xhsPng = await readPng(/** @type {string} */ (await xhsShot.path()), xhs);
+  check(xhsPng.signature === '89504e470d0a1a0a' && xhsPng.depth === 8 && xhsPng.width === 720 && xhsPng.height === 1280, `按视频的真实尺寸存，不是页面上显示的 320×180：${xhsPng.width}×${xhsPng.height}`);
+  check(xhsPng.left[0] > 150 && xhsPng.left[2] < 90 && xhsPng.right[2] > 150 && xhsPng.right[0] < 90, `存下的是这篇笔记视频的这一帧，左红右蓝，不是黑帧（左 ${xhsPng.left.join(',')}，右 ${xhsPng.right.join(',')}）`);
+  check(xhsPageDownloads.length === 0, '下载算在侧边栏上，不算在小红书页面上（从页面连续下载，第二次起 Chrome 会拦）');
+  xhs.off('download', onXhsPageDownload);
+  check(JSON.stringify(await xhsPlayerHtml()) === JSON.stringify(xhsShotHtmlBefore) && (await xhs.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '截图没有往小红书页面里加任何元素，没有点到小红书自己的任何东西');
   await panel.getByRole('tab', { name: '小红书' }).click();
 
   console.log('\n[小红书：网络红线]');
@@ -2027,8 +2086,8 @@ try {
   await onXVideos('main.currentTime = 0; return main.play();');
   await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
   check(
-    ((await panel.getByTestId('clip-title').textContent()) ?? '') === X_POST.title && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-capture').count()) === 0,
-    '站内跳进帖子后不用刷新就能录：标题来自页面标题（作者 - 正文，去掉 t.co 短链），不提供字幕烧录和 Capture',
+    ((await panel.getByTestId('clip-title').textContent()) ?? '') === X_POST.title && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-capture').count()) === 1,
+    '站内跳进帖子后不用刷新就能录：标题来自页面标题（作者 - 正文，去掉 t.co 短链），不提供字幕烧录，有 Capture',
   );
   check(((await panel.getByTestId('clip-no-burn').textContent()) ?? '').includes('片头广告认不出来'), '界面写明 X 的片头广告认不出来，不静默录进去');
   const xPosition = async () => (await panel.getByTestId('clip-position').textContent()) ?? '';
@@ -2067,6 +2126,25 @@ try {
   check(xLog?.site === 'x' && xLog.videoId === X_POST.id && xLog.title === X_POST.title && xLog.url === xStatusUrl && xLog.fileName === xName, '"最近录过的片段"记下这是 X 的帖子，链接去掉了分享参数');
   check(((await panel.getByTestId('clip-log').textContent()) ?? '').includes('X · '), '侧边栏的片段清单标出 X');
   check((await xAppHtml()) === xAppBefore && (await xPage.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '录制没有往 X 页面里加任何元素，没有点到 X 自己的任何东西');
+
+  console.log('\n[X：Capture → 按视频的真实尺寸存无损 PNG，由侧边栏交给浏览器；不动页面]');
+  await useFramedVideo(xPage, '#main video');
+  /** @type {import('playwright').Download[]} */
+  const xPageDownloads = [];
+  const onXPageDownload = (/** @type {import('playwright').Download} */ d) => xPageDownloads.push(d);
+  xPage.on('download', onXPageDownload);
+  const xShotHtmlBefore = await xAppHtml();
+  const xSeqBefore = await captureSeq();
+  const xShot = await capture();
+  const xShotName = xShot.suggestedFilename();
+  check(xShotName.startsWith('Ayo O - I reverse engineered tiktok_00-00-0') && xShotName.endsWith(`_original_${String(xSeqBefore + 1).padStart(5, '0')}.png`), `文件名：作者 - 正文_时间戳_original_序号.png，序号接着 YouTube 的往下排：${xShotName}`);
+  const xPng = await readPng(/** @type {string} */ (await xShot.path()), xPage);
+  check(xPng.signature === '89504e470d0a1a0a' && xPng.depth === 8 && xPng.width === 720 && xPng.height === 1280, `按视频的真实尺寸存，不是页面上显示的 286×508：${xPng.width}×${xPng.height}`);
+  check(xPng.left[0] > 150 && xPng.left[2] < 90 && xPng.right[2] > 150 && xPng.right[0] < 90, `存下的是主帖视频的这一帧，左红右蓝，不是黑帧（左 ${xPng.left.join(',')}，右 ${xPng.right.join(',')}）`);
+  check(((await panel.getByTestId('clip-capture-saved').textContent()) ?? '').includes('720×1280'), '侧边栏写明文件名和实际尺寸');
+  check(xPageDownloads.length === 0, '下载算在侧边栏上，不算在 X 页面上（从页面连续下载，第二次起 Chrome 会拦）');
+  xPage.off('download', onXPageDownload);
+  check((await xAppHtml()) === xShotHtmlBefore && (await xPage.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '截图没有往 X 页面里加任何元素，没有点到 X 自己的任何东西');
 
   console.log('\n[X：全屏视图录弹层里的视频，不录底下被盖住的；离开帖子时这一段自动结束并保存]');
   await xPage.goto(`${xStatusUrl}/video/1`);
@@ -2116,6 +2194,10 @@ try {
   await panel.getByTestId('clip-start').click();
   await panel.getByRole('alert').filter({ hasText: '视频来自别的网站' }).waitFor({ timeout: 5000 });
   check(((await panel.getByRole('alert').textContent()) ?? '').includes('X 的动图（GIF）') && (await panel.getByTestId('clip-live').count()) === 0, '动图：不开始录制，说明是动图的限制，普通视频不受影响');
+  const xSeqAtGif = await captureSeq();
+  await panel.getByTestId('clip-capture').click();
+  await panel.getByRole('alert').filter({ hasText: '没有放行（X 的动图（GIF）是这样' }).waitFor({ timeout: 5000 });
+  check((await captureSeq()) === xSeqAtGif && (await panel.getByTestId('clip-capture-saved').count()) === 0, '动图：Capture 也截不了，说明原因，不占序号');
   await xPage.goto(`${MOCK}/xpage/${X_TEXT_POST.user}/status/${X_TEXT_POST.id}`);
   await clipStatus.filter({ hasText: '这条帖子里没有视频' }).waitFor({ timeout: 10000 });
   check(true, '文字帖子：说明没有视频可录');

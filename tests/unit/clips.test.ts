@@ -153,7 +153,10 @@ describe('Capture 截图', () => {
     expect(checkCapture(ctx({ hasVideo: false }))).toContain('没找到');
   });
   it('只限 YouTube：小红书的视频笔记不截', () => {
-    expect(checkCapture(ctx({ site: 'xhs', videoId: '6ae9a4e000000000140281c6' }))).toContain('只支持 YouTube');
+    expect(checkCapture(ctx({ site: 'xhs', videoId: '6ae9a4e000000000140281c6' }))).toBeUndefined();
+    expect(checkCapture(ctx({ site: 'xhs', videoId: null }))).toContain('不是笔记详情');
+    expect(checkCapture(ctx({ site: 'xhs', videoId: '6ae9a4e000000000140281c6', hasVideo: false }))).toContain('图文笔记');
+    expect(captureFileName(undefined, '6ae9a4e000000000140281c6', 1, 2, 'xhs')).toBe('xhs-6ae9a4e000000000140281c6_00-00-01-000_original_00002.png');
   });
   it('PNG 分块传回：base64 编解码逐字节一致，超过一次 fromCharCode 的上限也行', () => {
     const bytes = Uint8Array.from({ length: 300_000 }, (_, i) => (i * 31) % 256);
@@ -584,8 +587,18 @@ describe('X 帖子页', () => {
     expect(clipUnavailable('x', { enabled: true, videoId: POST, shorts: false, hasVideo: true })).toBeUndefined();
     expect(clipUnavailable('x', { enabled: false, videoId: POST, shorts: false, hasVideo: true })).toContain('已在设置中关闭');
   });
-  it('Capture 只限 YouTube，X 上不截', () => {
-    expect(checkCapture({ site: 'x', enabled: true, videoId: POST, shorts: false, hasVideo: true, ad: false, drm: false, ready: true })).toContain('只支持 YouTube');
+  it('Capture：帖子页能截；不是帖子页、没有视频、受保护、画面没准备好时说明原因', () => {
+    const ctx: ClipCaptureContext = { site: 'x', enabled: true, videoId: POST, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    expect(checkCapture(ctx)).toBeUndefined();
+    expect(checkCapture({ ...ctx, videoId: null })).toContain('不是帖子详情');
+    expect(checkCapture({ ...ctx, hasVideo: false })).toContain('这条帖子里没有视频');
+    expect(checkCapture({ ...ctx, drm: true })).toContain('DRM');
+    expect(checkCapture({ ...ctx, ready: false })).toContain('画面还没准备好');
+    expect(checkCapture({ ...ctx, enabled: false })).toContain('设置中关闭');
+  });
+  it('Capture 文件名：作者 - 正文_时间戳_original_序号；没有标题时用 x-帖子ID', () => {
+    expect(captureFileName('Ayo O - I reverse engineered tiktok', POST, 30.804, 701, 'x')).toBe('Ayo O - I reverse engineered tiktok_00-00-30-804_original_00701.png');
+    expect(captureFileName(undefined, POST, 1, 2, 'x')).toBe(`x-${POST}_00-00-01-000_original_00002.png`);
   });
 
   it('屏幕里的面积：滚到屏幕外是 0，只露一半算一半', () => {

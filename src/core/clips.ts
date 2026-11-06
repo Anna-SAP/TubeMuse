@@ -138,9 +138,9 @@ export function frameTimestamp(sec: number): string {
   return `${pad(Math.floor(totalSec / 3600))}-${pad(Math.floor((totalSec % 3600) / 60))}-${pad(totalSec % 60)}-${String(ms % 1000).padStart(3, '0')}`;
 }
 
-/** Capture 截图文件名：标题_时-分-秒-毫秒_original_序号.png（序号 5 位补零，全局递增）；没有标题时用视频 ID */
-export function captureFileName(title: string | undefined, videoId: string, time: number, seq: number): string {
-  return `${fileBase(title, videoId, 'youtube')}_${frameTimestamp(time)}_original_${String(seq).padStart(5, '0')}.png`;
+/** Capture 截图文件名：标题_时-分-秒-毫秒_original_序号.png（序号 5 位补零，全局递增）；没有标题时用视频（帖子）ID */
+export function captureFileName(title: string | undefined, videoId: string, time: number, seq: number, site: ClipSite = 'youtube'): string {
+  return `${fileBase(title, videoId, site)}_${frameTimestamp(time)}_original_${String(seq).padStart(5, '0')}.png`;
 }
 
 // ── 编码格式与尺寸 ──
@@ -363,9 +363,7 @@ export interface ClipCaptureContext extends Pick<ClipStartContext, 'site' | 'ena
 
 /** 截图前的检查：返回问题说明（用人话），没问题返回 undefined。录制中也能截，所以这里不看 busy */
 export function checkCapture(c: ClipCaptureContext): string | undefined {
-  const site = c.site ?? 'youtube';
-  if (site !== 'youtube') return 'Capture 目前只支持 YouTube 播放页';
-  const unavailable = clipUnavailable(site, c);
+  const unavailable = clipUnavailable(c.site ?? 'youtube', c);
   if (unavailable) return unavailable;
   if (c.ad) return '正在播广告：广告结束后再截图';
   if (c.drm) return '这个视频受版权保护（DRM），浏览器不允许截图';

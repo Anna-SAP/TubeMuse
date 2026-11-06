@@ -10,7 +10,7 @@
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
 //    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
 // 4. 读取的页面信息只有：播放器状态、页面标题（只用来显示和起文件名）、开启字幕烧录时播放器里当时显示的字幕文字。
-// 5. Capture 截图（用户 2026-11-06 要求，只限 YouTube，见 DECISIONS §50）：只在你点按钮时，把这一帧按视频的真实尺寸
+// 5. Capture 截图（用户 2026-11-06 要求，见 DECISIONS §50、§52）：只在你点按钮时，把这一帧按视频的真实尺寸
 //    画到不放进页面的画布上，在本机编成 PNG，由侧边栏取走后交给浏览器保存（这里不保存：从这个页面连续下载，
 //    第二次起会被 Chrome 拦下）。不录声音、不带字幕和播放器控件，广告时不截。
 // 受版权保护（DRM）的视频浏览器不允许录制或截图，本脚本不绕过。
@@ -226,6 +226,9 @@ function framesReadable(v: HTMLVideoElement): boolean {
   }
 }
 
+const UNREADABLE = '浏览器不允许读取这个视频的画面：视频来自别的网站，没有放行';
+const X_GIF_NOTE = 'X 的动图（GIF）是这样，普通视频不受影响';
+
 function fail(message: string, hint?: string): void {
   lastError = { message, ...(hint ? { hint } : {}) };
 }
@@ -388,7 +391,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     return fail('这个视频受版权保护（DRM），浏览器不允许录制', '付费电影、部分音乐视频等受保护的内容录不了；TubeMuse 不会绕过这项保护');
   }
   if (!framesReadable(video)) {
-    return fail('浏览器不允许读取这个视频的画面：视频来自别的网站，没有放行', `${SITE === 'x' ? 'X 的动图（GIF）是这样，普通视频不受影响。' : ''}这种视频录不了；TubeMuse 不会绕过这项限制`);
+    return fail(UNREADABLE, `${SITE === 'x' ? `${X_GIF_NOTE}。` : ''}这种视频录不了；TubeMuse 不会绕过这项限制`);
   }
   const format = pickClipFormat((m) => MediaRecorder.isTypeSupported(m));
   if (!format) return fail('这个浏览器不支持录制视频（MediaRecorder 不支持 MP4 或 WebM）', '请用最新版 Google Chrome');
@@ -668,7 +671,7 @@ async function captureFrame(): Promise<ClipCaptureReply> {
     ready: !!video && video.readyState >= 2 && !video.seeking && video.videoWidth > 0 && video.videoHeight > 0,
   });
   if (problem || !video || !videoId) return { ok: false, message: problem ?? '没找到播放器里的视频' };
-  if (!framesReadable(video)) return { ok: false, message: '浏览器不允许读取这个视频的画面：视频来自别的网站，没有放行' };
+  if (!framesReadable(video)) return { ok: false, message: SITE === 'x' ? `${UNREADABLE}（${X_GIF_NOTE}）` : UNREADABLE };
   const width = video.videoWidth;
   const height = video.videoHeight;
   const canvas = document.createElement('canvas');
