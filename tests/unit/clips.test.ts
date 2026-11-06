@@ -191,12 +191,21 @@ describe('编码格式与尺寸', () => {
       }),
     ).toBeUndefined();
   });
-  it('按原尺寸输出；高于 1080 等比缩小；宽高取偶数；读不到尺寸用默认', () => {
+  it('按原尺寸输出；短边高于 1080 等比缩小；宽高取偶数；读不到尺寸用默认', () => {
     expect(outputSize(1280, 720)).toEqual({ width: 1280, height: 720 });
     expect(outputSize(3840, 2160)).toEqual({ width: 1920, height: 1080 });
     expect(outputSize(853, 481)).toEqual({ width: 854, height: 482 });
-    expect(outputSize(1080, 1920)).toEqual({ width: 608, height: 1080 });
     expect(outputSize(0, 0)).toEqual(CLIPS.fallbackSize);
+  });
+  it('竖屏按短边算：X 的 720×1280 和小红书的 1080×1920 都不缩，更大的缩到短边 1080', () => {
+    expect(outputSize(720, 1280)).toEqual({ width: 720, height: 1280 });
+    expect(outputSize(1080, 1920)).toEqual({ width: 1080, height: 1920 });
+    expect(outputSize(1440, 2560)).toEqual({ width: 1080, height: 1920 });
+    expect(outputSize(2160, 3840)).toEqual({ width: 1080, height: 1920 });
+  });
+  it('横屏的结果与按高度算时一样：超宽屏也不多缩', () => {
+    expect(outputSize(2560, 1080)).toEqual({ width: 2560, height: 1080 });
+    expect(outputSize(1920, 804)).toEqual({ width: 1920, height: 804 });
   });
   it('码率按输出高度', () => {
     expect(videoBitrate(1080)).toBe(8_000_000);

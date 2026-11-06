@@ -158,10 +158,10 @@ export function pickClipFormat(isSupported: (mimeType: string) => boolean): Clip
   });
 }
 
-/** 输出画面尺寸：按视频原尺寸，高于上限时等比缩小；宽高取偶数（H.264 要求）。读不到尺寸时用默认尺寸 */
-export function outputSize(videoWidth: number, videoHeight: number, maxHeight: number = CLIPS.maxHeight, fallback: { width: number; height: number } = CLIPS.fallbackSize): { width: number; height: number } {
+/** 输出画面尺寸：按视频原尺寸，短边高于上限时等比缩小（横屏的短边就是高度）；宽高取偶数（H.264 要求）。读不到尺寸时用默认尺寸 */
+export function outputSize(videoWidth: number, videoHeight: number, maxShortSide: number = CLIPS.maxShortSide, fallback: { width: number; height: number } = CLIPS.fallbackSize): { width: number; height: number } {
   if (!(videoWidth > 0) || !(videoHeight > 0)) return { ...fallback };
-  const scale = Math.min(1, maxHeight / videoHeight);
+  const scale = Math.min(1, maxShortSide / Math.min(videoWidth, videoHeight));
   const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
   return { width: even(videoWidth * scale), height: even(videoHeight * scale) };
 }
