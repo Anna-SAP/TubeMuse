@@ -1554,7 +1554,20 @@ try {
     /** @type {HTMLElement} */ (document.getElementById('movie_player')).append(win);
   });
   await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
-  await panel.getByTestId('clip-burn').check();
+  /**
+   * 开关字幕烧录。不用 check() / uncheck()：它们点完立刻核对，而这个勾选框跟着设置走，设置写进存储之前，
+   * 侧边栏每秒一次的状态刷新会把它弹回旧值，两者赛跑（2026-11-06 CI 上失败过）。点完先等设置写进去，再等勾选框到位。
+   */
+  const setClipBurn = async (/** @type {boolean} */ on) => {
+    await panel.getByTestId('clip-burn').click();
+    await panel.waitForFunction(
+      (want) => /** @type {any} */ (globalThis).chrome.storage.local.get('settings').then((/** @type {any} */ r) => r.settings?.clips?.burnSubtitles === want),
+      on,
+      { timeout: 5000 },
+    );
+    await panel.getByTestId('clip-burn').and(panel.locator(on ? ':checked' : ':not(:checked)')).waitFor({ timeout: 5000 });
+  };
+  await setClipBurn(true);
   await panel.getByTestId('clip-mode-range').click();
   await panel.getByTestId('clip-start-at').fill('0:02');
   await panel.getByTestId('clip-end-at').fill('0:05');
@@ -1567,7 +1580,7 @@ try {
   check(range.bottomBright > 200 && range.topBright === 0, `字幕烧进了画面底部（亮像素 ${range.bottomBright}），画面其他地方没有多出东西`);
   const log2 = await clipLog();
   check(log2.length === 3 && log2[0].mode === 'range' && log2[0].burned === true && log2[0].start === 2 && log2[0].end === 5, '记录里写明是时间段、带字幕');
-  await panel.getByTestId('clip-burn').uncheck();
+  await setClipBurn(false);
 
   console.log('\n[片段录制：关掉"停止后直接保存" → 先留在内存里，点保存才存；可以丢弃]');
   await panel.evaluate(async () => {

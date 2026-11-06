@@ -905,4 +905,5 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - e2e：仿 X 页面 `tests/e2e/x-pages.mjs` 照实测结构写。时间线的说明；站内跳进帖子不刷新就能录；选主帖不选更大的回复；图标 REC；滚开暂停不计时、滚回来接着录；静音视频录到声音；文件名、记录、去掉分享参数；清单标"X ·"；页面原样未动、X 的元素没被点到；全屏视图选弹层、离开帖子自动结束；动图提示（跨站视频由 Playwright 在本地应答，现场录一段 VP8，WAV 没有画面触发不了）；文字帖子；页面上没有 TubeMuse 发出的请求。冒烟测试核对注入范围。
   - 没点过页面（一次性脚本，不进仓库）：e2e 带 `--autoplay-policy=no-user-gesture-required` 启动，测不到这条路径；Playwright 下换成桌面版的默认策略也复现不了，超时调成 10 分钟的对照组同样直接开始录制。改用原始 CDP 裸启动 Chromium（`--autoplay-policy=document-user-activation-required`，只连侧边栏，全程不连 X 页面）才复现：对照组（超时 10 分钟，等于旧行为）6 秒内既没开始录制也没有提示；修复后 1251 毫秒出现"浏览器还没允许这个页面处理声音"。
   - 没有在真实 X 上跑完整扩展：Playwright 自带的 Chromium 解不了 H.264，正式版 Chrome 又不让命令行加载扩展；管线、标题和布局是在真实页面上分别核实的，整体留给手测清单。
+- **顺带修的测试（用户确认后改）**：CI 上"把字幕烧进画面"的 `uncheck()` 报 `Clicking the checkbox did not change its state`，这行是 11-01 写的，本地三轮都没出现。和 §43 的 `check()` 同一类：这个勾选框跟着设置走，点完到设置写进存储之间，侧边栏每秒一次的状态刷新会把它弹回旧值，Playwright 点完立刻核对就赛跑。不是产品问题，最终状态是对的。侧边栏里只有这两处这样写，都改成点击后等设置写进存储、再等勾选框到位；写不进去或勾选框对不上仍然失败。
 - **日后替换**：X 改版时看 `core/clips.ts` 的 `xPostTitle`、`X_STATUS_PATH` 和 `content/clipper.ts` 的 `xVideoEl`。摸清片头广告后在 `adShowing` 里加 X 的判断，去掉 `ClipsView` 里的说明。
