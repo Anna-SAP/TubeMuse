@@ -1,4 +1,4 @@
-// 视频片段录制：时间码、文件名、编码格式与尺寸、开录前检查、录 / 等 / 停的判定、字幕烧录排版、录制记录（后台校验与保存）。
+// 视频片段录制：时间码、文件名、编码格式与尺寸、开录前检查、录 / 等 / 停的判定、字幕烧录排版、录制记录（后台校验与保存）、Capture 截图。
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,6 +7,10 @@ import { CLIPS, DEFAULT_SETTINGS } from '../../src/config/defaults';
 import {
   addClipRecord,
   atVideoEnd,
+  base64ToBytes,
+  bytesToBase64,
+  captureFileName,
+  checkCapture,
   checkClipStart,
   checkRange,
   clipFileName,
@@ -15,6 +19,7 @@ import {
   decideClip,
   formatBytes,
   formatTimecode,
+  frameTimestamp,
   layoutBurnIn,
   mp4TrackKinds,
   outputSize,
@@ -25,6 +30,7 @@ import {
   titleFromDocumentTitle,
   videoBitrate,
   wrapText,
+  type ClipCaptureContext,
   type ClipControl,
   type ClipRecord,
   type ClipSample,
@@ -91,6 +97,80 @@ describe('文件名', () => {
     expect(clipFileName(undefined, 'abc123DEF45', 3723, 3730, 'webm')).toBe('youtube-abc123DEF45_1h02m03s-1h02m10s.webm');
     expect(clipFileName('???', 'abc123DEF45', 0, 5, 'mp4')).toBe('youtube-abc123DEF45_00m00s-00m05s.mp4');
     expect(clipFileName(undefined, '6ae9a4e000000000140281c6', 1.6, 98.7, 'mp4', 'xhs')).toBe('xhs-6ae9a4e000000000140281c6_00m01s-01m38s.mp4');
+  });
+});
+
+describe('Capture 截图', () => {
+  it('文件名里的时间精确到毫秒：时-分-秒-毫秒', () => {
+    expect(frameTimestamp(30.804)).toBe('00-00-30-804');
+    expect(frameTimestamp(49.743)).toBe('00-00-49-743');
+    expect(frameTimestamp(0)).toBe('00-00-00-000');
+    expect(frameTimestamp(3723.5)).toBe('01-02-03-500');
+    // 四舍五入进位到下一秒，不写成 "60"
+    expect(frameTimestamp(59.9996)).toBe('00-01-00-000');
+    expect(frameTimestamp(-1)).toBe('00-00-00-000');
+    expect(frameTimestamp(Number.NaN)).toBe('00-00-00-000');
+    // 直播的进度可能超过 99 小时
+    expect(frameTimestamp(360000)).toBe('100-00-00-000');
+  });
+  it('文件名：标题_时间戳_original_序号.png，与你给的样例同一格式', () => {
+    expect(captureFileName("TWS (투어스) 'Freestyle' @ Spotify Performance Video", 'abc123DEF45', 30.804, 701)).toBe("TWS (투어스) 'Freestyle' @ Spotify Performance Video_00-00-30-804_original_00701.png");
+    expect(captureFileName('全面接入 AI 后，我的工作方式彻底变了', 'abc123DEF45', 49.743, 576)).toBe('全面接入 AI 后，我的工作方式彻底变了_00-00-49-743_original_00576.png');
+  });
+  it('文件名：过滤非法字符、没有标题时用视频 ID、序号超过 5 位照常递增', () => {
+    expect(captureFileName('AI: 安全/访谈?*"<>|', 'abc123DEF45', 1, 1)).toBe('AI 安全 访谈_00-00-01-000_original_00001.png');
+    expect(captureFileName(undefined, 'abc123DEF45', 1, 2)).toBe('youtube-abc123DEF45_00-00-01-000_original_00002.png');
+    expect(captureFileName('???', 'abc123DEF45', 1, 3)).toBe('youtube-abc123DEF45_00-00-01-000_original_00003.png');
+    expect(captureFileName('CON', 'abc123DEF45', 1, 100000)).toBe('_CON_00-00-01-000_original_100000.png');
+    expect(captureFileName('长'.repeat(200), 'abc123DEF45', 1, 1)).toBe(`${'长'.repeat(80)}_00-00-01-000_original_00001.png`);
+  });
+  const ctx = (over: Partial<ClipCaptureContext> = {}): ClipCaptureContext => ({
+    enabled: true,
+    videoId: 'abc123DEF45',
+    shorts: false,
+    hasVideo: true,
+    ad: false,
+    drm: false,
+    ready: true,
+    ...over,
+  });
+  it('截图前检查：能截时没有问题', () => {
+    expect(checkCapture(ctx())).toBeUndefined();
+    expect(checkCapture(ctx({ site: 'youtube' }))).toBeUndefined();
+  });
+  it('截图前检查：广告、DRM、画面没准备好、设置关闭、Shorts、不是视频页都说清楚', () => {
+    expect(checkCapture(ctx({ ad: true }))).toContain('广告');
+    expect(checkCapture(ctx({ drm: true }))).toContain('DRM');
+    expect(checkCapture(ctx({ ready: false }))).toContain('画面还没准备好');
+    expect(checkCapture(ctx({ enabled: false }))).toContain('设置中关闭');
+    expect(checkCapture(ctx({ shorts: true }))).toContain('Shorts');
+    expect(checkCapture(ctx({ videoId: null }))).toContain('不是视频播放页');
+    expect(checkCapture(ctx({ hasVideo: false }))).toContain('没找到');
+  });
+  it('只限 YouTube：小红书的视频笔记不截', () => {
+    expect(checkCapture(ctx({ site: 'xhs', videoId: '6ae9a4e000000000140281c6' }))).toContain('只支持 YouTube');
+  });
+  it('PNG 分块传回：base64 编解码逐字节一致，超过一次 fromCharCode 的上限也行', () => {
+    const bytes = Uint8Array.from({ length: 300_000 }, (_, i) => (i * 31) % 256);
+    const round = base64ToBytes(bytesToBase64(bytes));
+    expect(round.length).toBe(bytes.length);
+    expect(round.every((b, i) => b === bytes[i])).toBe(true);
+    expect(base64ToBytes(bytesToBase64(new Uint8Array(0))).length).toBe(0);
+    expect(new Uint8Array([137, 80, 78, 71])).toEqual(base64ToBytes('iVBORw=='));
+  });
+  it('每块转成 base64 后不超过 runtime 消息的单条上限（64 MB）', () => {
+    expect((CLIPS.captureChunkBytes * 4) / 3).toBeLessThan(64 * 1024 * 1024);
+  });
+  it('序号存在本机：没存过是 0，存坏了回到 0，加锁递增', async () => {
+    const ctx = { kv: memoryKV(), locker: memoryLocker() } as unknown as AppContext;
+    expect(await stores.captureSeq.read(ctx.kv)).toBe(0);
+    const next = () => stores.captureSeq.update(ctx.kv, ctx.locker, (n) => n + 1);
+    // 两个标签页同时截图也不重号
+    expect((await Promise.all([next(), next(), next()])).sort()).toEqual([1, 2, 3]);
+    await ctx.kv.set(stores.captureSeq.key, 'x');
+    expect(await stores.captureSeq.read(ctx.kv)).toBe(0);
+    await ctx.kv.set(stores.captureSeq.key, -5);
+    expect(await stores.captureSeq.read(ctx.kv)).toBe(0);
   });
 });
 

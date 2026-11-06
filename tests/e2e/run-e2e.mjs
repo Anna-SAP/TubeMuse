@@ -1508,6 +1508,111 @@ try {
   await panel.getByTestId('clip-ready').filter({ hasText: '切到了别的视频' }).waitFor({ timeout: 5000 });
   check(true, '侧边栏说明这一段为什么结束');
   await panel.screenshot({ path: join(shots, '24-clip-panel.png'), fullPage: true });
+
+  console.log('\n[片段：Capture → 按视频的真实尺寸存无损 PNG，由侧边栏交给浏览器；录制中也能截；广告时不截；不动页面、不发请求]');
+  await clipPage.goto(`${MOCK}/watch?v=clipShot0001`);
+  await clipPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  // mock 播放页的视频只有声音：现场用画布录一段 1920×1080 的视频当片源（左红右蓝），再把播放器缩到 320×180，
+  // 这样截出来是 1920×1080 才算"按真实尺寸"，不是页面上显示的尺寸
+  await clipPage.evaluate(async () => {
+    const c = document.createElement('canvas');
+    c.width = 1920;
+    c.height = 1080;
+    const g = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+    let n = 0;
+    const paint = () => {
+      g.fillStyle = '#e00000';
+      g.fillRect(0, 0, 960, 1080);
+      g.fillStyle = '#0000e0';
+      g.fillRect(960, 0, 960, 1080);
+      // 每帧动一点，画布才持续出帧
+      g.fillStyle = '#e00000';
+      g.fillRect(960, 0, 2, 2 + (n++ % 8));
+    };
+    paint();
+    const rec = new MediaRecorder(c.captureStream(15), { mimeType: 'video/webm;codecs=vp8' });
+    /** @type {Blob[]} */
+    const chunks = [];
+    rec.ondataavailable = (e) => chunks.push(e.data);
+    const stopped = new Promise((r) => (rec.onstop = r));
+    rec.start();
+    const timer = setInterval(paint, 50);
+    await new Promise((r) => setTimeout(r, 1500));
+    clearInterval(timer);
+    rec.stop();
+    await stopped;
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.style.cssText = 'width:320px;height:180px';
+    v.muted = true;
+    const loaded = new Promise((r) => (v.onloadeddata = r));
+    v.src = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+    await loaded;
+    await v.play();
+    await new Promise((r) => setTimeout(r, 400));
+    v.pause();
+  });
+  const shotVideo = await clipPage.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    const r = v.getBoundingClientRect();
+    return { videoWidth: v.videoWidth, videoHeight: v.videoHeight, shownWidth: Math.round(r.width), shownHeight: Math.round(r.height) };
+  });
+  check(shotVideo.videoWidth === 1920 && shotVideo.shownWidth === 320, `片源 ${shotVideo.videoWidth}×${shotVideo.videoHeight}，页面上只显示 ${shotVideo.shownWidth}×${shotVideo.shownHeight}`);
+  /** 读 PNG 文件：签名、文件头里的宽高位深，再在页面里解码，取左右两边的像素 */
+  const readPng = async (/** @type {string} */ file) => {
+    const b = readFileSync(file);
+    const pixels = await clipPage.evaluate(async (b64) => {
+      const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+      const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      const c = document.createElement('canvas');
+      c.width = bmp.width;
+      c.height = bmp.height;
+      const g = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+      g.drawImage(bmp, 0, 0);
+      const at = (/** @type {number} */ x) => Array.from(g.getImageData(x, Math.floor(bmp.height / 2), 1, 1).data);
+      return { left: at(Math.floor(bmp.width / 4)), right: at(Math.floor((bmp.width * 3) / 4)) };
+    }, b.toString('base64'));
+    return { signature: b.subarray(0, 8).toString('hex'), width: b.readUInt32BE(16), height: b.readUInt32BE(20), depth: b[24], ...pixels };
+  };
+  /** @type {import('playwright').Download[]} */
+  const pageDownloads = [];
+  clipPage.on('download', (d) => pageDownloads.push(d));
+  const shotPlayerBefore = await clipPlayerHtml();
+  const requestsBeforeShot = requests.length;
+  const captureSeq = () => panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('captureSeq').then((/** @type {any} */ r) => r.captureSeq));
+  const capture = () => Promise.all([panel.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-capture').click()]).then(([d]) => d);
+
+  const shot1 = await capture();
+  check(/^mock watch_00-00-0\d-\d{3}_original_00001\.png$/.test(shot1.suggestedFilename()), `文件名：标题_时间戳_original_序号.png：${shot1.suggestedFilename()}`);
+  const png1 = await readPng(/** @type {string} */ (await shot1.path()));
+  check(png1.signature === '89504e470d0a1a0a' && png1.depth === 8, 'PNG 文件头正确，8 位无损');
+  check(png1.width === 1920 && png1.height === 1080, `按视频的真实尺寸存，不是页面上显示的尺寸：${png1.width}×${png1.height}`);
+  check(png1.left[0] > 150 && png1.left[2] < 90 && png1.right[2] > 150 && png1.right[0] < 90, `存下的是视频这一帧，左红右蓝，不是黑帧（左 ${png1.left.join(',')}，右 ${png1.right.join(',')}）`);
+  const shotSaved = ((await panel.getByTestId('clip-capture-saved').textContent()) ?? '');
+  check(shotSaved.includes(shot1.suggestedFilename()) && shotSaved.includes('1920×1080'), '侧边栏写明文件名和实际尺寸');
+  await panel.screenshot({ path: join(shots, '24b-clip-capture.png'), fullPage: true });
+
+  // 连点第二次：序号递增。这里只能证明序号和文件；"不被 Chrome 拦"要真实下载限流才测得出（Playwright 接管下载时不限流），见 DECISIONS §50
+  const shot2 = await capture();
+  check(shot2.suggestedFilename().endsWith('_original_00002.png'), `再点一次序号递增：${shot2.suggestedFilename()}`);
+  check(pageDownloads.length === 0, '下载算在侧边栏上，不算在 YouTube 页面上（从页面连续下载，第二次起 Chrome 会拦）');
+
+  await clipPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.add('ad-showing'));
+  await panel.getByTestId('clip-capture').click();
+  await panel.getByText('正在播广告：广告结束后再截图').waitFor({ timeout: 5000 });
+  check((await captureSeq()) === 2, '广告时不截图，说明原因，不占序号');
+  await clipPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ad-showing'));
+
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '视频已暂停' }).waitFor({ timeout: 10000 });
+  const shot3 = await capture();
+  check(shot3.suggestedFilename().endsWith('_original_00003.png'), `录制中也能截：${shot3.suggestedFilename()}`);
+  check((await panel.getByTestId('clip-live').count()) === 1 && (await clipStatus.textContent())?.includes('视频已暂停') === true, '截图不打断正在进行的录制');
+  await panel.getByTestId('clip-stop').click();
+  await panel.getByTestId('clip-live').waitFor({ state: 'detached', timeout: 5000 });
+
+  check(JSON.stringify(await clipPlayerHtml()) === JSON.stringify(shotPlayerBefore), '截图没有往页面里加任何元素，播放器原样未动');
+  check(requests.slice(requestsBeforeShot).every((r) => r.path.startsWith('/media/')), '截图与保存不发任何网络请求');
   await clipPage.close();
   await panel.bringToFront();
 
@@ -1717,6 +1822,7 @@ try {
     ((await panel.getByTestId('clip-title').textContent()) ?? '') === XHS_V1.title && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-no-burn').count()) === 1,
     '小红书视频笔记：侧边栏显示笔记标题（来自页面标题），不提供字幕烧录并说明原因',
   );
+  check((await panel.getByTestId('clip-capture').count()) === 0, '小红书视频笔记：没有 Capture 按钮（截图只限 YouTube）');
   const xhsPlayerHtml = () => xhs.evaluate(() => /** @type {HTMLElement} */ (document.querySelector('.media-container')).outerHTML);
   const xhsPlayerBefore = await xhsPlayerHtml();
   await panel.getByTestId('clip-start').click();

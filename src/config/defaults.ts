@@ -568,6 +568,10 @@ export const CLIPS = {
   endSlackSec: 0.5,
   /** "录过的片段"记录保留条数（只有标题、时间段、大小，没有视频本身） */
   logMax: 100,
+  /** Capture：PNG 从页面传回侧边栏时每块多少字节（转 base64 后约 21 MB，runtime 消息单条上限 64 MB；8K 的 PNG 可能超过一条） */
+  captureChunkBytes: 16 * 1024 * 1024,
+  /** Capture：截好的 PNG 在页面内存里最多留多久（侧边栏取走后立即释放；这是侧边栏中途关掉时的兜底） */
+  captureHoldMs: 30_000,
   /** 编码格式，按优先级：MP4 通用性最好，浏览器不支持时退回 WebM */
   formats: [
     { mimeType: 'video/mp4;codecs=avc1.640028,mp4a.40.2', ext: 'mp4', label: 'MP4（H.264 + AAC）' },

@@ -8,7 +8,10 @@
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
 //    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
 // 4. 读取的页面信息只有：播放器状态、页面标题（只用来显示和起文件名）、开启字幕烧录时播放器里当时显示的字幕文字。
-// 受版权保护（DRM）的视频浏览器不允许录制，本脚本不绕过。
+// 5. Capture 截图（用户 2026-11-06 要求，只限 YouTube，见 DECISIONS §50）：只在你点按钮时，把这一帧按视频的真实尺寸
+//    画到不放进页面的画布上，在本机编成 PNG，由侧边栏取走后交给浏览器保存（这里不保存：从这个页面连续下载，
+//    第二次起会被 Chrome 拦下）。不录声音、不带字幕和播放器控件，广告时不截。
+// 受版权保护（DRM）的视频浏览器不允许录制或截图，本脚本不绕过。
 
 import { CLIPS, DEFAULT_SETTINGS } from '../config/defaults';
 import { MULTICC_LINE_COLORS } from '../core/multi-captions';
@@ -18,6 +21,8 @@ import {
   CLIP_STOP_LABELS,
   CLIP_WAIT_LABELS,
   atVideoEnd,
+  bytesToBase64,
+  checkCapture,
   checkClipStart,
   clipFileName,
   clipUnavailable,
@@ -31,6 +36,7 @@ import {
   videoBitrate,
   type BurnBox,
   type BurnLine,
+  type ClipCaptureReply,
   type ClipFormat,
   type ClipMode,
   type ClipRecord,
@@ -117,6 +123,8 @@ interface ReadyClip extends ReadyClipInfo {
 
 let rec: Recording | undefined;
 let ready: ReadyClip | undefined;
+/** 截好、等侧边栏取走的一帧 */
+let shot: { id: string; bytes: Uint8Array; holdTimer: ReturnType<typeof setTimeout> } | undefined;
 let lastError: { message: string; hint?: string } | undefined;
 let lastState = '';
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -170,6 +178,11 @@ function currentIds(): { videoId: string | null; shorts: boolean } {
 function pageTitle(): string | undefined {
   const t = titleFromDocumentTitle(document.title || '', SITE);
   return t && !/^(?:YouTube|小红书|rednote)$/i.test(t) ? t : undefined;
+}
+
+/** 受版权保护的视频：录制和截图都不做，不绕过 */
+function drmProtected(v: HTMLVideoElement): boolean {
+  return !!(v as HTMLVideoElement & { mediaKeys?: unknown }).mediaKeys;
 }
 
 /** 画面读得到吗：来自别的网站、又没有放行的视频，画到画布上会被浏览器标为"不可读"，录不了（YouTube、小红书现在都是同源的 blob: 流） */
@@ -345,7 +358,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   if (problem || !video || !videoId) return fail(problem ?? '没找到播放器里的视频');
   // 跳到起点会改动广告的播放进度：等广告结束再截取
   if (req.mode === 'range' && adShowing()) return fail('正在播广告：广告结束后再开始截取');
-  if ((video as HTMLVideoElement & { mediaKeys?: unknown }).mediaKeys) {
+  if (drmProtected(video)) {
     return fail('这个视频受版权保护（DRM），浏览器不允许录制', '付费电影、部分音乐视频等受保护的内容录不了；TubeMuse 不会绕过这项保护');
   }
   if (!framesReadable(video)) {
@@ -605,6 +618,58 @@ function saveReady(): void {
   }
 }
 
+// ── Capture 截图 ──
+
+function releaseShot(): void {
+  if (shot) clearTimeout(shot.holdTimer);
+  shot = undefined;
+}
+
+/** 截下当前这一帧：按视频的真实尺寸（不是播放器在页面上显示的尺寸）画到不放进页面的画布上，编成 PNG 等侧边栏取走 */
+async function captureFrame(): Promise<ClipCaptureReply> {
+  releaseShot();
+  const video = videoEl();
+  const { videoId, shorts } = currentIds();
+  const problem = checkCapture({
+    site: SITE,
+    enabled: settings.enabled,
+    videoId,
+    shorts,
+    hasVideo: !!video,
+    ad: adShowing(),
+    drm: !!video && drmProtected(video),
+    ready: !!video && video.readyState >= 2 && !video.seeking && video.videoWidth > 0 && video.videoHeight > 0,
+  });
+  if (problem || !video || !videoId) return { ok: false, message: problem ?? '没找到播放器里的视频' };
+  if (!framesReadable(video)) return { ok: false, message: '浏览器不允许读取这个视频的画面：视频来自别的网站，没有放行' };
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const g = canvas.getContext('2d', { alpha: false });
+  if (!g) return { ok: false, message: '浏览器没能创建画布，无法截图' };
+  // 同一拍里读时间、取画面：文件名里的时间就是这一帧
+  const time = video.currentTime;
+  const title = pageTitle();
+  g.drawImage(video, 0, 0, width, height);
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) return { ok: false, message: `浏览器没能把 ${width}×${height} 的画面编成 PNG` };
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const id = randomId();
+  shot = { id, bytes, holdTimer: setTimeout(() => shot?.id === id && releaseShot(), CLIPS.captureHoldMs) };
+  return { ok: true, id, videoId, ...(title ? { title } : {}), time, width, height, bytes: bytes.length, chunks: Math.ceil(bytes.length / CLIPS.captureChunkBytes) };
+}
+
+/** 取走截图的一块（base64）；对不上这一帧时返回 undefined。最后一块取走后立即释放 */
+function shotChunk(id: unknown, index: unknown): string | undefined {
+  if (!shot || shot.id !== id || typeof index !== 'number' || !Number.isInteger(index) || index < 0) return undefined;
+  const size = CLIPS.captureChunkBytes;
+  const part = bytesToBase64(shot.bytes.subarray(index * size, (index + 1) * size));
+  if ((index + 1) * size >= shot.bytes.length) releaseShot();
+  return part;
+}
+
 // ── 每一轮 ──
 
 function tick(): void {
@@ -712,6 +777,7 @@ function broadcast(): void {
 function teardown(): void {
   if (timer) clearInterval(timer);
   timer = undefined;
+  releaseShot();
   if (rec) {
     try {
       cleanup(rec);
@@ -744,7 +810,7 @@ function num(v: unknown): number | undefined {
 
 chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
-  const msg = raw as { type?: string; mode?: unknown; start?: unknown; end?: unknown; precise?: unknown } | undefined;
+  const msg = raw as { type?: string; mode?: unknown; start?: unknown; end?: unknown; precise?: unknown; id?: unknown; index?: unknown } | undefined;
   const reply = () => sendResponse(tabState(msg?.precise === true));
   switch (msg?.type) {
     case CLIP_MSG.getState:
@@ -789,6 +855,12 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
       releaseReady();
       broadcast();
       reply();
+      return false;
+    case CLIP_MSG.capture:
+      void captureFrame().then(sendResponse, (e: unknown) => sendResponse({ ok: false, message: `没能截图：${e instanceof Error ? e.message : String(e)}` } satisfies ClipCaptureReply));
+      return true;
+    case CLIP_MSG.captureChunk:
+      sendResponse(shotChunk(msg.id, msg.index));
       return false;
     default:
       return false;

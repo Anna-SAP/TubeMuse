@@ -1,4 +1,5 @@
-// 视频片段录制的纯逻辑：时间码、文件名、编码格式与尺寸、录 / 等 / 停的判定、开录前检查、字幕烧录排版、录制记录。
+// 视频片段录制的纯逻辑：时间码、文件名、编码格式与尺寸、录 / 等 / 停的判定、开录前检查、字幕烧录排版、录制记录，
+// 以及 Capture 截图的文件名、截图前检查和跨进程传输时的编解码。
 // 录制本身（画布、MediaRecorder、保存）在 content/clipper.ts；侧边栏"片段"页只经消息控制它。
 
 import { CLIPS } from '../config/defaults';
@@ -25,6 +26,10 @@ export const CLIP_MSG = {
   state: 'tubemuse:clips:state',
   /** 内容脚本 → 后台：存好了一个片段，记一笔 */
   saved: 'tubemuse:clips:saved',
+  /** 侧边栏 → 内容脚本：截下当前这一帧，回复 ClipCaptureReply */
+  capture: 'tubemuse:clips:capture',
+  /** 侧边栏 → 内容脚本：取截好的 PNG 的第 index 块（base64） */
+  captureChunk: 'tubemuse:clips:capture-chunk',
 } as const;
 
 // ── 时间码 ──
@@ -96,10 +101,27 @@ export function safeFileTitle(title: string): string {
   return WINDOWS_RESERVED.test(cut) ? `_${cut}` : cut;
 }
 
+/** 文件名开头：清洗过的标题；没有标题时用视频（笔记）ID */
+function fileBase(title: string | undefined, videoId: string, site: ClipSite): string {
+  return safeFileTitle(title ?? '') || `${site === 'xhs' ? 'xhs' : 'youtube'}-${videoId}`;
+}
+
 /** 片段文件名：标题_起点-终点.扩展名；没有标题时用视频（笔记）ID */
 export function clipFileName(title: string | undefined, videoId: string, start: number, end: number, ext: string, site: ClipSite = 'youtube'): string {
-  const base = safeFileTitle(title ?? '') || `${site === 'xhs' ? 'xhs' : 'youtube'}-${videoId}`;
-  return `${base}_${fileStamp(start)}-${fileStamp(end)}.${ext}`;
+  return `${fileBase(title, videoId, site)}_${fileStamp(start)}-${fileStamp(end)}.${ext}`;
+}
+
+/** 文件名里的播放位置，精确到毫秒："00-00-30-804"（时-分-秒-毫秒） */
+export function frameTimestamp(sec: number): string {
+  const ms = Number.isFinite(sec) ? Math.max(0, Math.round(sec * 1000)) : 0;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const totalSec = Math.floor(ms / 1000);
+  return `${pad(Math.floor(totalSec / 3600))}-${pad(Math.floor((totalSec % 3600) / 60))}-${pad(totalSec % 60)}-${String(ms % 1000).padStart(3, '0')}`;
+}
+
+/** Capture 截图文件名：标题_时-分-秒-毫秒_original_序号.png（序号 5 位补零，全局递增）；没有标题时用视频 ID */
+export function captureFileName(title: string | undefined, videoId: string, time: number, seq: number): string {
+  return `${fileBase(title, videoId, 'youtube')}_${frameTimestamp(time)}_original_${String(seq).padStart(5, '0')}.png`;
 }
 
 // ── 编码格式与尺寸 ──
@@ -237,6 +259,58 @@ export function checkClipStart(req: ClipStartRequest, c: ClipStartContext): stri
   }
   if (c.ended) return '视频已经播完了：拖回想录的位置再开始';
   return undefined;
+}
+
+// ── Capture 截图 ──
+
+export interface ClipCaptureContext extends Pick<ClipStartContext, 'site' | 'enabled' | 'videoId' | 'shorts' | 'hasVideo'> {
+  ad: boolean;
+  /** 受版权保护：画上去是黑的，不绕过 */
+  drm: boolean;
+  /** 有可显示的画面、不在跳转中（跳转时画面还是旧的，时间却是新的，文件名会对不上） */
+  ready: boolean;
+}
+
+/** 截图前的检查：返回问题说明（用人话），没问题返回 undefined。录制中也能截，所以这里不看 busy */
+export function checkCapture(c: ClipCaptureContext): string | undefined {
+  const site = c.site ?? 'youtube';
+  if (site !== 'youtube') return 'Capture 目前只支持 YouTube 播放页';
+  const unavailable = clipUnavailable(site, c);
+  if (unavailable) return unavailable;
+  if (c.ad) return '正在播广告：广告结束后再截图';
+  if (c.drm) return '这个视频受版权保护（DRM），浏览器不允许截图';
+  if (!c.ready) return '画面还没准备好（缓冲或跳转中）：等画面出来再截图';
+  return undefined;
+}
+
+/** 内容脚本对 CLIP_MSG.capture 的回复。PNG 本身之后分块取走（runtime 消息只能传 JSON，单条上限 64 MB） */
+export type ClipCaptureReply =
+  | {
+      ok: true;
+      id: string;
+      videoId: string;
+      title?: string;
+      /** 这一帧的播放位置（秒） */
+      time: number;
+      width: number;
+      height: number;
+      bytes: number;
+      chunks: number;
+    }
+  | { ok: false; message: string };
+
+export function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  // String.fromCharCode 的参数个数有上限：分段转
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+export function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 // ── 录 / 等 / 停 ──

@@ -186,6 +186,8 @@ export const stores = {
   subtitleLedger: new Store<SubtitleLedger>('subtitleLedger', () => ({ days: {} })),
   /** 录过并保存的视频片段（只有标题、时间段、大小、文件名；视频文件在浏览器的下载文件夹，不在这里） */
   clipLog: new Store<ClipRecord[]>('clipLog', () => []),
+  /** Capture 截图用过的最大序号（全局递增，写进文件名；截图文件在浏览器的下载文件夹，不在这里） */
+  captureSeq: new Store<number>('captureSeq', () => 0, (v) => (Number.isSafeInteger(v) && (v as number) > 0 ? (v as number) : 0)),
   /** 小红书：收进 TubeMuse 的笔记与博主，各自的标签（只存在本机，与小红书账号里的收藏、关注无关） */
   xhs: new Store<XhsState>('xhs', emptyXhsState, (v) => sanitizeXhsState(v, Date.now())),
   /** eMails：收藏的文章与各自的标签（只存在本机，与邮箱、Medium 账号无关） */
