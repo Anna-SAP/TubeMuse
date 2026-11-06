@@ -1,15 +1,19 @@
-// 片段录制：当前标签页这个视频的录制控制（自由录制 / 按时间段截取）、录好的片段（保存 / 丢弃）、最近录过的片段。
+// 片段录制：当前标签页这个视频的录制控制（自由录制 / 按时间段截取）、Capture 截图、录好的片段（保存 / 丢弃）、最近录过的片段。
 // 录制在 YouTube 播放页或小红书笔记详情里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
+// Capture 的 PNG 由录制脚本截好传回，在这里交给浏览器保存：下载要算在你刚点过的这个页面上，Chrome 才不会拦（见 DECISIONS §50）。
 
 import { useEffect, useState } from 'preact/hooks';
 import {
   CLIP_MSG,
   CLIP_STOP_LABELS,
+  base64ToBytes,
+  captureFileName,
   checkRange,
   clipWatchUrl,
   formatBytes,
   formatTimecode,
   parseTimecode,
+  type ClipCaptureReply,
   type ClipMode,
   type ClipTabState,
 } from '../../core/clips';
@@ -18,7 +22,10 @@ import { stores } from '../../services/repo';
 import { clearClipLog } from '../../services/clip-service';
 import { appCtx, useStore } from '../shared/app';
 import { Notice } from '../shared/components';
+import { downloadBlob } from '../shared/download';
 import { useActiveTabState } from '../shared/tab-state';
+
+const NO_RESPONSE = '这个标签页没有响应：刷新一下那个页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）';
 
 export function ClipsView() {
   const settings = useStore(stores.settings);
@@ -30,25 +37,53 @@ export function ClipsView() {
   const [endText, setEndText] = useState('');
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string>();
+  const [capturing, setCapturing] = useState(false);
+  const [shot, setShot] = useState<{ fileName: string; width: number; height: number; bytes: number }>();
   const videoId = state?.videoId;
   // 换了视频：时间段清空，免得拿上一个视频的时间去截
   useEffect(() => {
     setStartText('');
     setEndText('');
     setLocalError(undefined);
+    setShot(undefined);
   }, [videoId]);
   if (!settings) return null;
 
-  const send = async (msg: Record<string, unknown>): Promise<ClipTabState | undefined> => {
+  async function send<T = ClipTabState>(msg: Record<string, unknown>): Promise<T | undefined> {
     if (tabId === undefined) return undefined;
     setBusy(true);
     try {
-      return (await chrome.tabs.sendMessage(tabId, msg)) as ClipTabState | undefined;
+      return (await chrome.tabs.sendMessage(tabId, msg)) as T | undefined;
     } catch {
-      setLocalError('这个标签页没有响应：刷新一下那个页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）');
+      setLocalError(NO_RESPONSE);
       return undefined;
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** 让录制脚本截下这一帧，把 PNG 取回来，编号、起名，交给浏览器存进下载文件夹 */
+  const capture = async () => {
+    setLocalError(undefined);
+    setShot(undefined);
+    setCapturing(true);
+    try {
+      const r = await send<ClipCaptureReply>({ type: CLIP_MSG.capture });
+      if (!r) return setLocalError(NO_RESPONSE);
+      if (!r.ok) return setLocalError(r.message);
+      const parts: Uint8Array<ArrayBuffer>[] = [];
+      for (let index = 0; index < r.chunks; index++) {
+        const part = await send<string>({ type: CLIP_MSG.captureChunk, id: r.id, index });
+        if (!part) return setLocalError('截图没能传回侧边栏：再点一次 Capture');
+        parts.push(base64ToBytes(part));
+      }
+      // 截成了才取序号：广告、缓冲时点了不占号
+      const seq = await stores.captureSeq.update(appCtx().kv, appCtx().locker, (n) => n + 1);
+      const fileName = captureFileName(r.title, r.videoId, r.time, seq);
+      downloadBlob(fileName, new Blob(parts, { type: 'image/png' }));
+      setShot({ fileName, width: r.width, height: r.height, bytes: r.bytes });
+    } finally {
+      setCapturing(false);
     }
   };
 
@@ -95,6 +130,12 @@ export function ClipsView() {
     const b = parseTimecode(endText);
     return a !== null && b !== null && b > a ? b - a : undefined;
   })();
+  // 只限 YouTube；录制中也能截，不影响正在录的这一段
+  const captureButton = !xhs && (
+    <button class="btn" data-testid="clip-capture" disabled={busy || capturing || tabId === undefined} title="把当前这一帧存成无损 PNG" onClick={() => void capture()}>
+      {capturing ? '截图中…' : 'Capture'}
+    </button>
+  );
 
   return (
     <div class="clips">
@@ -180,7 +221,9 @@ export function ClipsView() {
                   <button class="btn primary" data-testid="clip-start" disabled={busy || tabId === undefined} onClick={() => void start()}>
                     ● {mode === 'range' ? '开始截取' : '开始录制'}
                   </button>
+                  {captureButton}
                 </div>
+                {!xhs && <p class="muted small">Capture 把当前这一帧直接存成无损 PNG：不带字幕和播放器控件，分辨率是视频当前解码出的真实尺寸（要最高清，先在播放器里把清晰度调到最高）。</p>}
               </>
             )}
 
@@ -210,6 +253,7 @@ export function ClipsView() {
                   <button class="btn primary" data-testid="clip-stop" disabled={busy || state.phase === 'finishing'} onClick={() => void send({ type: CLIP_MSG.stop })}>
                     ■ {state.autoSave ? '停止并保存' : '停止'}
                   </button>
+                  {captureButton}
                 </div>
               </div>
             )}
@@ -221,6 +265,12 @@ export function ClipsView() {
                   {'hint' in error && error.hint && <div class="muted">{error.hint}</div>}
                 </div>
               </div>
+            )}
+
+            {shot && (
+              <p class="small clip-file" data-testid="clip-capture-saved">
+                截图已交给浏览器存进下载文件夹：{shot.fileName}（{shot.width}×{shot.height} · {formatBytes(shot.bytes)}）
+              </p>
             )}
 
             {ready && (
@@ -283,7 +333,7 @@ export function ClipsView() {
 
       <section class="panel">
         <p class="muted small">
-          可以录 YouTube 播放页与小红书笔记详情里的视频。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
+          可以录 YouTube 播放页与小红书笔记详情里的视频。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
         </p>
       </section>
     </div>
