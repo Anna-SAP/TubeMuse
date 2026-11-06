@@ -261,6 +261,11 @@ code {
 .icon-btn:hover {
   color: var(--accent);
 }
+.icon-btn:disabled {
+  color: var(--muted);
+  opacity: 0.35;
+  cursor: default;
+}
 .input {
   font: inherit;
   color: var(--text);
@@ -1388,6 +1393,22 @@ a.db-title:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 8px;
+}
+.cc-lang-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cc-lang-row label.inline {
+  flex: 1;
+  min-width: 0;
+}
+.cc-lang-move {
+  flex: none;
+  display: inline-flex;
+}
+.cc-lang-move .icon-btn {
+  padding: 2px 7px;
 }
 .cc-lang-name {
   font-weight: 500;

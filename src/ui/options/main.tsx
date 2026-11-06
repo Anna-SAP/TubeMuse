@@ -1017,7 +1017,16 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
   );
 }
 
-const ccLangName = (code: string) => (MULTI_CC_LANGS as Record<string, string>)[code] ?? code;
+/** 从侧边栏存成默认的语言可能不在 MULTI_CC_LANGS 里（例如菲律宾语 fil）：用浏览器自带的语言名 */
+function ccLangName(code: string): string {
+  const known = (MULTI_CC_LANGS as Record<string, string>)[code];
+  if (known) return known;
+  try {
+    return new Intl.DisplayNames(['zh-CN'], { type: 'language' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
 
 function MultiCaptionSection({ settings, update }: { settings: Settings; update: (fn: (s: Settings) => Settings) => void }) {
   const s = settings.multiCaptions;
@@ -1083,7 +1092,7 @@ function MultiCaptionSection({ settings, update }: { settings: Settings; update:
         <NumField label="字号倍数" value={s.fontScale} min={0.6} max={2} step={0.1} onChange={(v) => set({ fontScale: v })} />
       </div>
       <p class="muted small">
-        字幕来自 YouTube 播放页自己的字幕接口（复用播放器的请求，只换语言参数），只存在那个标签页的内存里；不经过 TubeMuse 后台、不发给大模型、不进导出。侧边栏"字幕"页可以给单个视频另选语言。
+        字幕来自 YouTube 播放页自己的字幕接口（复用播放器的请求，只换语言参数），只存在那个标签页的内存里；不经过 TubeMuse 后台、不发给大模型、不进导出。侧边栏"字幕"页可以给单个视频另选语言、调顺序，调好后可以一键存成这里的默认。
       </p>
     </Section>
   );

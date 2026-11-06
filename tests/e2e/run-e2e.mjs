@@ -1102,6 +1102,98 @@ try {
   check(ns2.lang === null && ns2.calls.length === ns1.calls.length, '关闭后不替你打开原生字幕（它本来就关着）');
   check(((await ccStatus.textContent()) ?? '').includes('你已关闭'), '侧边栏：你已关闭这个视频的多语字幕');
 
+  console.log('\n[多语字幕：调整显示顺序——↑↓ 只改这个视频，字幕层立刻跟着变、不重新取字幕；可以设为默认（刷新后还在），也可以改回默认]');
+  const ccMoveBtn = (/** @type {'上移' | '下移'} */ dir, /** @type {string} */ name) => panel.getByRole('button', { name: `${dir} ${name}`, exact: true });
+  const ccPanelRows = () => panel.getByTestId('multicc-langs').locator('.cc-lang-name').allTextContents();
+  const ccFocused = (/** @type {string} */ label) => panel.waitForFunction((label) => document.activeElement?.getAttribute('aria-label') === label, label, { timeout: 5000 });
+  /** 等字幕层的行序变成这样（不管这一行此刻有没有字） */
+  const waitLineOrder = (/** @type {import('playwright').Page} */ page, /** @type {string[]} */ order) =>
+    page.waitForFunction(
+      (order) => JSON.stringify([...(document.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelectorAll('.line') ?? [])].map((l) => /** @type {HTMLElement} */ (l).dataset.lang)) === JSON.stringify(order),
+      order,
+      { timeout: 5000 },
+    );
+  const ccBackToDefault = panel.getByRole('button', { name: '这个视频改回默认语言和顺序' });
+  const ccSaveDefault = panel.getByRole('button', { name: '把这组语言和顺序设为默认' });
+  const savedCcLangs = () => panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('settings').then((/** @type {any} */ r) => r.settings.multiCaptions.langs));
+  /** 把默认语言写回去（给后面的用例；走存储，不走界面） */
+  const setDefaultCcLangs = (/** @type {string[]} */ langs) =>
+    panel.evaluate(async (langs) => {
+      const c = /** @type {any} */ (globalThis).chrome;
+      const { settings } = await c.storage.local.get('settings');
+      await c.storage.local.set({ settings: { ...settings, multiCaptions: { ...settings.multiCaptions, langs } } });
+    }, langs);
+
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await seekPaused(cc, 6.0);
+  await waitCcText(cc, ['서로 이어진 결을 따라', 'Along the lines that connect us', '循着彼此相连的脉络']);
+  const ccFetchedBefore = ourTt('ccMulti0001').length;
+  const colorsBefore = (await ccLines(cc)).map((l) => l.color);
+  check((await ccMoveBtn('上移', 'Korean').isDisabled()) && (await ccMoveBtn('下移', 'Chinese (Simplified)').isDisabled()), '第一行不能再上移，最后一行不能再下移');
+  check((await panel.getByRole('button', { name: '上移 Indonesian' }).count()) === 0, '没勾选的语言没有 ↑↓（它不在播放器里）');
+
+  await ccMoveBtn('下移', 'Korean').click();
+  await waitLineOrder(cc, ['en', 'ko', 'zh-Hans']);
+  await waitCcText(cc, ['Along the lines that connect us', '서로 이어진 결을 따라', '循着彼此相连的脉络']);
+  check(true, '视频暂停时点 ↓：字幕层立刻换成英文 / 韩文 / 中文，排在前面的语言显示在上方');
+  check(JSON.stringify((await ccLines(cc)).map((l) => l.color)) === JSON.stringify(colorsBefore), '颜色和字号跟位置走：第一行仍是白色');
+  check((await ccPanelRows()).slice(0, 3).join(' / ') === 'English / Korean / Chinese (Simplified)', `侧边栏的顺序跟着变：${(await ccPanelRows()).slice(0, 3).join(' / ')}`);
+  check(ourTt('ccMulti0001').length === ccFetchedBefore, '调顺序不重新取字幕');
+  await panel.screenshot({ path: join(shots, '35-multicc-order.png'), fullPage: true });
+
+  await ccMoveBtn('下移', 'Korean').focus();
+  await panel.keyboard.press('Enter');
+  await waitLineOrder(cc, ['en', 'zh-Hans', 'ko']);
+  await ccFocused('上移 Korean');
+  check(true, '键盘操作：挪到底后 ↓ 不能按了，焦点落到同一行的 ↑');
+  await panel.keyboard.press('Enter');
+  await waitLineOrder(cc, ['en', 'ko', 'zh-Hans']);
+  await ccFocused('上移 Korean');
+  check(true, '键盘操作：挪完焦点跟着这一行走，连按挪的始终是同一种语言');
+
+  await panel.keyboard.press('Enter');
+  await waitLineOrder(cc, ['ko', 'en', 'zh-Hans']);
+  await ccBackToDefault.waitFor({ state: 'detached', timeout: 5000 });
+  check(true, '手动调回和默认一样：不算单独选过，"改回默认"随之消失');
+
+  await ccMoveBtn('上移', 'English').click();
+  await waitLineOrder(cc, ['en', 'ko', 'zh-Hans']);
+  await ccBackToDefault.click();
+  await waitLineOrder(cc, ['ko', 'en', 'zh-Hans']);
+  check(true, '这个视频改回默认语言和顺序：字幕层回到默认');
+
+  await panel.getByRole('button', { name: '关闭多语字幕' }).click();
+  await cc.waitForFunction(() => !document.querySelector('[data-tubemuse="multicc"]'), null, { timeout: 5000 });
+  await ccMoveBtn('下移', 'Korean').click();
+  await ccBackToDefault.waitFor({ timeout: 5000 });
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await waitLineOrder(cc, ['en', 'ko', 'zh-Hans']);
+  check(true, '字幕层关着时调的顺序，打开后生效');
+
+  await ccMoveBtn('上移', 'Chinese (Simplified)').click();
+  await waitLineOrder(cc, ['en', 'zh-Hans', 'ko']);
+  await ccMoveBtn('上移', 'Chinese (Simplified)').click();
+  await waitLineOrder(cc, ['zh-Hans', 'en', 'ko']);
+  await ccSaveDefault.click();
+  await panel.getByTestId('multicc-default-saved').waitFor({ timeout: 5000 });
+  const ccSavedOrder = await savedCcLangs();
+  check(JSON.stringify(ccSavedOrder) === JSON.stringify(['zh-Hans', 'en', 'original']), `设为默认：存进设置的是 ${ccSavedOrder.join(', ')}`);
+  await ccBackToDefault.waitFor({ state: 'detached', timeout: 5000 });
+  check(true, '设为默认后这个视频不再算单独选过');
+  await options.getByTestId('multicc-lang-order').locator('li').first().filter({ hasText: '简体中文' }).waitFor({ timeout: 5000 });
+  check(true, '设置页的默认顺序跟着变');
+  await cc.reload();
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await waitLineOrder(cc, ['zh-Hans', 'en', 'ko']);
+  check(true, '刷新页面后顺序还在（存在设置里）');
+  await setDefaultCcLangs(['original', 'en', 'zh-Hans']);
+  await waitLineOrder(cc, ['ko', 'en', 'zh-Hans']);
+  check(true, '在设置里改默认顺序：正在看的视频立刻跟着变');
+  await panel.getByRole('button', { name: '关闭多语字幕' }).click();
+  await cc.waitForFunction(() => !document.querySelector('[data-tubemuse="multicc"]'), null, { timeout: 5000 });
+
   console.log('\n[多语字幕：演讲（原生英文字幕开着）→ 开启时关掉原生字幕、英文 + YouTube 机翻中文 → 关闭时恢复原生字幕]');
   await cc.goto(`${MOCK}/watch?v=ccNative0002`);
   await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
@@ -1123,6 +1215,15 @@ try {
   check(ns3.lang === null && ns3.windows === 0, '显示期间关掉了原生字幕（避免两层）');
   check(((await panel.getByTestId('multicc-langs').textContent()) ?? '').includes('YouTube 机翻'), '侧边栏标明哪一行是 YouTube 机翻');
   await cc.screenshot({ path: join(shots, '32-multicc-autotranslate.png') });
+  // 原声就是英语：默认列表里的 en 没有自己的一行。调顺序、设为默认都不能把它弄丢，否则到韩语 MV 上就少一行英文
+  await ccMoveBtn('上移', 'lang:zh-Hans').click();
+  await waitLineOrder(cc, ['zh-Hans', 'en']);
+  await ccSaveDefault.click();
+  await panel.getByTestId('multicc-default-saved').waitFor({ timeout: 5000 });
+  const ccTalkOrder = await savedCcLangs();
+  check(JSON.stringify(ccTalkOrder) === JSON.stringify(['zh-Hans', 'original', 'en']), `原声与 English 重复时设为默认：没显示的 en 跟着原声走、不丢（${ccTalkOrder.join(', ')}）`);
+  await setDefaultCcLangs(['original', 'en', 'zh-Hans']);
+  await waitLineOrder(cc, ['en', 'zh-Hans']);
   await panel.getByRole('button', { name: '关闭多语字幕' }).click();
   await cc.waitForFunction(() => /** @type {any} */ (document.getElementById('movie_player')).getOption('captions', 'track')?.languageCode === 'en', null, { timeout: 5000 });
   check(true, '关闭多语字幕：原生英文字幕恢复成你原来的选择');

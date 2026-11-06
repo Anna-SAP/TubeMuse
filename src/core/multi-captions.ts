@@ -230,6 +230,36 @@ export function ccOptions(list: CcTrackList, res: CcResolution, langs: readonly 
   return out;
 }
 
+/** 两份语言列表是否完全一样（顺序不同也算不一样） */
+export function sameCcLangs(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/** 播放器里真正有一行的语言，按显示顺序（这个视频给不出的语言勾着也没有行，不算） */
+export function ccLineCodes(options: readonly CcOption[]): string[] {
+  return options.filter((o) => o.checked && o.kind !== 'missing').map((o) => o.code);
+}
+
+/**
+ * 把一行往上（delta = -1）或往下（delta = 1）挪一位，返回新的语言列表；挪不动时返回 undefined。
+ * langs：这个视频用的语言列表；lines：ccLineCodes 的结果。只在真正显示的行之间换位，所以每按一次屏幕上都有变化。
+ * langs 里没有行的语言（这个视频没有的；和别的行重复而没显示的，例如原声就是英语时的 en）留在列表里，
+ * 跟着排在它前面的那一行走：换到别的视频上它们可能又有行了，不能因为在这个视频上调了顺序就丢掉。
+ */
+export function moveCcLang(langs: readonly string[], lines: readonly string[], code: string, delta: -1 | 1): string[] | undefined {
+  const head: string[] = [];
+  const blocks: string[][] = [];
+  for (const l of langs) {
+    if (lines.includes(l)) blocks.push([l]);
+    else (blocks[blocks.length - 1] ?? head).push(l);
+  }
+  const i = blocks.findIndex((b) => b[0] === code);
+  const j = i + delta;
+  if (i < 0 || j < 0 || j >= blocks.length) return undefined;
+  [blocks[i], blocks[j]] = [blocks[j]!, blocks[i]!];
+  return [...head, ...blocks.flat()];
+}
+
 /**
  * 让播放器自己取一次字幕（拿到带令牌的请求）用哪条轨：优先第一行用到的轨；
  * 已经让它取过的轨跳过（播放器可能有缓存，不再发请求）。
@@ -554,7 +584,9 @@ export interface MultiCcTabState {
   status: string;
   options: CcOption[];
   lines: MultiCcLine[];
-  /** 这个视频用的是你在侧边栏单独选的语言 */
+  /** 这个视频用的语言列表（从上到下）：比勾选项多出和别的行重复而没显示的语言 */
+  langs: string[];
+  /** 这个视频用的是你在侧边栏单独选的语言或顺序 */
   overridden: boolean;
   /** TubeMuse 暂时关掉了 YouTube 原生字幕（关闭多语字幕时恢复） */
   nativeHidden: boolean;

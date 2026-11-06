@@ -24,6 +24,7 @@ import {
   parseJson3,
   primeTrack,
   resolveSources,
+  sameCcLangs,
   sanitizeCcLangs,
   sanitizeTrackList,
   textAt,
@@ -49,7 +50,10 @@ const NOTICE_MS = 6_000;
 let settings: CcSettings = { ...DEFAULT_SETTINGS.multiCaptions };
 let settingsLoaded = false;
 let videoId: string | null = null;
-/** 你对每个视频的手动开关与语言选择（只在这个标签页里记住） */
+/**
+ * 你对每个视频的手动开关与语言选择（语言和顺序；只在这个标签页里记住，刷新即回到默认）。
+ * override 里只放和默认不同的列表：调回和默认一样就等于没有单独选过，之后改默认也跟着走。
+ */
 const manual = new Map<string, 'on' | 'off'>();
 const override = new Map<string, string[]>();
 
@@ -629,6 +633,7 @@ function tabState(): MultiCcTabState {
     status,
     options,
     lines: (res?.sources ?? []).map((s) => ({ key: s.key, label: s.label, autoTranslated: s.autoTranslated, ...lineNote(loaded.get(s.key)) })),
+    langs: effectiveLangs(),
     overridden: !!videoId && override.has(videoId),
     nativeHidden,
     ...(fatal ? { error: fatal } : failed?.hint ? { error: { message: failed.message, hint: failed.hint } } : {}),
@@ -730,6 +735,8 @@ function teardown(): void {
 function applySettings(raw: unknown): void {
   const s = (raw as { multiCaptions?: Partial<CcSettings> } | undefined)?.multiCaptions;
   settings = { ...DEFAULT_SETTINGS.multiCaptions, ...(s ?? {}), langs: sanitizeCcLangs(s?.langs) ?? [...DEFAULT_SETTINGS.multiCaptions.langs] };
+  // 默认改成了和某个视频单独选的一样（例如你刚把它设为默认）：那个视频不算单独选过了
+  for (const [vid, langs] of override) if (sameCcLangs(langs, settings.langs)) override.delete(vid);
   fatal = undefined;
   primeAttempts = 0;
 }
@@ -766,7 +773,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   }
   if (msg?.type === MULTICC_MSG.setLangs && videoId) {
     const langs = msg.langs === null ? undefined : sanitizeCcLangs(msg.langs);
-    if (langs) override.set(videoId, langs);
+    if (langs && !sameCcLangs(langs, settings.langs)) override.set(videoId, langs);
     else override.delete(videoId);
     tick();
     sendResponse(tabState());
