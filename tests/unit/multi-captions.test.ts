@@ -546,14 +546,21 @@ describe('页面内助手报来的字幕轨列表（不可信）', () => {
 
 describe('设置', () => {
   it('默认：启用、不自动开启、原声 + 英文 + 简体中文、用 YouTube 自动翻译补缺', () => {
-    expect(DEFAULT_SETTINGS.multiCaptions).toEqual({ enabled: true, autoOn: false, langs: ['original', 'en', 'zh-Hans'], autoTranslate: true, fontScale: 1 });
+    expect(DEFAULT_SETTINGS.multiCaptions).toEqual({ enabled: true, autoShow: false, langs: ['original', 'en', 'zh-Hans'], autoTranslate: true, fontScale: 1 });
     expect(mergeSettings(undefined).multiCaptions.langs).toEqual(['original', 'en', 'zh-Hans']);
+  });
+
+  it('旧版存下的 autoOn: true 作废：默认关闭，只有你重新勾选才会自动显示', () => {
+    const s = mergeSettings({ multiCaptions: { autoOn: true, fontScale: 1.5 } });
+    expect(s.multiCaptions.autoShow).toBe(false);
+    expect(s.multiCaptions).not.toHaveProperty('autoOn');
+    expect(s.multiCaptions.fontScale).toBe(1.5);
   });
 
   it('旧数据没有这一节也能读；存下的语言列表去掉坏值、去重、最多 4 种', () => {
     expect(mergeSettings({ subtitles: { enabled: true } }).multiCaptions).toEqual(DEFAULT_SETTINGS.multiCaptions);
-    const s = mergeSettings({ multiCaptions: { autoOn: true, langs: ['ko', 'ko', 'bad code', ORIGINAL, 'en', 'ja', 'fr'] } });
-    expect(s.multiCaptions.autoOn).toBe(true);
+    const s = mergeSettings({ multiCaptions: { autoShow: true, langs: ['ko', 'ko', 'bad code', ORIGINAL, 'en', 'ja', 'fr'] } });
+    expect(s.multiCaptions.autoShow).toBe(true);
     expect(s.multiCaptions.langs).toEqual(['ko', ORIGINAL, 'en', 'ja']);
     expect(mergeSettings({ multiCaptions: { langs: 'ko' } }).multiCaptions.langs).toEqual(['original', 'en', 'zh-Hans']);
   });

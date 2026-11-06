@@ -653,7 +653,7 @@ function want(): boolean {
   if (!settingsLoaded || !settings.enabled || !videoId) return false;
   const m = manual.get(videoId);
   if (m) return m === 'on';
-  return settings.autoOn && list?.videoId === videoId && list.tracks.length > 0;
+  return settings.autoShow && list?.videoId === videoId && list.tracks.length > 0;
 }
 
 /** 关掉多语字幕（不恢复原生字幕：由主循环在知道新状态后决定） */
@@ -702,7 +702,7 @@ function tick(): void {
   // 自动开启要先知道有没有字幕轨；关掉后要知道原生字幕的现状才能恢复。
   // 正片刚开始时每轮都读：播放器按你的偏好自动打开字幕要尽快看到，才能在那段时间内认出它
   const refreshEvery = active && autoWindow.isOpen(Date.now()) ? TICK_MS : MULTI_CC.stateRefreshMs;
-  if (videoId && settings.enabled && (active || settings.autoOn || nativeHidden || !listed) && Date.now() - listAt >= refreshEvery) void refreshList();
+  if (videoId && settings.enabled && (active || settings.autoShow || nativeHidden || !listed) && Date.now() - listAt >= refreshEvery) void refreshList();
   // 不再显示多语字幕：把我们关掉的原生字幕恢复（你在这期间自己动过原生字幕时不恢复）
   if (!active && nativeHidden && listed && listEpoch === nativeEpoch && !primeOwnedSince) {
     nativeHidden = false;

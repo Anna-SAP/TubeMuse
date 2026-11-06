@@ -870,7 +870,7 @@ function LocalTranslateSetup({ settings }: { settings: Settings }) {
         下载本地翻译语言包
       </button>
       <span class="muted small" data-testid="local-translate-status">
-        {status ?? '第一次用之前点一下（Chrome 要求下载前由你确认），之后不用再管。'}
+        {status ?? '第一次用之前点一下（Chrome 要求下载前由你确认），之后不用再管。Comet 等其他浏览器可能下载不了，那样请改用大模型翻译。'}
       </span>
     </div>
   );
@@ -1039,7 +1039,7 @@ function MultiCaptionSection({ settings, update }: { settings: Settings; update:
         启用多语字幕
       </label>
       <label class="inline">
-        <input type="checkbox" data-testid="multicc-autoon" checked={s.autoOn} onChange={(e) => set({ autoOn: e.currentTarget.checked })} />
+        <input type="checkbox" data-testid="multicc-autoshow" checked={s.autoShow} onChange={(e) => set({ autoShow: e.currentTarget.checked })} />
         有 YouTube 字幕的视频自动显示（默认关闭：只在你从侧边栏"字幕"页或按 Alt+Shift+C 开启时显示）
       </label>
       <label class="inline">

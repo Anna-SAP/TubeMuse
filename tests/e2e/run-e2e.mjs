@@ -906,7 +906,7 @@ try {
   await options.locator('#multicc').waitFor();
   const ccSection = (await options.locator('#multicc').textContent()) ?? '';
   check(
-    ccSection.includes('13. 多语字幕') && !(await options.getByTestId('multicc-autoon').isChecked()) && (await options.getByTestId('multicc-autotranslate').isChecked()),
+    ccSection.includes('13. 多语字幕') && !(await options.getByTestId('multicc-autoshow').isChecked()) && (await options.getByTestId('multicc-autotranslate').isChecked()),
     '设置页有"多语字幕"一节：默认不自动开启，没有的语言用 YouTube 自动翻译补',
   );
   const ccOrder = await options.getByTestId('multicc-lang-order').locator('li').allTextContents();
@@ -1204,9 +1204,24 @@ try {
   await waitCcText(cc, ['내 이름을 불러줘', 'Call my name', '叫我的名字']);
   check(flakyTt('zh-Hans') === 2 && flakyTt('en') === 3 && flakyTt('ko') === 1, '关掉再打开：只重取没读到的中文，读到的两种不再取');
 
+  console.log('\n[多语字幕：旧版存下的 autoOn: true 不再生效，打开视频不自动显示]');
+  await options.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const { settings } = await c.storage.local.get('settings');
+    await c.storage.local.set({ settings: { ...settings, multiCaptions: { ...settings.multiCaptions, autoOn: true } } });
+  });
+  await options.waitForTimeout(300);
+  await cc.bringToFront();
+  await cc.goto(`${MOCK}/watch?v=ccMulti0001`);
+  await cc.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await cc.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).play());
+  await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
+  await cc.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).pause());
+  check((await ccStatus.filter({ hasText: '未开启' }).count()) === 1, '旧设置里的 autoOn: true 作废：不点就不显示多语字幕');
+
   console.log('\n[多语字幕：设置里勾选"自动显示" → 有字幕的视频打开就显示]');
   await options.bringToFront();
-  await options.getByTestId('multicc-autoon').check();
+  await options.getByTestId('multicc-autoshow').check();
   await options.waitForTimeout(300);
   await cc.bringToFront();
   await cc.goto(`${MOCK}/watch?v=ccMulti0001`);
@@ -1245,7 +1260,7 @@ try {
   await checkStickyAbsorbed('ccSticky0006', '自动显示');
 
   await options.bringToFront();
-  await options.getByTestId('multicc-autoon').uncheck();
+  await options.getByTestId('multicc-autoshow').uncheck();
   await options.waitForTimeout(300);
   await cc.bringToFront();
 
