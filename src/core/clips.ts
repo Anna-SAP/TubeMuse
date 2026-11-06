@@ -3,13 +3,16 @@
 // 录制本身（画布、MediaRecorder、保存）在 content/clipper.ts；侧边栏"片段"页只经消息控制它。
 
 import { CLIPS } from '../config/defaults';
-import { XHS_PAGES } from '../config/endpoints';
+import { XHS_PAGES, X_PAGES } from '../config/endpoints';
 import { canonicalXhsUrl, isXhsId } from './xhs';
 
 export type ClipMode = 'free' | 'range';
 
-/** 录的是哪个站的视频：YouTube 播放页，或小红书网页版的视频笔记（2026-11-04 新增，见 DECISIONS §43） */
-export type ClipSite = 'youtube' | 'xhs';
+/**
+ * 录的是哪个站的视频：YouTube 播放页、小红书网页版的视频笔记（2026-11-04 新增，见 DECISIONS §43）、
+ * X 网页版的帖子（2026-11-06 新增，见 DECISIONS §52）
+ */
+export type ClipSite = 'youtube' | 'xhs' | 'x';
 
 /** 侧边栏 → 内容脚本、内容脚本 → 侧边栏 / 后台 的消息类型 */
 export const CLIP_MSG = {
@@ -81,12 +84,28 @@ export function formatBytes(n: number): string {
 
 // ── 文件名 ──
 
-/** 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"） */
+/** 帖子正文里的 t.co 短链：X 把媒体也写成一条短链，留在标题里只是噪音 */
+const TCO_LINK = /\s*https?:\/\/t\.co\/\S+/g;
+
+/**
+ * X 帖子页的标题："X 上的 作者：“正文 https://t.co/…” / X"（英文界面：作者 on X: "正文" / X）→"作者 - 正文"，
+ * 帖子只有视频、没有文字时只留作者。还在加载或不是帖子时（"帖子 / X"、"X"）返回空。
+ */
+function xPostTitle(title: string): string {
+  const body = title.replace(/\s*\/\s*X\s*$/, '').trim();
+  if (/^(?:X|Post|帖子)$/.test(body)) return '';
+  const post = /^(?:X 上的\s*(.+?)|(.+?) on X)\s*[：:]\s*[“"]([\s\S]*)[”"]$/.exec(body);
+  if (!post) return body.replace(TCO_LINK, '').trim();
+  const author = (post[1] ?? post[2])!.trim();
+  const text = post[3]!.replace(TCO_LINK, '').trim();
+  return text ? `${author} - ${text}` : author;
+}
+
+/** 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"；X 见 xPostTitle） */
 export function titleFromDocumentTitle(docTitle: string, site: ClipSite = 'youtube'): string {
-  return docTitle
-    .replace(/^\(\d+\+?\)\s*/, '')
-    .replace(site === 'xhs' ? /\s*[-–—]\s*(?:小红书|rednote)\s*$/i : /\s*[-–—]\s*YouTube\s*$/i, '')
-    .trim();
+  const title = docTitle.replace(/^\(\d+\+?\)\s*/, '');
+  if (site === 'x') return xPostTitle(title);
+  return title.replace(site === 'xhs' ? /\s*[-–—]\s*(?:小红书|rednote)\s*$/i : /\s*[-–—]\s*YouTube\s*$/i, '').trim();
 }
 
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)$/i;
@@ -101,12 +120,12 @@ export function safeFileTitle(title: string): string {
   return WINDOWS_RESERVED.test(cut) ? `_${cut}` : cut;
 }
 
-/** 文件名开头：清洗过的标题；没有标题时用视频（笔记）ID */
+/** 文件名开头：清洗过的标题；没有标题时用视频（笔记、帖子）ID */
 function fileBase(title: string | undefined, videoId: string, site: ClipSite): string {
-  return safeFileTitle(title ?? '') || `${site === 'xhs' ? 'xhs' : 'youtube'}-${videoId}`;
+  return safeFileTitle(title ?? '') || `${site}-${videoId}`;
 }
 
-/** 片段文件名：标题_起点-终点.扩展名；没有标题时用视频（笔记）ID */
+/** 片段文件名：标题_起点-终点.扩展名；没有标题时用视频（笔记、帖子）ID */
 export function clipFileName(title: string | undefined, videoId: string, start: number, end: number, ext: string, site: ClipSite = 'youtube'): string {
   return `${fileBase(title, videoId, site)}_${fileStamp(start)}-${fileStamp(end)}.${ext}`;
 }
@@ -198,6 +217,71 @@ export function mp4TrackKinds(bytes: Uint8Array): string[] | undefined {
   return undefined;
 }
 
+// ── X 的帖子页 ──
+
+/** /用户名/status/ID（可带 /video/1、/photo/1 等），或没有用户名的 /i/status/ID、/i/web/status/ID */
+const X_STATUS_PATH = /^\/(?:i(?:\/web)?|([A-Za-z0-9_]{1,15}))\/status\/(\d{1,25})(?:\/|$)/;
+
+/** 这个网址是不是 X 网页版（录制脚本靠它判断自己在哪个站） */
+export function isXPage(url: string): boolean {
+  return X_PAGES.some((p) => url.startsWith(p));
+}
+
+/**
+ * X 帖子页的网址 → 帖子 ID 与规范链接。链接去掉 /video/1 和查询参数（分享链接里的 ?s=…&t=… 会标记分享人）。
+ * 不是帖子页返回 undefined。
+ */
+export function parseXStatusUrl(url: string): { id: string; url: string } | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const full = u.origin + u.pathname;
+  const prefix = X_PAGES.find((p) => full.startsWith(p));
+  const m = prefix ? X_STATUS_PATH.exec(`/${full.slice(prefix.length)}`) : null;
+  return m ? { id: m[2]!, url: `${prefix}${m[1] ?? 'i'}/status/${m[2]}` } : undefined;
+}
+
+/** 一个视频现在的样子：录制脚本从页面量出来，判断逻辑是纯函数 */
+export interface XVideoView {
+  /** 正在屏幕里的面积（平方像素），滚到屏幕外是 0 */
+  visibleArea: number;
+  /** 在全屏视图（/video/1）的弹层里：弹层底下的帖子页还留着一个被盖住的 <video> */
+  inDialog: boolean;
+  /** 正在播放 */
+  playing: boolean;
+  /** 播过（位置不在开头） */
+  started: boolean;
+}
+
+/** 元素的矩形落在视口里的面积 */
+export function visibleArea(r: { left: number; top: number; right: number; bottom: number }, viewWidth: number, viewHeight: number): number {
+  const w = Math.min(r.right, viewWidth) - Math.max(r.left, 0);
+  const h = Math.min(r.bottom, viewHeight) - Math.max(r.top, 0);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+/**
+ * X 一页有好几个 <video>：回复里的视频常常比主帖的还大（2026-11-06 实测 518×518 对 286×508），所以不能只比大小。
+ * 依次看：在屏幕上、在全屏弹层里、正在播、播过、屏幕里的面积；都一样时取页面上靠前的（主帖在前）。
+ * 返回下标，一个视频都没有时返回 -1。
+ */
+export function pickXVideo(videos: readonly XVideoView[]): number {
+  const flags = (v: XVideoView) => [v.visibleArea > 0, v.inDialog, v.playing, v.started];
+  const better = (a: XVideoView, b: XVideoView) => {
+    const [fa, fb] = [flags(a), flags(b)];
+    const i = fa.findIndex((f, n) => f !== fb[n]);
+    return i >= 0 ? fa[i]! : a.visibleArea > b.visibleArea;
+  };
+  let best = -1;
+  videos.forEach((v, i) => {
+    if (best < 0 || better(v, videos[best]!)) best = i;
+  });
+  return best;
+}
+
 // ── 开录前检查 ──
 
 export interface ClipStartRequest {
@@ -233,12 +317,18 @@ export function checkRange(start: number | null | undefined, end: number | null 
   return undefined;
 }
 
+const CLIP_UNAVAILABLE_TEXT: Record<ClipSite, { noPage: string; noVideo: string }> = {
+  youtube: { noPage: '这个页面不是视频播放页', noVideo: '没找到播放器里的视频，等视频开始播放后再试' },
+  xhs: { noPage: '这个页面不是笔记详情：打开一篇视频笔记再录', noVideo: '这篇笔记里没有视频（图文笔记录不了）；视频笔记等画面出来后再试' },
+  x: { noPage: '这个页面不是帖子详情：点开一条带视频的帖子再录', noVideo: '这条帖子里没有视频；有视频的话等画面出来后再试' },
+};
+
 /** 这个页面现在为什么录不了（侧边栏显示、开录前检查共用）；能录返回 undefined */
 export function clipUnavailable(site: ClipSite, c: Pick<ClipStartContext, 'enabled' | 'videoId' | 'shorts' | 'hasVideo'>): string | undefined {
   if (!c.enabled) return '片段录制已在设置中关闭';
   if (c.shorts) return 'Shorts 暂不支持录制';
-  if (!c.videoId) return site === 'xhs' ? '这个页面不是笔记详情：打开一篇视频笔记再录' : '这个页面不是视频播放页';
-  if (!c.hasVideo) return site === 'xhs' ? '这篇笔记里没有视频（图文笔记录不了）；视频笔记等画面出来后再试' : '没找到播放器里的视频，等视频开始播放后再试';
+  if (!c.videoId) return CLIP_UNAVAILABLE_TEXT[site].noPage;
+  if (!c.hasVideo) return CLIP_UNAVAILABLE_TEXT[site].noVideo;
   return undefined;
 }
 
@@ -362,7 +452,7 @@ export const CLIP_WAIT_LABELS: Record<ClipWaitReason, string> = {
 
 export const CLIP_STOP_LABELS: Record<ClipStopReason, string> = {
   user: '你停止了录制',
-  'video-changed': '切到了别的视频（或关掉了这篇笔记），这一段已结束',
+  'video-changed': '切到了别的视频（或关掉了这篇笔记、离开了这条帖子），这一段已结束',
   'max-duration': '到了单段时长上限（设置页可改）',
   'max-bytes': '片段太大了，已自动结束（保存前都在内存里）',
   'range-end': '已录到终点',
@@ -502,11 +592,11 @@ export interface ReadyClipInfo {
 
 export interface ClipTabState {
   site: ClipSite;
-  /** YouTube 的视频 ID，或小红书的笔记 ID */
+  /** YouTube 的视频 ID、小红书的笔记 ID，或 X 的帖子 ID */
   videoId: string | null;
-  /** 视频标题（页面标题去掉" - YouTube" / " - 小红书"，只用来显示和起文件名） */
+  /** 视频标题（来自页面标题，只用来显示和起文件名） */
   title?: string;
-  /** 不能录的原因（不是视频页、Shorts、设置里关了、图文笔记） */
+  /** 不能录的原因（不是视频页、Shorts、设置里关了、图文笔记、帖子里没有视频） */
   unavailable?: string;
   /** 当前播放位置与总时长（秒） */
   position: number;
@@ -532,11 +622,14 @@ export interface ClipTabState {
 
 export interface ClipRecord {
   id: string;
-  /** 只有小红书的记录带 'xhs'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
+  /** 小红书的记录带 'xhs'，X 的带 'x'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
   site?: ClipSite;
-  /** YouTube 的视频 ID，或小红书的笔记 ID */
+  /** YouTube 的视频 ID、小红书的笔记 ID，或 X 的帖子 ID */
   videoId: string;
-  /** 小红书：笔记链接（只留站点、路径与 xsec_token / xsec_source，从外面打开笔记要带 xsec_token） */
+  /**
+   * 小红书：笔记链接（只留站点、路径与 xsec_token / xsec_source，从外面打开笔记要带 xsec_token）；
+   * X：帖子链接（parseXStatusUrl 的规范链接）
+   */
   url?: string;
   title?: string;
   mode: ClipMode;
@@ -552,9 +645,21 @@ export interface ClipRecord {
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{6,20}$/;
 
+/** 小红书、X 的记录要带回到原处的链接：规范化后的链接；与这条记录的 ID 对不上时 null。YouTube 不带（undefined） */
+function clipSourceUrl(site: ClipSite, raw: unknown, id: string | null): string | null | undefined {
+  if (site === 'youtube') return undefined;
+  if (typeof raw !== 'string') return null;
+  if (site === 'x') {
+    const post = parseXStatusUrl(raw);
+    return post?.id === id ? post.url : null;
+  }
+  const note = canonicalXhsUrl(raw);
+  return note?.link.kind === 'note' && note.link.noteId === id ? note.url : null;
+}
+
 /**
  * 校验内容脚本送来的记录（来自网页环境，字段逐一检查、截断）。
- * site 由后台按发消息的页面决定（不信记录里自己写的）：小红书的笔记 ID 与链接必须对得上。
+ * site 由后台按发消息的页面决定（不信记录里自己写的）：小红书、X 的 ID 与链接必须对得上。
  */
 export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): ClipRecord | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -562,9 +667,10 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
   const str = (v: unknown, max: number) => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null);
   const id = str(r.id, 64);
-  const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : VIDEO_ID.test(r.videoId)) ? r.videoId : null;
-  const note = site === 'xhs' && typeof r.url === 'string' ? canonicalXhsUrl(r.url) : undefined;
-  if (site === 'xhs' && (note?.link.kind !== 'note' || note.link.noteId !== videoId)) return null;
+  // X 的帖子 ID 由下面的链接核对（链接里的 ID 只能是数字）
+  const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : site === 'x' || VIDEO_ID.test(r.videoId)) ? r.videoId : null;
+  const sourceUrl = clipSourceUrl(site, r.url, videoId);
+  if (sourceUrl === null) return null;
   const mode = r.mode === 'free' || r.mode === 'range' ? r.mode : null;
   const start = num(r.start, 1e6);
   const end = num(r.end, 1e6);
@@ -575,7 +681,7 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const format = str(r.format, 60);
   if (!id || !videoId || !mode || start === null || end === null || durationSec === null || bytes === null || savedAt === null || !fileName || !format) return null;
   const title = str(r.title, 200);
-  return { id, ...(note ? { site, url: note.url } : {}), videoId, ...(title ? { title } : {}), mode, start, end, durationSec, bytes, format, fileName, burned: r.burned === true, savedAt };
+  return { id, ...(sourceUrl ? { site, url: sourceUrl } : {}), videoId, ...(title ? { title } : {}), mode, start, end, durationSec, bytes, format, fileName, burned: r.burned === true, savedAt };
 }
 
 /** 新记录放最前；同一个片段再存一次只更新时间；最多保留 max 条 */
@@ -583,8 +689,9 @@ export function addClipRecord(log: ClipRecord[], rec: ClipRecord, max: number = 
   return [rec, ...log.filter((r) => r.id !== rec.id)].slice(0, max);
 }
 
-/** 回到视频里这一段的地址；小红书没有按时间打开的地址，回到这篇笔记 */
+/** 回到视频里这一段的地址；小红书、X 没有按时间打开的地址，回到这篇笔记或这条帖子 */
 export function clipWatchUrl(r: Pick<ClipRecord, 'videoId' | 'start' | 'site' | 'url'>): string {
   if (r.site === 'xhs') return r.url ?? `${XHS_PAGES[0]}explore/${encodeURIComponent(r.videoId)}`;
+  if (r.site === 'x') return r.url ?? `${X_PAGES[0]}i/status/${encodeURIComponent(r.videoId)}`;
   return `https://www.youtube.com/watch?v=${encodeURIComponent(r.videoId)}&t=${Math.floor(r.start)}s`;
 }

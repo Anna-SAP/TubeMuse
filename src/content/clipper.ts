@@ -1,9 +1,11 @@
 // 注入 YouTube 播放页的视频片段录制脚本（用户 2026-11-01 批准的红线变更，见 DECISIONS §36）；
-// 2026-11-04 起也注入小红书网页版，录笔记详情里的视频（用户要求，见 DECISIONS §43）：
+// 2026-11-04 起也注入小红书网页版，录笔记详情里的视频（用户要求，见 DECISIONS §43）；
+// 2026-11-06 起也注入 X 网页版，录帖子里的视频（用户要求，见 DECISIONS §52）：
 // 1. 只在你从侧边栏"片段"页或快捷键开始录制后工作：把正在播放的这个视频逐帧画到一块不放进页面的画布上
 //    （开启字幕烧录时再叠加播放器里当时显示的字幕，只限 YouTube），声音经 video.captureStream() 取这个视频的音轨，
-//    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载 YouTube / 小红书的音视频流。
-// 2. 广告、暂停、缓冲、标签页在后台时自动暂停录制；切到别的视频（小红书：关掉这篇笔记）时这一段自动结束。
+//    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载这些网站的音视频流。
+// 2. 广告（只有 YouTube 认得出）、暂停、缓冲、标签页在后台时自动暂停录制；
+//    切到别的视频（小红书：关掉这篇笔记；X：离开这条帖子）时这一段自动结束。
 // 3. 录好的片段只在这个页面的内存里；你点"保存"（或开着"停止后直接保存"）时由浏览器存进下载文件夹，
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
 //    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
@@ -28,12 +30,16 @@ import {
   clipUnavailable,
   decideClip,
   formatTimecode,
+  isXPage,
   layoutBurnIn,
   mp4TrackKinds,
   outputSize,
+  parseXStatusUrl,
   pickClipFormat,
+  pickXVideo,
   titleFromDocumentTitle,
   videoBitrate,
+  visibleArea,
   type BurnBox,
   type BurnLine,
   type ClipCaptureReply,
@@ -53,8 +59,8 @@ type ClipSettings = typeof DEFAULT_SETTINGS.clips;
 
 const FONT = '"YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", sans-serif';
 
-/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）或 YouTube */
-const SITE: ClipSite = xhsPath(location.href) ? 'xhs' : 'youtube';
+/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版或 YouTube */
+const SITE: ClipSite = xhsPath(location.href) ? 'xhs' : isXPage(location.href) ? 'x' : 'youtube';
 
 let settings: ClipSettings = { ...DEFAULT_SETTINGS.clips };
 let fontScale = DEFAULT_SETTINGS.subtitles.fontScale;
@@ -63,7 +69,7 @@ interface Recording {
   id: string;
   mode: ClipMode;
   videoId: string;
-  /** 开始录制时的网址（小红书：记下笔记链接，关掉笔记后再保存也对得上） */
+  /** 开始录制时的网址（小红书、X：记下原处的链接，离开之后再保存也对得上） */
   pageUrl: string;
   title?: string;
   start?: number;
@@ -145,8 +151,24 @@ function playerEl(): HTMLElement | null {
 const XHS_PLAYER_VIDEO = '#noteContainer .player-container video, #noteContainer .xgplayer video, .note-container .xgplayer video';
 const XHS_ANY_VIDEO = '#noteContainer video, .note-container video';
 
+/** X 帖子页上你正在看的视频（判断见 pickXVideo）；不是帖子页时不找：时间线上的视频不知道属于哪条帖子 */
+function xVideoEl(): HTMLVideoElement | null {
+  if (!parseXStatusUrl(location.href)) return null;
+  const all = [...document.querySelectorAll('video')];
+  const pick = pickXVideo(
+    all.map((v) => ({
+      visibleArea: visibleArea(v.getBoundingClientRect(), innerWidth, innerHeight),
+      inDialog: !!v.closest('[role="dialog"]'),
+      playing: !v.paused && !v.ended,
+      started: v.currentTime > 0,
+    })),
+  );
+  return all[pick] ?? null;
+}
+
 function videoEl(): HTMLVideoElement | null {
   if (SITE === 'youtube') return playerEl()?.querySelector('video') ?? null;
+  if (SITE === 'x') return xVideoEl();
   let all = document.querySelectorAll<HTMLVideoElement>(XHS_PLAYER_VIDEO);
   if (!all.length) all = document.querySelectorAll<HTMLVideoElement>(XHS_ANY_VIDEO);
   if (all.length <= 1) return all[0] ?? null;
@@ -168,9 +190,10 @@ function adShowing(): boolean {
   return !!p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting'));
 }
 
-/** YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时） */
+/** YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时） */
 function currentIds(): { videoId: string | null; shorts: boolean } {
   if (SITE === 'youtube') return videoIdFromUrl(location.href);
+  if (SITE === 'x') return { videoId: parseXStatusUrl(location.href)?.id ?? null, shorts: false };
   const link = parseXhsUrl(location.href);
   return { videoId: link?.kind === 'note' ? link.noteId : null, shorts: false };
 }
@@ -185,7 +208,10 @@ function drmProtected(v: HTMLVideoElement): boolean {
   return !!(v as HTMLVideoElement & { mediaKeys?: unknown }).mediaKeys;
 }
 
-/** 画面读得到吗：来自别的网站、又没有放行的视频，画到画布上会被浏览器标为"不可读"，录不了（YouTube、小红书现在都是同源的 blob: 流） */
+/**
+ * 画面读得到吗：来自别的网站、又没有放行的视频，画到画布上会被浏览器标为"不可读"，录不了。
+ * YouTube、小红书、X 的视频现在都是同源的 blob: 流；X 的动图（GIF）例外，直接从 video.twimg.com 加载。
+ */
 function framesReadable(v: HTMLVideoElement): boolean {
   try {
     const c = document.createElement('canvas');
@@ -351,8 +377,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     busy: !!rec,
     duration: video?.duration ?? 0,
     currentTime: video?.currentTime ?? 0,
-    // 停在最后一帧也算播完（小红书的播放器不报"播完"）
-    ended: !!video && (video.ended || atVideoEnd(video.currentTime, video.duration)),
+    // 停在最后一帧也算播完（小红书的播放器不报"播完"）；循环播放的不算：X 的动图只有一两秒，一多半时间都离结尾很近
+    ended: !!video && !video.loop && (video.ended || atVideoEnd(video.currentTime, video.duration)),
     maxSec,
   });
   if (problem || !video || !videoId) return fail(problem ?? '没找到播放器里的视频');
@@ -362,7 +388,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     return fail('这个视频受版权保护（DRM），浏览器不允许录制', '付费电影、部分音乐视频等受保护的内容录不了；TubeMuse 不会绕过这项保护');
   }
   if (!framesReadable(video)) {
-    return fail('浏览器不允许读取这个视频的画面：视频来自别的网站，没有放行', '这种视频录不了；TubeMuse 不会绕过这项限制');
+    return fail('浏览器不允许读取这个视频的画面：视频来自别的网站，没有放行', `${SITE === 'x' ? 'X 的动图（GIF）是这样，普通视频不受影响。' : ''}这种视频录不了；TubeMuse 不会绕过这项限制`);
   }
   const format = pickClipFormat((m) => MediaRecorder.isTypeSupported(m));
   if (!format) return fail('这个浏览器不支持录制视频（MediaRecorder 不支持 MP4 或 WebM）', '请用最新版 Google Chrome');
@@ -381,7 +407,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     source.getTracks().forEach((t) => t.stop());
     return fail(`浏览器没能准备录音：${e instanceof Error ? e.message : String(e)}`);
   }
-  if (ac.state === 'suspended') await ac.resume().catch(() => undefined);
+  // 页面还没被点过时 resume() 不报错也不返回：等一小会儿就往下走，由下面的判断告诉你怎么办
+  if (ac.state === 'suspended') await Promise.race([ac.resume().catch(() => undefined), new Promise((done) => setTimeout(done, CLIPS.audioResumeMs))]);
   if (ac.state === 'suspended') {
     source.getTracks().forEach((t) => t.stop());
     void ac.close();
@@ -431,7 +458,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     g,
     width: size.width,
     height: size.height,
-    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）
+    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）；X 播放器里的字幕不读
     burn: SITE === 'youtube' && settings.burnSubtitles,
     format,
     maxSec,
@@ -597,8 +624,8 @@ function saveReady(): void {
   c.savedAt = Date.now();
   const record: ClipRecord = {
     id: c.id,
-    // 小红书：带上笔记链接，"最近录过的片段"里点标题能回到这篇笔记（后台核对链接与笔记 ID）
-    ...(SITE === 'xhs' ? { site: SITE, url: c.pageUrl } : {}),
+    // 小红书、X：带上原处的链接，"最近录过的片段"里点标题能回去（后台核对链接与 ID）
+    ...(SITE !== 'youtube' ? { site: SITE, url: c.pageUrl } : {}),
     videoId: c.videoId,
     ...(c.title ? { title: c.title } : {}),
     mode: c.mode,
@@ -688,8 +715,9 @@ function tick(): void {
     const d = decideClip(
       { mode: r.mode, videoId: r.videoId, ...(r.mode === 'range' ? { start: r.start!, end: r.end! } : {}), recordedSec: r.recordedSec, bytes: r.bytes, maxSec: r.maxSec, maxBytes: CLIPS.maxBytes, userPaused: r.userPaused },
       {
-        // 播放器里换了一个视频元素也算换了视频
-        videoId: videoEl() === v ? videoId : null,
+        // 播放器里换了一个视频元素也算换了视频。X 一页有好几个视频，滚动时"最该录的"会变，只看录的这个还在不在页面上：
+        // 滚开时 X 自己会暂停它，录制跟着暂停，滚回来接着录
+        videoId: (SITE === 'x' ? v.isConnected : videoEl() === v) ? videoId : null,
         currentTime: v.currentTime,
         paused: v.paused,
         ended: v.ended,
@@ -723,10 +751,11 @@ function tick(): void {
 
 function tabState(precise = false): ClipTabState {
   const { videoId, shorts } = currentIds();
-  const video = videoEl();
   const r = rec;
+  // 录制中报告的是录的这个视频（X 上滚动时"最该录的"会变）
+  const video = r?.video ?? videoEl();
   const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
-  // YouTube 播放页上视频元素几乎立刻就有，沿用原来的判断（不因"还没有视频"挡住）；小红书的图文笔记没有视频
+  // YouTube 播放页上视频元素几乎立刻就有，沿用原来的判断（不因"还没有视频"挡住）；小红书的图文笔记、X 的文字帖子没有视频
   const unavailable = clipUnavailable(SITE, { enabled: settings.enabled, videoId, shorts, hasVideo: SITE === 'youtube' || !!video });
   const t = video?.currentTime ?? 0;
   let status: string;

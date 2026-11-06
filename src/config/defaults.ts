@@ -552,6 +552,8 @@ export const CLIPS = {
   /** 录音采样率：AudioContext 默认跟着输出设备走，蓝牙耳机在通话模式下是 16 kHz，而 Chrome 的 AAC 编码器
    *  （Windows 上用系统自带的）只接受 44.1 / 48 kHz（2026-11-02 实测 Chrome 156）。固定 48 kHz，由浏览器重采样 */
   audioSampleRate: 48_000,
+  /** 等 AudioContext 启动多久（毫秒）：页面还没被点过时 resume() 不报错、也一直不返回（2026-11-06 实测 x.com），不能干等 */
+  audioResumeMs: 1000,
   /** MP4 文件头（声明有哪些轨）最多在开头这么多字节里找；Chrome 交出的第一块数据就带着它，通常不到 2 KB */
   headerScanBytes: 1_000_000,
   /** 编码器每隔多久交出一块数据（毫秒）：已录大小实时可见 */

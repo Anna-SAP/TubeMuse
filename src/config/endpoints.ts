@@ -42,3 +42,10 @@ export const XHS_PAGES: readonly string[] = ['https://www.xiaohongshu.com/', 'ht
  * 也不用 Gmail API（OAuth 只申请 youtube.readonly）。
  */
 export const EMAIL_PAGES: readonly string[] = ['https://mail.google.com/'];
+
+/**
+ * X 网页版（2026-11-06 新增，见 DECISIONS §52）：片段录制脚本注入的页面。twitter.com 已全部跳到 x.com（当天实测），不用单独匹配。
+ * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里；
+ * 官方 API 是另一个域名 api.x.com（ENDPOINTS.x）。
+ */
+export const X_PAGES: readonly string[] = ['https://x.com/'];

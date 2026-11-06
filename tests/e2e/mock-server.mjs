@@ -3,6 +3,7 @@
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { xMediaSeconds, xPage } from './x-pages.mjs';
 import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
 import { gmailPage } from './email-pages.mjs';
 
@@ -532,16 +533,23 @@ export function startMockServer() {
         return res.end();
       }
       const p = url.pathname;
-      // 仿小红书网页版的视频笔记：视频是一段有声音的 WAV（同源，与真实页面的 blob: 流一样画面读得到）
-      const xhsSeconds = xhsMediaSeconds(p);
-      if (xhsSeconds !== undefined) {
-        const wav = speechWav(xhsSeconds);
+      // 仿小红书、X 网页版的视频：一段有声音的 WAV（同源，与真实页面的 blob: 流一样读得到）
+      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p);
+      if (mediaSeconds !== undefined) {
+        const wav = speechWav(mediaSeconds);
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
         return res.end(wav);
       }
       // 仿 Gmail（邮件脚本只注入 /gmail/ 下的页面）
       if (p.startsWith('/gmail/')) {
         const html = gmailPage(p);
+        if (!html) return send(404, {});
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+      // 仿 X 网页版（/x/ 是 X 官方 API 的 mock）
+      if (p.startsWith('/xpage/')) {
+        const html = xPage(p);
         if (!html) return send(404, {});
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);

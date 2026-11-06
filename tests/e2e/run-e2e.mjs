@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockServer, PORT } from './mock-server.mjs';
+import { X_GIF_POST, X_POST, X_TEXT_POST } from './x-pages.mjs';
 import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID, XHS_V1 } from './xhs-pages.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -50,6 +51,8 @@ const context = await chromium.launchPersistentContext(userDataDir, {
 const blocked = [];
 /** @type {{ url: string; referer: string | undefined }[]} */
 const doubanImages = [];
+/** 仿 X 的动图：测试现场录一小段视频填进来，见下面的路由 */
+let xGifBody = Buffer.alloc(0);
 await context.route('**/*', (route) => {
   const url = route.request().url();
   if (url.startsWith('chrome-extension://') || url.startsWith(MOCK) || url.startsWith('data:') || url.startsWith('blob:')) return route.continue();
@@ -60,6 +63,8 @@ await context.route('**/*', (route) => {
     doubanImages.push({ url, referer: route.request().headers().referer });
     return route.fulfill({ status: 418, body: '' });
   }
+  // X 的动图：跨站视频（实测真实页面就是 video.twimg.com 的地址，不是 blob:），在本地应答，绝不出网
+  if (url === X_GIF_POST.src) return route.fulfill({ status: 200, contentType: 'video/webm', body: xGifBody });
   blocked.push(url);
   return route.abort();
 });
@@ -1984,6 +1989,129 @@ try {
     `小红书页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${xhsPageReqs.length ? `：${xhsPageReqs.map((r) => r.path).join(', ')}` : ''}`,
   );
   await xhs.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── X：片段录制 ─────────────────────────
+  console.log('\n[X：时间线上说明要点开帖子；站内跳进帖子后录主帖的视频（静音自动播放），不录更大的回复视频；滚开时暂停，滚回来接着录]');
+  const xReqStart = requests.length;
+  const [xPage] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/xpage/home`)]);
+  xPage.on('pageerror', (e) => consoleErrors.push(`x pageerror: ${e.message}`));
+  await xPage.waitForLoadState('domcontentloaded');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '片段', exact: true }).click();
+  // 把侧边栏拿到前台时，当前标签页变成了侧边栏自己：切回 X 那个标签页（就像你点回它）
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/xpage/'));
+    await c.tabs.update(t.id, { active: true });
+  });
+  await clipStatus.filter({ hasText: '不是帖子详情' }).waitFor({ timeout: 10000 });
+  check(true, '时间线上：说明要点开帖子才能录');
+  await xPage.evaluate(() => /** @type {any} */ (window).__openPost());
+  await xPage.waitForFunction(() => (document.querySelector('#main video') instanceof HTMLVideoElement ? /** @type {HTMLVideoElement} */ (document.querySelector('#main video')).readyState : 0) >= 2, null, { timeout: 30000 });
+  /** 在 X 页面里对主帖和回复的视频做点什么（模拟你播放，或 X 自己滚动时的行为） */
+  const onXVideos = (/** @type {string} */ code) => xPage.evaluate(`(() => { const main = document.querySelector('#main video'); const reply = document.querySelector('#reply video'); ${code} })()`);
+  await onXVideos('main.currentTime = 0; return main.play();');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  check(
+    ((await panel.getByTestId('clip-title').textContent()) ?? '') === X_POST.title && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-capture').count()) === 0,
+    '站内跳进帖子后不用刷新就能录：标题来自页面标题（作者 - 正文，去掉 t.co 短链），不提供字幕烧录和 Capture',
+  );
+  check(((await panel.getByTestId('clip-no-burn').textContent()) ?? '').includes('片头广告认不出来'), '界面写明 X 的片头广告认不出来，不静默录进去');
+  const xPosition = async () => (await panel.getByTestId('clip-position').textContent()) ?? '';
+  // 站内跳转后状态马上是"可以开始录制"，时长要等视频元数据到了、下一轮推送才进侧边栏：等它出现，选错视频时这里是 0:30，会超时
+  const xShowsMainVideo = () => panel.getByTestId('clip-position').filter({ hasText: / 0:(19|20)$/ }).waitFor({ timeout: 5000 });
+  await xShowsMainVideo();
+  check(true, `选中主帖的视频（20 秒），不是回复里更大的那个（30 秒）：${await xPosition()}`);
+  const xAppHtml = () => xPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  const xAppBefore = await xAppHtml();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  const xBadge = await sw2.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/xpage/'));
+    return c.action.getBadgeText({ tabId: t.id });
+  });
+  check(xBadge === 'REC', `X 上录制中，工具栏图标也显示 REC（实际："${xBadge}"）`);
+  await xPage.waitForTimeout(2000);
+  // X 自己的行为：滚开时暂停主帖的视频，屏幕上的回复视频开始播
+  await onXVideos('main.pause(); reply.scrollIntoView(); return reply.play();');
+  await clipStatus.filter({ hasText: '视频已暂停' }).waitFor({ timeout: 5000 });
+  const xAtScroll = await recordedSec();
+  await xPage.waitForTimeout(1200);
+  check((await recordedSec()) === xAtScroll && (await panel.getByTestId('clip-live').count()) === 1 && / 0:(19|20)$/.test(await xPosition()), `滚到回复区：这一段不结束、不跳到回复的视频，暂停录制（停在 ${xAtScroll} 秒）`);
+  await onXVideos('reply.pause(); main.scrollIntoView(); return main.play();');
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 5000 });
+  await xPage.waitForTimeout(1500);
+  const [xDl] = await Promise.all([xPage.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const xName = xDl.suggestedFilename();
+  check(/^Ayo O - I reverse engineered tiktok_00m\d\ds-00m\d\ds\.(mp4|webm)$/.test(xName), `停止后保存，文件名用作者、正文与起止时间：${xName}`);
+  const xClip = await analyzeClip(xPage, /** @type {string} */ (await xDl.path()));
+  check(container(xClip.head) === xName.split('.').pop() && xClip.duration > 2.5 && xClip.rms > 0.02, `视频静音播放也录到了声音（${xClip.duration.toFixed(1)} 秒，响度 ${xClip.rms.toFixed(3)}）`);
+  await panel.getByTestId('clip-log').waitFor({ timeout: 5000 });
+  const xStatusUrl = `${MOCK}/xpage/${X_POST.user}/status/${X_POST.id}`;
+  const xLog = (await clipLog())[0];
+  check(xLog?.site === 'x' && xLog.videoId === X_POST.id && xLog.title === X_POST.title && xLog.url === xStatusUrl && xLog.fileName === xName, '"最近录过的片段"记下这是 X 的帖子，链接去掉了分享参数');
+  check(((await panel.getByTestId('clip-log').textContent()) ?? '').includes('X · '), '侧边栏的片段清单标出 X');
+  check((await xAppHtml()) === xAppBefore && (await xPage.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '录制没有往 X 页面里加任何元素，没有点到 X 自己的任何东西');
+
+  console.log('\n[X：全屏视图录弹层里的视频，不录底下被盖住的；离开帖子时这一段自动结束并保存]');
+  await xPage.goto(`${xStatusUrl}/video/1`);
+  const dialogVideo = '[role="dialog"] video';
+  await xPage.waitForFunction((s) => (/** @type {HTMLVideoElement | null} */ (document.querySelector(s))?.readyState ?? 0) >= 2, dialogVideo, { timeout: 30000 });
+  await xPage.evaluate((s) => /** @type {HTMLVideoElement} */ (document.querySelector(s)).play(), dialogVideo);
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await xShowsMainVideo();
+  check(true, `选中弹层里的视频（20 秒），不是底下被盖住的（7 秒）：${await xPosition()}`);
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await xPage.waitForTimeout(1500);
+  const [leaveDl] = await Promise.all([xPage.waitForEvent('download', { timeout: 10000 }), xPage.evaluate(() => history.pushState(null, '', '/xpage/home'))]);
+  check(/^Ayo O - I reverse engineered tiktok_.*\.(mp4|webm)$/.test(leaveDl.suggestedFilename()), `离开帖子时自动结束这一段并保存：${leaveDl.suggestedFilename()}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '离开了这条帖子' }).waitFor({ timeout: 5000 });
+  check(true, '侧边栏说明这一段为什么结束');
+  await panel.getByTestId('clip-log').filter({ hasText: leaveDl.suggestedFilename() }).waitFor({ timeout: 5000 });
+  check((await clipLog())[0]?.url === xStatusUrl, '全屏视图录的片段：记录里的链接回到帖子本身（去掉 /video/1）');
+
+  console.log('\n[X：动图是跨站视频，录不了时说人话；文字帖子说明没有视频]');
+  // 现场录一小段有画面的视频当动图（WAV 没有画面，读不出"画面不可读"这种情况）
+  xGifBody = Buffer.from(
+    await xPage.evaluate(async () => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 64;
+      const g = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+      const rec = new MediaRecorder(c.captureStream(10), { mimeType: 'video/webm;codecs=vp8' });
+      /** @type {Blob[]} */
+      const chunks = [];
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      rec.start();
+      for (let i = 0; i < 12; i++) {
+        g.fillStyle = i % 2 ? '#0a0' : '#080';
+        g.fillRect(0, 0, 64, 64);
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      rec.stop();
+      await new Promise((r) => (rec.onstop = r));
+      const bytes = new Uint8Array(await new Blob(chunks).arrayBuffer());
+      return btoa(String.fromCharCode(...bytes));
+    }),
+    'base64',
+  );
+  await xPage.goto(`${MOCK}/xpage/${X_GIF_POST.user}/status/${X_GIF_POST.id}`);
+  await xPage.waitForFunction(() => (document.querySelector('video')?.videoWidth ?? 0) > 0, null, { timeout: 15000 });
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-start').click();
+  await panel.getByRole('alert').filter({ hasText: '视频来自别的网站' }).waitFor({ timeout: 5000 });
+  check(((await panel.getByRole('alert').textContent()) ?? '').includes('X 的动图（GIF）') && (await panel.getByTestId('clip-live').count()) === 0, '动图：不开始录制，说明是动图的限制，普通视频不受影响');
+  await xPage.goto(`${MOCK}/xpage/${X_TEXT_POST.user}/status/${X_TEXT_POST.id}`);
+  await clipStatus.filter({ hasText: '这条帖子里没有视频' }).waitFor({ timeout: 10000 });
+  check(true, '文字帖子：说明没有视频可录');
+  const xPageReqs = requests.slice(xReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/xpage/`));
+  check(
+    xPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/xpage/') || r.path === '/favicon.ico')),
+    `X 页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${xPageReqs.length ? `：${xPageReqs.map((r) => r.path).join(', ')}` : ''}`,
+  );
+  await xPage.close();
   await panel.bringToFront();
 
   // ───────────────────────── eMails ─────────────────────────

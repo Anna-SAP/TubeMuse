@@ -20,15 +20,19 @@ import {
   formatBytes,
   formatTimecode,
   frameTimestamp,
+  isXPage,
   layoutBurnIn,
   mp4TrackKinds,
   outputSize,
   parseTimecode,
+  parseXStatusUrl,
   pickClipFormat,
+  pickXVideo,
   safeFileTitle,
   sanitizeClipRecord,
   titleFromDocumentTitle,
   videoBitrate,
+  visibleArea,
   wrapText,
   type ClipCaptureContext,
   type ClipControl,
@@ -36,6 +40,7 @@ import {
   type ClipSample,
   type ClipStartContext,
   type MeasureText,
+  type XVideoView,
 } from '../../src/core/clips';
 import { mergeSettings, stores } from '../../src/services/repo';
 import { clearClipLog, recordSavedClip } from '../../src/services/clip-service';
@@ -497,6 +502,134 @@ describe('录制记录', () => {
     expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_3', 'clip_2', 'clip_1']);
     await clearClipLog(ctx);
     expect(await stores.clipLog.read(ctx.kv)).toEqual([]);
+  });
+});
+
+describe('X 帖子页', () => {
+  const POST = '2117650684774580249';
+  const record = {
+    id: 'clip_x',
+    videoId: POST,
+    title: 'Ayo O - I reverse engineered tiktok',
+    mode: 'free',
+    start: 5,
+    end: 15,
+    durationSec: 10,
+    bytes: 1_200_000,
+    format: 'MP4（H.264 + AAC）',
+    fileName: 'Ayo O - I reverse engineered tiktok_00m05s-00m15s.mp4',
+    burned: false,
+    savedAt: 1_700_000_000_000,
+  };
+
+  it('页面标题（2026-11-06 真实页面的写法）→"作者 - 正文"，去掉 t.co 短链', () => {
+    expect(titleFromDocumentTitle('X 上的 Ayo O：“I reverse engineered tiktok https://t.co/TEV1YKfAZQ” / X', 'x')).toBe('Ayo O - I reverse engineered tiktok');
+    expect(titleFromDocumentTitle('(3) X 上的 Ayo O：“I reverse engineered tiktok https://t.co/TEV1YKfAZQ” / X', 'x')).toBe('Ayo O - I reverse engineered tiktok');
+    expect(titleFromDocumentTitle('Ayo O on X: "I reverse engineered tiktok https://t.co/TEV1YKfAZQ" / X', 'x')).toBe('Ayo O - I reverse engineered tiktok');
+  });
+  it('帖子只有视频、没有文字：只留作者；认不出的写法也去掉结尾和短链', () => {
+    expect(titleFromDocumentTitle('X 上的 Ayo O：“https://t.co/TEV1YKfAZQ” / X', 'x')).toBe('Ayo O');
+    expect(titleFromDocumentTitle('Ayo O sur X : « demo https://t.co/abc » / X', 'x')).toBe('Ayo O sur X : « demo »');
+  });
+  it('还在加载或不是帖子的页面标题不当视频标题', () => {
+    for (const t of ['X', '帖子 / X', 'Post / X', '(2) 帖子 / X']) expect(titleFromDocumentTitle(t, 'x')).toBe('');
+  });
+  it('文件名：作者 - 正文_起点-终点；没有标题时用 x-帖子ID', () => {
+    expect(clipFileName('Ayo O - I reverse engineered tiktok', POST, 5.2, 15.7, 'mp4', 'x')).toBe('Ayo O - I reverse engineered tiktok_00m05s-00m15s.mp4');
+    expect(clipFileName(undefined, POST, 5, 15, 'webm', 'x')).toBe(`x-${POST}_00m05s-00m15s.webm`);
+  });
+
+  it('网址：帖子页、全屏视图和 /i/ 的写法都认，规范链接去掉 /video/1 和分享参数', () => {
+    const canonical = { id: POST, url: `https://x.com/ayoships/status/${POST}` };
+    expect(parseXStatusUrl(`https://x.com/ayoships/status/${POST}`)).toEqual(canonical);
+    expect(parseXStatusUrl(`https://x.com/ayoships/status/${POST}/video/1`)).toEqual(canonical);
+    expect(parseXStatusUrl(`https://x.com/ayoships/status/${POST}/photo/2?s=20&t=sharerToken`)).toEqual(canonical);
+    expect(parseXStatusUrl(`https://x.com/i/status/${POST}`)).toEqual({ id: POST, url: `https://x.com/i/status/${POST}` });
+    expect(parseXStatusUrl(`https://x.com/i/web/status/${POST}`)).toEqual({ id: POST, url: `https://x.com/i/status/${POST}` });
+    expect(parseXStatusUrl(`https://x.com/i_love/status/${POST}`)?.url).toBe(`https://x.com/i_love/status/${POST}`);
+  });
+  it('网址：时间线、主页、伪造域名、官方 API 都不算帖子页', () => {
+    for (const url of [
+      'https://x.com/home',
+      'https://x.com/ayoships',
+      'https://x.com/ayoships/status/not-a-number',
+      `https://x.com.evil.example/ayoships/status/${POST}`,
+      `https://x.com@evil.example/ayoships/status/${POST}`,
+      `https://api.x.com/2/ayoships/status/${POST}`,
+      `http://x.com/ayoships/status/${POST}`,
+      `https://www.youtube.com/ayoships/status/${POST}`,
+      'not a url',
+    ]) {
+      expect(parseXStatusUrl(url)).toBeUndefined();
+    }
+  });
+  it('判断站点：只认 x.com 本身', () => {
+    expect(isXPage('https://x.com/home')).toBe(true);
+    expect(isXPage('https://x.com.evil.example/home')).toBe(false);
+    expect(isXPage('https://www.youtube.com/watch?v=abc')).toBe(false);
+  });
+
+  it('不能录的原因用人话说：不是帖子页 / 帖子里没有视频', () => {
+    expect(clipUnavailable('x', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是帖子详情');
+    expect(clipUnavailable('x', { enabled: true, videoId: POST, shorts: false, hasVideo: false })).toContain('这条帖子里没有视频');
+    expect(clipUnavailable('x', { enabled: true, videoId: POST, shorts: false, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('x', { enabled: false, videoId: POST, shorts: false, hasVideo: true })).toContain('已在设置中关闭');
+  });
+  it('Capture 只限 YouTube，X 上不截', () => {
+    expect(checkCapture({ site: 'x', enabled: true, videoId: POST, shorts: false, hasVideo: true, ad: false, drm: false, ready: true })).toContain('只支持 YouTube');
+  });
+
+  it('屏幕里的面积：滚到屏幕外是 0，只露一半算一半', () => {
+    expect(visibleArea({ left: 184, top: 156, right: 470, bottom: 664 }, 1253, 1023)).toBe(286 * 508);
+    expect(visibleArea({ left: 231, top: 1876, right: 749, bottom: 2394 }, 1253, 1023)).toBe(0);
+    expect(visibleArea({ left: 0, top: 900, right: 100, bottom: 1100 }, 1253, 1000)).toBe(100 * 100);
+    expect(visibleArea({ left: 0, top: -300, right: 100, bottom: -100 }, 1253, 1000)).toBe(0);
+  });
+  describe('一页有好几个视频时录哪个', () => {
+    const v = (over: Partial<XVideoView>): XVideoView => ({ visibleArea: 0, inDialog: false, playing: false, started: false, ...over });
+    it('帖子页（实测）：回复里的视频比主帖大，但在屏幕外、没播，录主帖', () => {
+      expect(pickXVideo([v({ visibleArea: 145_543, playing: true, started: true }), v({}), v({})])).toBe(0);
+    });
+    it('全屏视图（实测）：录弹层里的，不录底下被盖住的；直接打开时它还没开始播', () => {
+      expect(pickXVideo([v({ visibleArea: 539_762, inDialog: true }), v({ inDialog: true }), v({ visibleArea: 145_543 }), v({})])).toBe(0);
+      // 底下的那个在页面上排在前面时也一样
+      expect(pickXVideo([v({ visibleArea: 145_543 }), v({ visibleArea: 539_762, inDialog: true })])).toBe(1);
+    });
+    it('滚到回复区：屏幕上在播的回复视频才是你在看的', () => {
+      expect(pickXVideo([v({ started: true }), v({ visibleArea: 268_000, playing: true, started: true })])).toBe(1);
+    });
+    it('你暂停了主帖的视频：不被屏幕上更大、没动过的回复视频抢走', () => {
+      expect(pickXVideo([v({ visibleArea: 100_000, started: true }), v({ visibleArea: 200_000 })])).toBe(0);
+    });
+    it('都一样时取屏幕里更大的；再一样取靠前的；一个都没有返回 -1', () => {
+      expect(pickXVideo([v({ visibleArea: 100 }), v({ visibleArea: 200 })])).toBe(1);
+      expect(pickXVideo([v({ visibleArea: 100 }), v({ visibleArea: 100 })])).toBe(0);
+      expect(pickXVideo([])).toBe(-1);
+    });
+  });
+
+  it('录制记录：帖子 ID 与链接对得上才收，链接规范化；站点由后台定，不信记录自己写的', () => {
+    const raw = { ...record, url: `https://x.com/ayoships/status/${POST}/video/1?s=20&t=sharerToken`, site: 'youtube' };
+    expect(sanitizeClipRecord(raw, 'x')).toEqual({ ...record, site: 'x', url: `https://x.com/ayoships/status/${POST}` });
+    expect(sanitizeClipRecord({ ...raw, url: 'https://x.com/ayoships/status/1' }, 'x')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: `https://evil.example/ayoships/status/${POST}` }, 'x')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: 'https://x.com/home' }, 'x')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: undefined }, 'x')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: 12345 }, 'x')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: '../../etc' }, 'x')).toBeNull();
+    // 同样的记录从 YouTube 页面送来：写了站点和链接也不收
+    expect(sanitizeClipRecord({ ...raw, videoId: 'abc123DEF45' })?.site).toBeUndefined();
+    expect(sanitizeClipRecord({ ...raw, videoId: 'abc123DEF45' })?.url).toBeUndefined();
+  });
+  it('回到这条帖子：有链接用链接，旧数据里没有时拼 /i/status/', () => {
+    expect(clipWatchUrl({ site: 'x', videoId: POST, url: `https://x.com/ayoships/status/${POST}`, start: 5 })).toBe(`https://x.com/ayoships/status/${POST}`);
+    expect(clipWatchUrl({ site: 'x', videoId: POST, start: 5 })).toBe(`https://x.com/i/status/${POST}`);
+  });
+  it('后台：X 的片段存进本地，带上站点和帖子链接', async () => {
+    const ctx = { kv: memoryKV(), locker: memoryLocker() } as unknown as AppContext;
+    const saved = await recordSavedClip(ctx, { ...record, url: `https://x.com/ayoships/status/${POST}` }, 'x');
+    expect(saved).toMatchObject({ site: 'x', videoId: POST, url: `https://x.com/ayoships/status/${POST}` });
+    expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_x']);
   });
 });
 
