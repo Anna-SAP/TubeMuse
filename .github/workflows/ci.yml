@@ -1,10 +1,11 @@
 # main 的分支保护把 verify 设成必过项：改 job 名要同时改分支保护，否则所有 PR 都合不进去。
 # 不加路径过滤：被过滤掉的 PR 不会产生 verify，会一直等下去。
+# 分支的 push 不跑：每个改动都走 PR，PR 会检查与 main 合并后的结果；再跑一遍 push 只是同一份检查多等 10 分钟（DECISIONS §48）。
 name: CI
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -56,10 +57,10 @@ jobs:
         run: npm run e2e
 
       - name: Upload diagnostic results
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ github.run_number }}-${{ github.run_attempt }}
           path: test-results/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7

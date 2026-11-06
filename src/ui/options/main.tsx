@@ -3,9 +3,9 @@
 import { render } from 'preact';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { BROWSER_SPEECH_LANGS, DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE, MULTI_CC, MULTI_CC_LANGS, SUBTITLE_LANGS, type BrowserSpeechLang, type SubtitleLang } from '../../config/defaults';
+import { BROWSER_SPEECH_LANGS, DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE, LLM_TASKS, MULTI_CC, MULTI_CC_LANGS, SUBTITLE_LANGS, type BrowserSpeechLang, type LlmTask, type LlmTier, type SubtitleLang } from '../../config/defaults';
 import { ORIGINAL } from '../../core/multi-captions';
-import { asrPrice, hourlyEstimateUsd, llmPrice } from '../../core/subtitles';
+import { asrPrice, hourlyEstimateUsd, llmPrice, localPreparePairs } from '../../core/subtitles';
 import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { browserSpeechEnv, detectLocal, installLocal, type LocalAvailability } from '../../services/speech';
 import { ENDPOINTS } from '../../config/endpoints';
@@ -14,12 +14,12 @@ import { attemptView } from '../../services/auth-service';
 import { clearAll, exportAll } from '../../services/data-service';
 import type { AppError } from '../../services/errors';
 import { isAnthropicWorkspaceId } from '../../services/llm';
-import { pingLlm } from '../../services/llm-factory';
+import { pingLlm, taskModel, taskMonthlyUsd } from '../../services/llm-factory';
 import { mutedDaysLeft, reminderActions } from '../../services/reminder-service';
 import { reclassifyRecords } from '../../services/watch-service';
 import { stores, type Secrets, type Settings } from '../../services/repo';
 import type { LlmProvider } from '../../services/llm';
-import { appCtx, asAppError, requestYouTubeConnect, useQuota, useStore } from '../shared/app';
+import { appCtx, asAppError, requestYouTubeConnect, useLlmSpend, useQuota, useStore } from '../shared/app';
 import { AuthAttemptNote, ErrorBox, Notice, QuotaMeter } from '../shared/components';
 
 function Section({ title, children, id }: { title: string; children: ComponentChildren; id?: string }) {
@@ -219,7 +219,7 @@ function App() {
       )}
 
       <Section title="1. 大模型（LLM）" id="llm">
-        <p class="muted small">用于理解口令、归纳兴趣簇。Key 只保存在本机浏览器，只随请求发往对应服务（{new URL(ENDPOINTS.anthropic).host} / {new URL(ENDPOINTS.openai).host}）。</p>
+        <p class="muted small">用于理解口令、归纳兴趣簇、写总结、整理热点、给邮件打分。Key 只保存在本机浏览器，只随请求发往对应服务（{new URL(ENDPOINTS.anthropic).host} / {new URL(ENDPOINTS.openai).host}）。</p>
         <div class="field">
           <span>当前使用</span>
           <div class="row">
@@ -252,6 +252,7 @@ function App() {
             onChange={(e) => updateModel('openai', e.currentTarget.value)}
           />
         </label>
+        <LlmCostSection settings={settings} update={updateSettings} />
         <button class="btn" disabled={busy} onClick={() => act(() => pingLlm(ctx))}>
           测试连接（会产生一次极小的真实调用）
         </button>
@@ -521,7 +522,7 @@ function App() {
         </div>
         <label class="inline">
           <input type="checkbox" checked={settings.x.autoRefresh} onChange={(e) => updateSection('x', { autoRefresh: e.currentTarget.checked })} />
-          打开侧边栏"发现"页、且缓存已过期时自动刷新（会产生费用；关掉后只在你点"刷新"时读取）
+          打开侧边栏"发现"页、且缓存已过期时自动刷新（默认关闭。打开后每次打开这一页都可能花钱，最多到每日预算；关着时只在你点"刷新"时读取）
         </label>
         <p class="muted small">建议同时在 X 开发者后台设置花费上限，作为双重保险。达到 TubeMuse 的每日预算时会立即停止调用并提示；X 那边返回余额不足或达到上限时，当天也不再尝试。</p>
       </Section>
@@ -796,20 +797,100 @@ function LocalSpeechPack({ lang }: { lang: string }) {
   );
 }
 
+/** 每日上限、省钱模型、每个任务用哪一档 */
+function LlmCostSection({ settings, update }: { settings: Settings; update: (fn: (s: Settings) => Settings) => void }) {
+  const spend = useLlmSpend();
+  const provider = settings.llm.provider;
+  const tasks = (Object.keys(LLM_TASKS) as LlmTask[]).filter((t) => t !== 'ping');
+  const setTier = (task: LlmTask, tier: LlmTier) => update((s) => ({ ...s, llm: { ...s.llm, taskTiers: { ...s.llm.taskTiers, [task]: tier } } }));
+  const monthly = tasks.reduce((sum, t) => sum + taskMonthlyUsd(settings, t), 0);
+  return (
+    <>
+      <h3>花费</h3>
+      <div class="grid">
+        <NumField
+          label="每日大模型花费上限（美元，不含自动字幕）"
+          value={settings.llm.dailyBudgetUsd}
+          min={0.01}
+          max={20}
+          step={0.05}
+          hint={spend ? `今天已用 $${spend.spentUsd.toFixed(3)}${spend.unconfirmedUsd > 0 ? `，另有 $${spend.unconfirmedUsd.toFixed(3)} 请求中断、按花了算` : ''}` : undefined}
+          onChange={(v) => update((s) => ({ ...s, llm: { ...s.llm, dailyBudgetUsd: v } }))}
+        />
+      </div>
+      <label class="field">
+        <span>省钱模型（{provider === 'anthropic' ? 'Anthropic' : 'OpenAI'}，留空 = 全部用上面的主模型）</span>
+        <input
+          class="input"
+          data-testid="model-economy"
+          value={settings.llm.economyModels[provider]}
+          onChange={(e) => {
+            const value = e.currentTarget.value.trim();
+            update((s) => ({ ...s, llm: { ...s.llm, economyModels: { ...s.llm.economyModels, [provider]: value } } }));
+          }}
+        />
+      </label>
+      <div class="grid">
+        {tasks.map((task) => (
+          <label class="field">
+            <span>{LLM_TASKS[task].label}</span>
+            <select class="input" data-testid={`tier-${task}`} value={settings.llm.taskTiers[task] ?? LLM_TASKS[task].tier} onChange={(e) => setTier(task, e.currentTarget.value as LlmTier)}>
+              <option value="economy">省钱模型</option>
+              <option value="main">主模型</option>
+            </select>
+            <span class="muted small">
+              {taskModel(settings, task).model}，每月约 ${taskMonthlyUsd(settings, task).toFixed(2)}
+            </span>
+          </label>
+        ))}
+      </div>
+      <p class="muted small" data-testid="llm-monthly">
+        按典型用量估算，这些任务每月约 ${monthly.toFixed(2)}（一天理解 5 句口令、写 1 份总结、整理 1 次热点、评 1 封 15 篇的邮件；实际花费看侧边栏顶部"AI $"）。每次调用前先按最坏情况预扣，超过上限就不发请求并告诉你。
+      </p>
+    </>
+  );
+}
+
+/** Chrome 本地翻译的语言包：Chrome 要求第一次下载时有用户操作，所以放在这里让你点一下 */
+function LocalTranslateSetup({ settings }: { settings: Settings }) {
+  const translator = appCtx().translator;
+  const [status, setStatus] = useState<string>();
+  if (!translator) return <p class="warn-text small">这个浏览器没有本地翻译（需要 Chrome 138 或更新版本）：第二行不会显示。想要译文的话改用大模型翻译。</p>;
+  const s = settings.subtitles;
+  const prepare = () => {
+    setStatus('正在下载语言包，由 Chrome 存到本机…');
+    translator.prepare(localPreparePairs(s.targetLang, s.altTargetLang)).then(
+      (r) => setStatus(r.failed.length ? `准备好 ${r.ready} 组，这些没成功：${r.failed.join('、')}` : `准备好了 ${r.ready} 组语言`),
+      (e: unknown) => setStatus(`没有下载成功：${e instanceof Error ? e.message : String(e)}`),
+    );
+  };
+  return (
+    <div class="row wrap">
+      <button class="btn" data-testid="local-translate-prepare" onClick={prepare}>
+        下载本地翻译语言包
+      </button>
+      <span class="muted small" data-testid="local-translate-status">
+        {status ?? '第一次用之前点一下（Chrome 要求下载前由你确认），之后不用再管。'}
+      </span>
+    </div>
+  );
+}
+
 function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Settings; hasOpenAiKey: boolean; update: (fn: (s: Settings) => Settings) => void }) {
   const s = settings.subtitles;
   const set = (patch: Partial<Settings['subtitles']>) => update((x) => ({ ...x, subtitles: { ...x.subtitles, ...patch } }));
   const { provider, model } = subtitleTranslationModel(settings);
   const fast = DEFAULT_SETTINGS.subtitles.translationModels[provider];
   const openai = s.asrEngine === 'openai';
-  const perHour = hourlyEstimateUsd(openai ? s.asrModel : undefined, s.translate ? model : undefined);
-  const priceKnown = (!openai || asrPrice(s.asrModel).known) && (!s.translate || llmPrice(model).known);
+  const llmTranslate = s.translate && s.translationEngine === 'llm';
+  const perHour = hourlyEstimateUsd(openai ? s.asrModel : undefined, llmTranslate ? model : undefined);
+  const priceKnown = (!openai || asrPrice(s.asrModel).known) && (!llmTranslate || llmPrice(model).known);
   const speechLangs = Object.entries(BROWSER_SPEECH_LANGS) as [BrowserSpeechLang, string][];
   const langOptions = Object.entries(SUBTITLE_LANGS) as [SubtitleLang, string][];
   return (
     <Section title="12. 自动字幕" id="subtitles">
       <p class="muted small">
-        为没有原生字幕的 YouTube 视频生成双语字幕：播放时把这个视频的声音转成文字（音频不保存），再用你的大模型把每句译成第二语言，叠加显示在播放器里。字幕按视频时间存在本机，回看或拖回去时就是对齐的，也不会再花钱。
+        为没有原生字幕的 YouTube 视频生成双语字幕：播放时把这个视频的声音转成文字（音频不保存），再把每句译成第二语言，叠加显示在播放器里。字幕按视频时间存在本机，回看或拖回去时就是对齐的，也不会再花钱。
       </p>
       <label class="inline">
         <input type="checkbox" checked={s.enabled} onChange={(e) => set({ enabled: e.currentTarget.checked })} />
@@ -889,7 +970,19 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
           </select>
         </label>
       </div>
-      <label class="field">
+      <p class="small">
+        <strong>翻译方式（第二行）</strong>
+      </p>
+      <label class="inline">
+        <input type="radio" name="translate-engine" data-testid="subtitle-engine-local" checked={s.translationEngine === 'local'} onChange={() => set({ translationEngine: 'local' })} />
+        Chrome 本地翻译（免费；字幕文字不离开电脑；质量一般，语言包由 Chrome 下载）
+      </label>
+      <label class="inline">
+        <input type="radio" name="translate-engine" data-testid="subtitle-engine-llm" checked={s.translationEngine === 'llm'} onChange={() => set({ translationEngine: 'llm' })} />
+        大模型翻译（按量计费，算进上面的字幕预算；带上下文，质量更好）
+      </label>
+      {s.translationEngine === 'local' && <LocalTranslateSetup settings={settings} />}
+      {s.translationEngine === 'llm' && (<label class="field">
         <span>字幕翻译模型（{provider === 'anthropic' ? 'Anthropic' : 'OpenAI'}，跟随「1. 大模型」当前选择的提供商）</span>
         <input
           class="input"
@@ -909,7 +1002,7 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
             </>
           )}
         </span>
-      </label>
+      </label>)}
       <div class="grid">
         <NumField label="字号倍数" value={s.fontScale} min={0.6} max={2} step={0.1} onChange={(v) => set({ fontScale: v })} />
       </div>
@@ -918,7 +1011,7 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
         显示原文（关掉后只显示译文；没有译文时仍显示原文）
       </label>
       <p class="muted small">
-        浏览器识别：声音交给浏览器自带的语音识别，扩展自己不发送音频。OpenAI 转写：发给 OpenAI 的只有这几秒音频与前几句转写文字（帮助连贯）。发给翻译模型的只有当前这句和前三句的文字与目标语言。都不含视频 ID、标题、频道或你的账号信息。花费在侧边栏顶部"字幕 $"实时显示，到每日预算立即停止并提示。
+        浏览器识别：声音交给浏览器自带的语音识别，扩展自己不发送音频。OpenAI 转写：发给 OpenAI 的只有这几秒音频与前几句转写文字（帮助连贯）。选大模型翻译时，发给翻译模型的只有当前这句和前三句的文字与目标语言；本地翻译不发送任何内容。都不含视频 ID、标题、频道或你的账号信息。花费在侧边栏顶部"字幕 $"实时显示，到每日预算立即停止并提示。
       </p>
     </Section>
   );

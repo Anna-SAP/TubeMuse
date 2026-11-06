@@ -166,10 +166,10 @@ describe('X 热点（服务层，mock X 与 LLM）', () => {
       expect(h.utterance).toContain('找');
     }
     expect(xCalls).toHaveLength(4); // 4 个主题
-    expect(xCalls.every((c) => c.max === 15)).toBe(true);
+    expect(xCalls.every((c) => c.max === 10)).toBe(true);
     const spend = await xSpend(ctx);
-    expect(spend.spentUsd).toBeCloseTo(4 * 15 * 0.005); // 返回 60 条 × $0.005
-    expect(state.spentUsd).toBeCloseTo(0.3);
+    expect(spend.spentUsd).toBeCloseTo(4 * 10 * 0.005); // 返回 40 条 × $0.005
+    expect(state.spentUsd).toBeCloseTo(0.2);
     // 发往 X 的请求只带 Bearer Token；Token 不出现在 URL，也不发往别处
     const xReq = api.requests.filter((r) => r.url.startsWith(ENDPOINTS.x));
     expect(xReq.every((r) => r.headers.authorization === `Bearer ${XTOKEN}` && !r.url.includes(XTOKEN))).toBe(true);
@@ -187,7 +187,7 @@ describe('X 热点（服务层，mock X 与 LLM）', () => {
   it('超预算立即停调并提示：预算只够一个主题', async () => {
     const { ctx, xCalls } = setup({ budget: 0.08 });
     const { state } = await refreshHotspots(ctx);
-    expect(xCalls).toHaveLength(1); // 第一个主题读 15 条 = $0.075，剩 $0.005 < $0.05
+    expect(xCalls).toHaveLength(1); // 第一个主题读 10 条 = $0.05，剩 $0.03 < $0.05
     expect(state.partial).toBe(true);
     expect(state.notes.join()).toContain('已停止调用');
     expect(state.items.length).toBeGreaterThan(0);
@@ -213,7 +213,7 @@ describe('X 热点（服务层，mock X 与 LLM）', () => {
     const ticking: AppContext = { ...ctx, now: () => (t += 1) };
     const [a, b] = await Promise.all([refreshHotspots(ticking), refreshHotspots(ticking, { force: true })]);
     expect(xCalls).toHaveLength(4);
-    expect((await xSpend(ticking)).spentUsd).toBeCloseTo(0.3);
+    expect((await xSpend(ticking)).spentUsd).toBeCloseTo(0.2);
     expect(b.cached).toBe(true);
     expect(b.state.fetchedAt).toBe(a.state.fetchedAt);
   });

@@ -3,7 +3,7 @@
 
 import { YOUTUBE_CATEGORIES } from '../config/defaults';
 import { formatSigned } from './format';
-import { clip } from './text';
+import { clip, hashString } from './text';
 import type { DailyPromptItem, WeeklyPromptCase } from './prompts';
 import {
   FACTOR_LABELS,
@@ -84,6 +84,15 @@ function asItem(e: DayEntry, text: string): SummaryItem {
 }
 
 const isStr = (x: unknown): x is string => typeof x === 'string';
+
+/** 一个案例看不出共性：低分至少这么多才请大模型归纳 */
+export const WEEKLY_MIN_CASES = 2;
+
+/** 这份总结依据的输入：观看记录（含瞥一眼）和目标都没变，结果也不会变 */
+export function dailyInputKey(entries: DayEntry[], goals: string): string {
+  const rows = entries.map((e) => [e.record.videoId, e.record.status, Math.round(e.record.playSec / 60), e.nature, e.meta?.title ?? ''].join('|'));
+  return hashString(JSON.stringify({ rows: rows.sort(), goals: goals.trim() }));
+}
 
 export function isDailyLlmOutput(v: unknown): v is DailyLlmOutput {
   const o = v as DailyLlmOutput;

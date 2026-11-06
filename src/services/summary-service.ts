@@ -2,17 +2,20 @@
 
 import { LEARNING, SUMMARY } from '../config/defaults';
 import { buildDailySummaryPrompt, buildWeeklyPrompt, DAILY_SUMMARY_SCHEMA, WEEKLY_SCHEMA } from '../core/prompts';
-import { addDays, dueSummaryDays, dueWeeklyReport, zonedTime } from '../core/schedule';
+import { addDays, dueSummaryDays, dueWeeklyReport, jobRetryDue, nextJobRetry, zonedTime } from '../core/schedule';
 import {
   buildDailySummary,
   buildWeeklyReport,
+  dailyInputKey,
   isDailyLlmOutput,
   isWeeklyLlmOutput,
   promptItems,
+  renderDailyMarkdown,
   summarizeAdjustments,
+  WEEKLY_MIN_CASES,
   weeklyCases,
 } from '../core/summary';
-import { dayKey } from '../core/time';
+import { dayKey, nextMidnight } from '../core/time';
 import type { DailySummary, WeeklyReport } from '../core/types';
 import type { AppContext } from './context';
 import { AppError, toAppError } from './errors';
@@ -23,7 +26,7 @@ import { currentWeekKey, discoveryDue, runDiscovery } from './discovery-service'
 import { stores } from './repo';
 import { currentWindowStats, dayEntries, enrichMetadata } from './watch-service';
 
-export async function generateDailySummary(ctx: AppContext, day: string, opts: { manual: boolean }): Promise<DailySummary> {
+export async function generateDailySummary(ctx: AppContext, day: string, opts: { manual: boolean; force?: boolean }): Promise<DailySummary> {
   // 先尽量补上元数据（没连接 YouTube 也继续，总结里会注明）
   await enrichMetadata(ctx).catch(() => undefined);
   const [settings, entries, summaries, sessions] = await Promise.all([
@@ -33,6 +36,16 @@ export async function generateDailySummary(ctx: AppContext, day: string, opts: {
     stores.searchSessions.read(ctx.kv),
   ]);
   const { items, refs } = promptItems(entries);
+  const inputKey = dailyInputKey(entries, settings.summary.goals);
+  const existing = summaries[day];
+  // 观看记录没变：内容不会变，只更新时间和"手动 / 到点"标记，不再调大模型（到点补算手动版、连点"生成"都走这里）
+  if (existing?.inputKey === inputKey && !opts.force) {
+    const kept = { ...existing, generatedAt: ctx.now(), manual: opts.manual };
+    kept.markdown = renderDailyMarkdown(kept);
+    await stores.summaries.update(ctx.kv, ctx.locker, (all) => ({ ...all, [day]: kept }));
+    await clearFailure(ctx, `daily:${day}`);
+    return kept;
+  }
   let llmOut;
   if (items.length) {
     const previous = Array.from({ length: SUMMARY.contextDays }, (_, i) => summaries[addDays(day, -(i + 1))])
@@ -40,13 +53,13 @@ export async function generateDailySummary(ctx: AppContext, day: string, opts: {
       .reverse()
       .map((s) => ({ day: s.day, headline: s.headline, learned: s.learned.map((l) => `${l.title}：${l.text}`) }));
     const utterances = sessions.filter((s) => dayKey(s.createdAt, ctx.timeZone) === day).map((s) => s.utterance).slice(0, 10);
-    const llm = await getLlm(ctx);
+    const llm = await getLlm(ctx, 'daily');
     const prompt = buildDailySummaryPrompt({ day, goals: settings.summary.goals, items, previous, utterances });
     const raw = await llm.generateJson({ ...prompt, schema: DAILY_SUMMARY_SCHEMA, schemaName: 'tubemuse_daily_summary', effort: 'medium' });
-    if (!isDailyLlmOutput(raw)) throw new AppError('llm', 'LLM 返回的总结格式不对', '请重试');
+    if (!isDailyLlmOutput(raw)) throw new AppError('llm', 'LLM 返回的总结格式不对', '请重试', undefined, { state: 'billed' });
     llmOut = raw;
   }
-  const summary = buildDailySummary(day, entries, llmOut, refs, { now: ctx.now(), manual: opts.manual, goals: settings.summary.goals });
+  const summary = { ...buildDailySummary(day, entries, llmOut, refs, { now: ctx.now(), manual: opts.manual, goals: settings.summary.goals }), inputKey };
   await stores.summaries.update(ctx.kv, ctx.locker, (all) => ({ ...all, [day]: summary }));
   await clearFailure(ctx, `daily:${day}`);
   return summary;
@@ -65,11 +78,11 @@ export async function generateWeeklyReport(ctx: AppContext, weekKey: string): Pr
   const stats = await currentWindowStats(ctx, 7, zonedTime(weekKey, '12:00', ctx.timeZone));
   const { cases, refs } = weeklyCases(ratings, LEARNING.lowRatingMax);
   let llmOut;
-  if (cases.length) {
-    const llm = await getLlm(ctx);
+  if (cases.length >= WEEKLY_MIN_CASES) {
+    const llm = await getLlm(ctx, 'weekly');
     const prompt = buildWeeklyPrompt(cases, adjustmentLines);
     const raw = await llm.generateJson({ ...prompt, schema: WEEKLY_SCHEMA, schemaName: 'tubemuse_weekly', effort: 'medium' });
-    if (!isWeeklyLlmOutput(raw)) throw new AppError('llm', 'LLM 返回的周报格式不对', '请重试');
+    if (!isWeeklyLlmOutput(raw)) throw new AppError('llm', 'LLM 返回的周报格式不对', '请重试', undefined, { state: 'billed' });
     llmOut = raw;
   }
   const report = buildWeeklyReport(weekKey, fromDay, stats, ratings.length, refs, adjustmentLines, llmOut, ctx.now());
@@ -81,10 +94,12 @@ export async function generateWeeklyReport(ctx: AppContext, weekKey: string): Pr
 async function recordFailure(ctx: AppContext, key: string, err: unknown): Promise<void> {
   const secrets = await stores.secrets.read(ctx.kv);
   const e = toAppError(err, [secrets.anthropicApiKey, secrets.openaiApiKey, secrets.xBearerToken]);
-  await stores.jobState.update(ctx.kv, ctx.locker, (j) => ({
-    ...j,
-    failures: { ...j.failures, [key]: { at: ctx.now(), message: e.message, ...(e.hint ? { hint: e.hint } : {}) } },
-  }));
+  const now = ctx.now();
+  await stores.jobState.update(ctx.kv, ctx.locker, (j) => {
+    const attempts = (j.failures[key]?.attempts ?? 0) + 1;
+    const retry = nextJobRetry({ kind: e.kind, billed: !!e.billing, attempts }, now, nextMidnight(now, ctx.timeZone));
+    return { ...j, failures: { ...j.failures, [key]: { at: now, message: e.message, ...(e.hint ? { hint: e.hint } : {}), attempts, ...retry } } };
+  });
 }
 
 async function clearFailure(ctx: AppContext, key: string): Promise<void> {
@@ -133,6 +148,7 @@ export async function runScheduledJobs(ctx: AppContext): Promise<JobsResult> {
           result.failed.push(j.day);
           continue;
         }
+        if (!jobRetryDue(job.failures[`daily:${j.day}`], now)) continue;
         try {
           await generateDailySummary(ctx, j.day, { manual: false });
           result.daily.push(j.day);
@@ -140,13 +156,13 @@ export async function runScheduledJobs(ctx: AppContext): Promise<JobsResult> {
           await recordFailure(ctx, `daily:${j.day}`, e);
           result.failed.push(j.day);
           const kind = e instanceof AppError ? e.kind : '';
-          if (kind === 'llm_key' || kind === 'llm_quota' || kind === 'llm_rate' || kind === 'network' || kind === 'llm') llmBroken = true;
+          if (kind === 'llm_key' || kind === 'llm_quota' || kind === 'llm_rate' || kind === 'llm_budget' || kind === 'network' || kind === 'llm') llmBroken = true;
         }
       }
     }
     if (settings.weekly.enabled && !llmBroken) {
       const key = dueWeeklyReport(now, settings.summary.time, settings.weekly.weekday, ctx.timeZone, new Set(Object.keys(weeklies)));
-      if (key && key >= firstDay) {
+      if (key && key >= firstDay && jobRetryDue(job.failures[`weekly:${key}`], now)) {
         try {
           await generateWeeklyReport(ctx, key);
           result.weekly = key;
@@ -161,13 +177,15 @@ export async function runScheduledJobs(ctx: AppContext): Promise<JobsResult> {
       const [disc, clusters] = await Promise.all([stores.discovery.read(ctx.kv), stores.clusters.read(ctx.kv)]);
       if (clusters.clusters.length && (await discoveryDue(ctx, disc, settings.weekly.weekday)) && isLinked(await ctx.auth.status())) {
         const key = `discovery:${currentWeekKey(ctx, settings.weekly.weekday)}`;
-        try {
-          await runDiscovery(ctx);
-          result.discovery = true;
-          await clearFailure(ctx, key);
-        } catch (e) {
-          await recordFailure(ctx, key, e);
-          result.failed.push(key);
+        if (jobRetryDue(job.failures[key], now)) {
+          try {
+            await runDiscovery(ctx);
+            result.discovery = true;
+            await clearFailure(ctx, key);
+          } catch (e) {
+            await recordFailure(ctx, key, e);
+            result.failed.push(key);
+          }
         }
       }
     }

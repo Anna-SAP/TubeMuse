@@ -469,13 +469,18 @@ try {
   console.log('\n[Phase 3：X 热点]');
   await panel.bringToFront();
   await panel.getByRole('tab', { name: '发现' }).click();
+  const xCount = () => requests.filter((r) => r.path === '/x/2/tweets/search/recent').length;
+  await panel.getByTestId('x-refresh-cost').waitFor({ timeout: 10000 });
+  await panel.waitForTimeout(1000);
+  check(xCount() === 0 && ((await panel.getByTestId('x-refresh-cost').textContent()) ?? '').includes('$0.20'), '打开"发现"页不读 X、不花钱；按钮旁写明刷新一次最多 $0.20');
+  await panel.getByRole('button', { name: '刷新热点' }).click();
   await panel.getByTestId('hotspot').first().waitFor({ timeout: 30000 });
   const hotCount = await panel.getByTestId('hotspot').count();
   check(hotCount >= 5 && hotCount <= 8, `出现 ${hotCount} 条热点（5–8 条）`);
   const links = await panel.getByTestId('post-link').evaluateAll((els) => els.map((e) => e.getAttribute('href') ?? ''));
   check(links.length >= hotCount && links.every((h) => /^https:\/\/x\.com\/i\/web\/status\/\d+$/.test(h)), '每条热点都带 X 原文链接');
   check((await panel.getByTestId('x-spend').count()) === 1, '顶部实时显示 X 花费');
-  const xCount = () => requests.filter((r) => r.path === '/x/2/tweets/search/recent').length;
+  check((await panel.getByTestId('llm-spend').count()) === 1, '顶部实时显示大模型花费');
   const firstRound = xCount();
   check(firstRound >= 1 && firstRound <= 4, `按兴趣主题检索了 ${firstRound} 次（每个主题 1 次）`);
   await panel.screenshot({ path: join(shots, '11-hotspots.png'), fullPage: true });
@@ -495,7 +500,7 @@ try {
   });
   await options.bringToFront();
   const budgetField = options.getByLabel('每日预算（美元，按 UTC 日）');
-  // 预算 = 已花 + 6 美分：下一轮只够读一个主题（12 条）
+  // 预算 = 已花 + 6 美分：下一轮只够读一个主题（10 条）
   await budgetField.fill(String(Math.round((spentNow + 0.06) * 100) / 100));
   await budgetField.blur();
   await options.waitForTimeout(300);
@@ -661,6 +666,9 @@ try {
   await options.getByTestId('openai-key').fill(OPENAI_KEY);
   await options.getByTestId('openai-key').locator('xpath=following-sibling::button[1]').click();
   await options.locator('[data-testid="openai-key"][placeholder="已保存（出于安全不回显）"]').waitFor({ timeout: 5000 });
+  check(await options.getByTestId('subtitle-engine-local').isChecked(), '字幕翻译默认用 Chrome 本地翻译（不花钱）');
+  await options.getByTestId('subtitle-engine-llm').check();
+  await options.getByTestId('subtitle-model').waitFor({ timeout: 5000 });
   check((await options.getByTestId('subtitle-model').inputValue()) === 'claude-haiku-5-5', '字幕翻译模型默认是 claude-haiku-5-5（更快更省）');
   await options.waitForTimeout(300);
   const subSection = (await options.locator('#subtitles').textContent()) ?? '';

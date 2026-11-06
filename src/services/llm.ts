@@ -7,7 +7,7 @@ import { ANTHROPIC_FALLBACK, LLM_LIMITS } from '../config/defaults';
 import type { JsonSchema } from '../core/prompts';
 import { redact } from '../core/redact';
 import { wellFormed } from '../core/text';
-import { AppError } from './errors';
+import { AppError, type Billing } from './errors';
 
 export type LlmProvider = 'anthropic' | 'openai';
 
@@ -18,6 +18,8 @@ export interface JsonRequest {
   schemaName: string;
   /** 解析口令用 low，聚类用 medium */
   effort: 'low' | 'medium';
+  /** 输出上限：一次调用花费的硬边界 */
+  maxOutputTokens: number;
 }
 
 export interface LlmUsage {
@@ -49,6 +51,11 @@ export function isAnthropicWorkspaceId(v: string): boolean {
 }
 
 const PROVIDER_NAMES: Record<LlmProvider, string> = { anthropic: 'Anthropic', openai: 'OpenAI' };
+
+/** 响应已经回来才失败的（被截断、不是 JSON、模型拒绝）：钱花了，把用量带上，由调用方记账 */
+function billedError(err: AppError, usage: LlmUsage | undefined): AppError {
+  return usage ? new AppError(err.kind, err.message, err.hint, err.retryAfterMs, { state: 'billed', usage }) : err;
+}
 
 function parseJsonText(text: string, provider: LlmProvider): unknown {
   try {
@@ -132,6 +139,28 @@ export function retryAfterMs(headers: { get(name: string): string | null } | und
   return resets.length ? clamp(Math.max(...resets)) : undefined;
 }
 
+/**
+ * 服务方明确拒绝（408/409/429/5xx，没有计费）时等多久再试一次；其他情况返回 undefined。
+ * 超时和断线不重试：请求可能已经在服务方跑完并计费了，重发可能付两次钱。要等太久的也不等，直接告诉你。
+ */
+export function refusedRetryWait(err: unknown, now: number): number | undefined {
+  const status = (err as ApiErrorLike)?.status;
+  if (typeof status !== 'number' || !(status === 408 || status === 409 || status === 429 || status >= 500)) return undefined;
+  const wait = retryAfterMs((err as { headers?: Headers }).headers, now) ?? LLM_LIMITS.retryDelayMs;
+  return wait <= LLM_LIMITS.maxRetryWaitMs ? wait : undefined;
+}
+
+async function withOneRetry<T>(attempt: () => Promise<T>, retryable: (e: unknown) => boolean): Promise<T> {
+  try {
+    return await attempt();
+  } catch (e) {
+    const wait = refusedRetryWait(e, Date.now());
+    if (wait === undefined || !retryable(e)) throw e;
+    await new Promise((r) => setTimeout(r, wait));
+    return attempt();
+  }
+}
+
 function rateOrBillingError(err: unknown, provider: LlmProvider, name: string, full: string, raw: string): AppError {
   const { code, type } = providerCode(err);
   const label = code ?? type ?? 'HTTP 429';
@@ -150,8 +179,10 @@ function mapLlmError(err: unknown, provider: LlmProvider, model: string, apiKey:
     err instanceof Anthropic.APIConnectionError || err instanceof OpenAI.APIConnectionError;
   const isTimeout =
     err instanceof Anthropic.APIConnectionTimeoutError || err instanceof OpenAI.APIConnectionTimeoutError;
-  if (isTimeout) return new AppError('network', `${name} 请求超时`, '稍后重试');
-  if (isConn) return new AppError('network', `无法连接到 ${name} API（网络错误）`, '检查网络后重试');
+  // 请求可能已经发出去并跑完了：账上按花了算
+  const unknown: Billing = { state: 'unknown' };
+  if (isTimeout) return new AppError('network', `${name} 请求超时`, '稍后重试', undefined, unknown);
+  if (isConn) return new AppError('network', `无法连接到 ${name} API（网络错误）`, '检查网络后重试', undefined, unknown);
   const status = (err as ApiErrorLike)?.status;
   const full = providerMessage(err);
   const raw = redact(full, [apiKey]).slice(0, 300);
@@ -199,10 +230,12 @@ export function createAnthropicClient(cfg: LlmConfig): LlmClient {
     ...(cfg.fetch ? { fetch: cfg.fetch } : {}),
   });
   const run = async (req: JsonRequest): Promise<{ value: unknown; usage: LlmUsage }> => {
-      try {
+    let usage: LlmUsage | undefined;
+    try {
+      return await withOneRetry(async () => {
         const res = await client.beta.messages.create({
           model: cfg.model,
-          max_tokens: LLM_LIMITS.maxTokens,
+          max_tokens: req.maxOutputTokens,
           system: wellFormed(req.system),
           messages: [{ role: 'user', content: wellFormed(req.user) }],
           output_config: { effort: req.effort, format: { type: 'json_schema', schema: req.schema } },
@@ -210,6 +243,7 @@ export function createAnthropicClient(cfg: LlmConfig): LlmClient {
           betas: [ANTHROPIC_FALLBACK.beta],
           fallbacks: ANTHROPIC_FALLBACK.fallbacks,
         });
+        usage = { inputTokens: res.usage?.input_tokens ?? 0, outputTokens: res.usage?.output_tokens ?? 0 };
         if (res.stop_reason === 'refusal') {
           throw new AppError('llm', '模型拒绝处理这条口令', '换个说法再试');
         }
@@ -221,10 +255,11 @@ export function createAnthropicClient(cfg: LlmConfig): LlmClient {
           .map((b) => b.text)
           .join('');
         if (!text) throw new AppError('llm', 'Anthropic 没有返回内容', '请重试');
-        return { value: parseJsonText(text, 'anthropic'), usage: { inputTokens: res.usage?.input_tokens ?? 0, outputTokens: res.usage?.output_tokens ?? 0 } };
-      } catch (e) {
-        throw mapLlmError(e, 'anthropic', cfg.model, cfg.apiKey);
-      }
+        return { value: parseJsonText(text, 'anthropic'), usage };
+      }, () => true);
+    } catch (e) {
+      throw billedError(mapLlmError(e, 'anthropic', cfg.model, cfg.apiKey), usage);
+    }
   };
   return {
     provider: 'anthropic',
@@ -249,16 +284,19 @@ export function createOpenAIClient(cfg: LlmConfig): LlmClient {
     ...(cfg.fetch ? { fetch: cfg.fetch } : {}),
   });
   const run = async (req: JsonRequest): Promise<{ value: unknown; usage: LlmUsage }> => {
-      try {
+    let usage: LlmUsage | undefined;
+    try {
+      return await withOneRetry(async () => {
         const res = await client.responses.create({
           model: cfg.model,
           instructions: wellFormed(req.system),
           input: wellFormed(req.user),
-          max_output_tokens: LLM_LIMITS.maxTokens,
+          max_output_tokens: req.maxOutputTokens,
           text: { format: { type: 'json_schema', name: req.schemaName, schema: req.schema, strict: true } },
           ...(supportsReasoningEffort(cfg.model) ? { reasoning: { effort: req.effort } } : {}),
           store: false,
         });
+        usage = { inputTokens: res.usage?.input_tokens ?? 0, outputTokens: res.usage?.output_tokens ?? 0 };
         if (res.status === 'incomplete') {
           throw new AppError('llm', `OpenAI 输出不完整（${res.incomplete_details?.reason ?? '未知原因'}）`, '请重试');
         }
@@ -273,10 +311,11 @@ export function createOpenAIClient(cfg: LlmConfig): LlmClient {
         }
         const text = res.output_text || collected;
         if (!text) throw new AppError('llm', 'OpenAI 没有返回内容', '请重试');
-        return { value: parseJsonText(text, 'openai'), usage: { inputTokens: res.usage?.input_tokens ?? 0, outputTokens: res.usage?.output_tokens ?? 0 } };
-      } catch (e) {
-        throw mapLlmError(e, 'openai', cfg.model, cfg.apiKey);
-      }
+        return { value: parseJsonText(text, 'openai'), usage };
+      }, (e) => mapLlmError(e, 'openai', cfg.model, cfg.apiKey).kind !== 'llm_quota');
+    } catch (e) {
+      throw billedError(mapLlmError(e, 'openai', cfg.model, cfg.apiKey), usage);
+    }
   };
   return {
     provider: 'openai',

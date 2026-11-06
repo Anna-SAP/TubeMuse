@@ -4,7 +4,7 @@ import type { AuthStatus } from '../../services/auth';
 import { stores } from '../../services/repo';
 import type { AppError } from '../../services/errors';
 import { attemptView } from '../../services/auth-service';
-import { appCtx, asAppError, requestYouTubeConnect, useQuota, useStore, useSubtitleSpend, useXSpend } from '../shared/app';
+import { appCtx, asAppError, requestYouTubeConnect, useQuota, useStore, useLlmSpend, useSubtitleSpend, useXSpend } from '../shared/app';
 import { AuthAttemptNote, ErrorBox, Notice, QuotaMeter, QuotaWarning } from '../shared/components';
 import { ChangesView } from './ChangesView';
 import { FindView } from './FindView';
@@ -134,6 +134,7 @@ function App() {
   const quota = useQuota();
   const x = useXSpend();
   const sub = useSubtitleSpend();
+  const llm = useLlmSpend();
   const settings = useStore(stores.settings);
   const pinned = settings?.ui.pinNav ?? false;
   const pin = usePinnedNav(pinned);
@@ -153,7 +154,7 @@ function App() {
           <img src="icons/icon-32.png" alt="" width={18} height={18} />
           TubeMuse
         </div>
-        <QuotaMeter snap={quota} x={x} sub={sub} />
+        <QuotaMeter snap={quota} x={x} sub={sub} llm={llm} />
         <button class="icon-btn" title="设置" onClick={() => chrome.runtime.openOptionsPage()}>
           ⚙
         </button>

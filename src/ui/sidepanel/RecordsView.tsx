@@ -16,6 +16,9 @@ import { appCtx, asAppError, useStore } from '../shared/app';
 import { ErrorBox, Notice, Spinner } from '../shared/components';
 import { downloadText, openInCurrentTab } from '../shared/download';
 
+/** 距离未来某个时刻还有多久（失败任务的下次重试） */
+const formatRelativeFuture = (at: number, now: number) => `约 ${Math.max(1, Math.round((at - now) / 3_600_000))} 小时后`;
+
 type Entry = { record: WatchRecord; meta?: VideoMeta; nature: Nature; verdict: NatureVerdict };
 
 function WatchRow({ e, onCorrect }: { e: Entry; onCorrect: (nature: Nature | null, scope: 'video' | 'channel') => void }) {
@@ -211,6 +214,7 @@ export function RecordsView() {
   const summaryList = useMemo(() => Object.values(summaries ?? {}).sort((a, b) => (a.day < b.day ? 1 : -1)), [summaries]);
   const weeklyList = useMemo(() => Object.values(weeklies ?? {}).sort((a, b) => (a.weekKey < b.weekKey ? 1 : -1)), [weeklies]);
   const failures = Object.entries(job?.failures ?? {});
+  const [reused, setReused] = useState(false);
   const total = entries.reduce((s, e) => s + e.record.playSec, 0);
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
@@ -295,7 +299,17 @@ export function RecordsView() {
           每天 {settings.summary.time} 自动生成{settings.summary.enabled ? '' : '（已关闭）'}；浏览器那时没开的话，下次打开时补上（最多补 7 天）。
         </p>
         <div class="row wrap">
-          <button class="btn" disabled={!!busy} onClick={() => run('daily', () => generateDailySummary(ctx, day, { manual: day === today }))}>
+          <button
+            class="btn"
+            disabled={!!busy}
+            onClick={() =>
+              run('daily', async () => {
+                const before = summaries?.[day]?.inputKey;
+                const s = await generateDailySummary(ctx, day, { manual: day === today });
+                setReused(!!before && s.inputKey === before);
+              })
+            }
+          >
             {day === today ? '现在生成今天的总结（预览）' : `生成 ${day} 的总结`}
           </button>
           <button
@@ -307,6 +321,20 @@ export function RecordsView() {
           </button>
         </div>
         {busy === 'daily' && <Spinner label="正在生成总结…" />}
+        {reused && (
+          <Notice kind="info" onClose={() => setReused(false)}>
+            <span data-testid="summary-reused">这一天的观看记录和上一版一样，沿用上一版，没有再调大模型。</span>
+            <button
+              class="btn link small"
+              onClick={() => {
+                setReused(false);
+                void run('daily', () => generateDailySummary(ctx, day, { manual: day === today, force: true }));
+              }}
+            >
+              仍要重新生成（调用一次大模型）
+            </button>
+          </Notice>
+        )}
         {error && <ErrorBox error={error} onClose={() => setError(undefined)} />}
         {failures.length > 0 && (
           <Notice kind="warn">
@@ -314,8 +342,9 @@ export function RecordsView() {
             <ul class="small">
               {failures.map(([key, f]) => (
                 <li>
-                  {key.replace('daily:', '每日总结 ').replace('weekly:', '周报 ')}（{formatRelative(f.at, ctx.now())}）：{f.message}
+                  {key.replace('daily:', '每日总结 ').replace('weekly:', '周报 ').replace('discovery:', '新博主发现 ')}（{formatRelative(f.at, ctx.now())}）：{f.message}
                   {f.hint ? `。${f.hint}` : ''}
+                  {f.gaveUp ? '。已停止自动重试（再试也要花钱），可以手动生成。' : f.nextRetryAt && f.nextRetryAt > ctx.now() ? `。${formatRelativeFuture(f.nextRetryAt, ctx.now())}自动再试。` : ''}
                 </li>
               ))}
             </ul>

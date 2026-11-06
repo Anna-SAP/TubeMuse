@@ -1,7 +1,8 @@
 // X 花费记账（纯函数）。X 按"返回的资源条数"计费，同一资源在同一 UTC 日内重复读取只计一次——本地账本照此去重。
-// 预算护栏：每次请求前按"最坏情况全部是新资源"估算，超出就不发；请求后按实际返回的新资源记账。
+// 预算护栏：每次请求前按"最坏情况全部是新资源"预扣（写进账本，页面被关也不丢），超出就不发；请求后按实际返回的新资源结算。
 
 import { X_API } from '../config/defaults';
+import { addHold, heldUsd, keepRecentDays, pendingUsd, takeHold, type HoldDay } from './spend';
 
 export interface XRequestLog {
   at: number;
@@ -11,7 +12,7 @@ export interface XRequestLog {
   costUsd: number;
 }
 
-export interface XDay {
+export interface XDay extends HoldDay {
   spentUsd: number;
   postIds: string[];
   userIds: string[];
@@ -27,6 +28,10 @@ export interface XLedger {
 export interface XSnapshot {
   day: string;
   spentUsd: number;
+  /** 不知道有没有计费、按最坏情况记着的部分 */
+  unconfirmedUsd: number;
+  /** 进行中的预扣 */
+  heldUsd: number;
   budgetUsd: number;
   remainingUsd: number;
   ratio: number;
@@ -55,11 +60,14 @@ function emptyDay(): XDay {
 export function xSnapshot(ledger: XLedger, budgetUsd: number, warnRatio: number, now: number): XSnapshot {
   const day = utcDay(now);
   const d = ledger.days[day] ?? emptyDay();
-  const remaining = Math.max(0, round4(budgetUsd - d.spentUsd));
-  const ratio = budgetUsd > 0 ? Math.min(1, d.spentUsd / budgetUsd) : 1;
+  const committed = d.spentUsd + pendingUsd(d);
+  const remaining = Math.max(0, round4(budgetUsd - committed));
+  const ratio = budgetUsd > 0 ? Math.min(1, committed / budgetUsd) : 1;
   const snap: XSnapshot = {
     day,
     spentUsd: round4(d.spentUsd),
+    unconfirmedUsd: round4(d.unconfirmedUsd ?? 0),
+    heldUsd: heldUsd(d),
     budgetUsd,
     remainingUsd: remaining,
     ratio,
@@ -87,6 +95,29 @@ export function planPostRead(snap: XSnapshot, desired: number): PostReadPlan {
   return { ok: true, maxResults: n };
 }
 
+/** 预扣一次读取：在同一把锁里算预算、写账本，并发的两路不会都以为还有钱 */
+export function reserveXRead(ledger: XLedger, budgetUsd: number, warnRatio: number, desired: number, holdId: string, now: number): { ledger: XLedger; plan: PostReadPlan } {
+  const plan = planPostRead(xSnapshot(ledger, budgetUsd, warnRatio, now), desired);
+  if (!plan.ok) return { ledger, plan };
+  const day = utcDay(now);
+  const hold = { id: holdId, usd: round4(plan.maxResults * X_API.pricing.postRead), at: now, what: 'tweets/search/recent' };
+  return { ledger: { days: keepRecentDays({ ...ledger.days, [day]: addHold(ledger.days[day] ?? emptyDay(), hold) }) }, plan };
+}
+
+/** X 明确拒绝，没有计费：退回预扣 */
+export function releaseXHold(ledger: XLedger, holdId: string): XLedger {
+  const t = takeHold(ledger.days, holdId);
+  return t.day ? { days: t.days } : ledger;
+}
+
+/** 不知道有没有计费（超时、断网、响应读不出来）：按预扣额记成"未确认"，不退回 */
+export function abandonXHold(ledger: XLedger, holdId: string): XLedger {
+  const t = takeHold(ledger.days, holdId);
+  if (!t.day) return ledger;
+  const d = t.days[t.day]!;
+  return { days: { ...t.days, [t.day]: { ...d, unconfirmedUsd: round4((d.unconfirmedUsd ?? 0) + t.hold!.usd) } } };
+}
+
 function record(ledger: XLedger, kind: 'post' | 'user', ids: string[], endpoint: string, now: number): { ledger: XLedger; costUsd: number; newCount: number } {
   const day = utcDay(now);
   const d = { ...(ledger.days[day] ?? emptyDay()) };
@@ -106,6 +137,11 @@ function record(ledger: XLedger, kind: 'post' | 'user', ids: string[], endpoint:
 
 export function recordPostRead(ledger: XLedger, postIds: string[], endpoint: string, now: number) {
   return record(ledger, 'post', postIds, endpoint, now);
+}
+
+/** 读到了：去掉预扣，按实际返回的新帖子记账 */
+export function settleXRead(ledger: XLedger, holdId: string, postIds: string[], endpoint: string, now: number) {
+  return recordPostRead(releaseXHold(ledger, holdId), postIds, endpoint, now);
 }
 
 export function recordUserRead(ledger: XLedger, userIds: string[], endpoint: string, now: number) {

@@ -35,7 +35,7 @@ function toPost(it: Json, topic: string): XPost | undefined {
 
 export function createXClient(deps: XClientDeps) {
   return {
-    /** 最近帖子检索。不展开作者（用户对象按 $0.01/个另计费）。 */
+    /** 最近帖子检索。不发 expansions：2026-11-22 起带回来的作者、媒体等对象都单独计费，热点用不上。 */
     async searchRecent(query: string, maxResults: number, startTime: string, topic: string): Promise<XPost[]> {
       const params = new URLSearchParams({
         query,
@@ -48,11 +48,14 @@ export function createXClient(deps: XClientDeps) {
       try {
         res = await deps.http(`${deps.baseUrl}/tweets/search/recent?${params.toString()}`, {
           headers: { Authorization: `Bearer ${deps.token}`, Accept: 'application/json' },
+          signal: AbortSignal.timeout(X_API.timeoutMs),
         });
       } catch {
-        throw new AppError('network', '无法连接 X API（网络错误）', '检查网络后重试');
+        throw new AppError('network', '无法连接 X API（网络错误或超时）', '检查网络后重试', undefined, { state: 'unknown' });
       }
-      const body = (await res.json().catch(() => ({}))) as Json;
+      const body = (await res.json().catch(() => undefined)) as Json;
+      // 200 但读不出内容：X 可能已经按返回的帖子计费了，不能当成"读到 0 条"
+      if (res.ok && body === undefined) throw new AppError('x', 'X 的响应读不出来', '稍后再试', undefined, { state: 'unknown' });
       if (res.ok) {
         const data: Json[] = Array.isArray(body?.data) ? body.data : [];
         return data.map((d) => toPost(d, topic)).filter((p): p is XPost => !!p);

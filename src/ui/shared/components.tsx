@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import { formatClock } from '../../core/time';
 import type { QuotaSnapshot } from '../../core/quota';
+import type { LlmSnapshot } from '../../core/spend';
 import type { XSnapshot } from '../../core/x-budget';
 import { formatAudioDuration, formatUsd, type SubtitleSnapshot } from '../../core/subtitles';
 import { AppError } from '../../services/errors';
@@ -88,6 +89,23 @@ function XBar({ x }: { x: XSnapshot }) {
   );
 }
 
+function LlmBar({ llm }: { llm: LlmSnapshot }) {
+  const pct = Math.min(100, Math.round(llm.ratio * 100));
+  const unconfirmed = llm.unconfirmedUsd > 0 ? `；另有 ${formatUsd(llm.unconfirmedUsd)} 不知道有没有计费（请求中断），按花了算` : '';
+  const title = `今日大模型花费${formatUsd(llm.spentUsd)}（本地估算${llm.estimatedPrice ? '，含按保守单价估算的部分' : ''}），调用 ${llm.calls} 次${unconfirmed}。不含自动字幕。你的本地时间 ${formatClock(llm.resetAt)} 重置`;
+  return (
+    <div class={`quota-bar${llm.warn || llm.exhausted ? ' warn' : ''}`} title={title} data-testid="llm-spend">
+      <span class="quota-label">AI $</span>
+      <span class="quota-track">
+        <span class="quota-fill" style={{ width: `${pct}%` }} />
+      </span>
+      <span class="quota-num">
+        {(llm.spentUsd + llm.unconfirmedUsd).toFixed(2)}/{llm.budgetUsd.toFixed(2)}
+      </span>
+    </div>
+  );
+}
+
 function SubBar({ sub }: { sub: SubtitleSnapshot }) {
   const pct = Math.min(100, Math.round(sub.ratio * 100));
   const title = `今日自动字幕花费${formatUsd(sub.spentUsd)}（本地估算${sub.estimatedPrice ? '，含按保守单价估算的部分' : ''}）：语音转写 ${formatAudioDuration(sub.asrSeconds)}、翻译 ${sub.translations} 句。你的本地时间 ${formatClock(sub.resetAt)} 重置`;
@@ -105,13 +123,14 @@ function SubBar({ sub }: { sub: SubtitleSnapshot }) {
 }
 
 /** 配额实时显示（本地估算），接近上限变色 */
-export function QuotaMeter({ snap, x, sub }: { snap: QuotaSnapshot | undefined; x?: XSnapshot | undefined; sub?: SubtitleSnapshot | undefined }) {
+export function QuotaMeter({ snap, x, sub, llm }: { snap: QuotaSnapshot | undefined; x?: XSnapshot | undefined; sub?: SubtitleSnapshot | undefined; llm?: LlmSnapshot | undefined }) {
   if (!snap) return null;
   const reset = `太平洋时间零点重置（你的本地时间 ${formatClock(snap.resetAt)}）；本地估算，仅统计本扩展的调用`;
   return (
     <div class="quota" aria-label="YouTube 配额">
       <Bar label="search" used={snap.search.used} limit={snap.search.limit} warn={snap.search.warn} title={`今日 search.list 次数。${reset}`} />
       <Bar label="units" used={snap.general.used} limit={snap.general.limit} warn={snap.general.warn} title={`今日其他接口 units。${reset}`} />
+      {llm && <LlmBar llm={llm} />}
       {x && <XBar x={x} />}
       {sub && <SubBar sub={sub} />}
     </div>

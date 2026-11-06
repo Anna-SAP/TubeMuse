@@ -1,6 +1,7 @@
 // 定时任务的时间计算（纯函数）：下一次触发时间、错过的总结/周报需要补算哪些。
 // MV3 的 service worker 会休眠、浏览器可能在到点时没开——所以每次醒来都按"应该已经生成但还没有"来补算。
 
+import { JOB_RETRY } from '../config/defaults';
 import { dayKey, DAY_MS } from './time';
 
 /** 解析 "HH:MM"，无效时返回 23:00 */
@@ -99,4 +100,30 @@ export function dueWeeklyReport(now: number, hhmm: string, weekday: number, time
   const due = zonedTime(end, hhmm, timeZone);
   if (due > now) end = addDays(end, -7);
   return existing.has(end) ? undefined : end;
+}
+
+export interface JobRetry {
+  nextRetryAt?: number;
+  /** 自动重试到此为止，等你手动再试 */
+  gaveUp?: boolean;
+}
+
+/**
+ * 例行任务失败后什么时候再试（例行检查每 30 分钟一次，不加限制的话，一个坏结果一天要付 48 次钱）：
+ *  - 到了每日预算：明天再说；
+ *  - 没发出请求（没填 Key）：不花钱，下一次检查就再试，你填好后立刻恢复；
+ *  - 钱已经花了结果不能用（billed）：再试一次，还不行就停下；
+ *  - 服务方拒绝或连不上：隔 2 小时起翻倍，最多 24 小时。
+ */
+export function nextJobRetry(failure: { kind: string; billed: boolean; attempts: number }, now: number, tomorrow: number): JobRetry {
+  if (failure.kind === 'llm_budget') return { nextRetryAt: tomorrow };
+  if (failure.kind === 'llm_key') return {};
+  if (failure.billed) return failure.attempts >= JOB_RETRY.maxBilledAttempts ? { gaveUp: true } : { nextRetryAt: now + JOB_RETRY.baseDelayMs };
+  return { nextRetryAt: now + Math.min(JOB_RETRY.maxDelayMs, JOB_RETRY.baseDelayMs * 2 ** Math.max(0, failure.attempts - 1)) };
+}
+
+export function jobRetryDue(failure: JobRetry | undefined, now: number): boolean {
+  if (!failure) return true;
+  if (failure.gaveUp) return false;
+  return failure.nextRetryAt === undefined || failure.nextRetryAt <= now;
 }
