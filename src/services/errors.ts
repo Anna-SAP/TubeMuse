@@ -13,6 +13,7 @@ export type ErrorKind =
   | 'llm_key'
   | 'llm_quota' // 大模型 / 转写账户的额度、账单、花费上限问题：重试不会恢复
   | 'llm_rate' // 大模型 / 转写服务限流：等一会儿会恢复
+  | 'llm_budget' // 达到每日大模型预算
   | 'llm'
   | 'x_key' // X Bearer Token 缺失/无效
   | 'x_budget' // 达到 X 每日预算或 X 账户余额/花费上限
@@ -24,6 +25,12 @@ export type ErrorKind =
   | 'input'
   | 'internal';
 
+/**
+ * 这次失败有没有花钱。没有这个字段 = 服务方明确拒绝了，没有计费。
+ * billed：响应已经回来（用量知道时带上），只是结果不能用；unknown：不知道（超时、断网、响应读不出来），预算上按花了算。
+ */
+export type Billing = { state: 'billed'; usage?: { inputTokens: number; outputTokens: number } } | { state: 'unknown' };
+
 export class AppError extends Error {
   constructor(
     readonly kind: ErrorKind,
@@ -32,6 +39,7 @@ export class AppError extends Error {
     readonly hint?: string,
     /** 限流时：多久之后再试（毫秒） */
     readonly retryAfterMs?: number,
+    readonly billing?: Billing,
   ) {
     super(message);
     this.name = 'AppError';
@@ -40,7 +48,7 @@ export class AppError extends Error {
 
 /** 把任意异常转成可展示的 AppError（消息经过脱敏）。 */
 export function toAppError(err: unknown, secrets: readonly (string | undefined)[] = []): AppError {
-  if (err instanceof AppError) return new AppError(err.kind, redact(err.message, secrets), err.hint && redact(err.hint, secrets), err.retryAfterMs);
+  if (err instanceof AppError) return new AppError(err.kind, redact(err.message, secrets), err.hint && redact(err.hint, secrets), err.retryAfterMs, err.billing);
   if (err instanceof BudgetExceededError) {
     return new AppError('budget', err.message, '可以在设置页调高单次预算，或把口令拆成更具体的一句');
   }

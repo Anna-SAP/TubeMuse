@@ -21,6 +21,7 @@ import {
   pickCue,
   putCue,
   tracksToDrop,
+  openSubtitleHold,
   recordAsr,
   recordTranslation,
   subtitleSnapshot,
@@ -239,7 +240,8 @@ describe('花费记账', () => {
   it('转写按分钟计价，翻译按 token 计价；预留的花费也算进剩余预算', () => {
     let l = recordAsr({ days: {} }, '2026-11-01', 'gpt-transcribe', 60);
     l = recordTranslation(l, '2026-11-01', 'claude-haiku-5-5', 1_000_000, 0);
-    const snap = subtitleSnapshot(l, 1, 0.8, '2026-11-01', NOW, 0.5);
+    l = openSubtitleHold(l, '2026-11-01', { id: 'h1', usd: 0.5, at: NOW, what: '字幕翻译' });
+    const snap = subtitleSnapshot(l, 1, 0.8, '2026-11-01', NOW);
     expect(snap.spentUsd).toBeCloseTo(0.0045 + 0.1, 6);
     expect(snap.remainingUsd).toBeCloseTo(1 - 0.1045 - 0.5, 6);
     expect(snap.asrSeconds).toBe(60);
@@ -333,7 +335,7 @@ function makeCtx(opts: {
   const ctx: AppContext = { kv, locker: memoryLocker(), http, now: () => NOW, auth, endpoints: ENDPOINTS, timeZone: 'Asia/Shanghai' };
   const init = async () => {
     await stores.secrets.write(kv, { openaiApiKey: OPENAI_KEY, anthropicApiKey: ANTHROPIC_KEY, ...(opts.secrets ?? {}) });
-    const s = mergeSettings(undefined);
+    const s = mergeSettings({ subtitles: { translationEngine: 'llm' } });
     await stores.settings.write(kv, opts.settings ? opts.settings(s) : s);
   };
   return { ctx, requests, init };
@@ -623,7 +625,7 @@ describe('限流等待时间的读取', () => {
 
 describe('其他功能的 429 也分清楚', () => {
   const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
-  const req = { system: 's', user: 'u', schema: { type: 'object' }, schemaName: 'x', effort: 'low' as const };
+  const req = { system: 's', user: 'u', schema: { type: 'object' }, schemaName: 'x', effort: 'low' as const, maxOutputTokens: 100 };
 
   it('OpenAI 找片 / 翻译遇到额度用完：llm_quota，指明去 Billing', async () => {
     const llm = createLlmClient({ provider: 'openai', model: 'gpt-6-luna', apiKey: OPENAI_KEY, baseURL: ENDPOINTS.openai, fetch: async () => json(429, { error: { message: 'no credits', type: 'insufficient_quota', code: 'credit_balance_exhausted' } }) });

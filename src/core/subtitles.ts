@@ -5,13 +5,12 @@ import {
   BROWSER_SPEECH_LANGS,
   ASR_PRICES_PER_MINUTE,
   ASR_UNKNOWN_PRICE_PER_MINUTE,
-  LLM_PRICES_PER_MTOK,
-  LLM_UNKNOWN_PRICE_PER_MTOK,
   SUBTITLES,
   type BrowserSpeechLang,
   type SubtitleAsrEngine,
   type SubtitleLang,
 } from '../config/defaults';
+import { addHold, keepRecentDays, llmCostUsd, llmPrice, pendingUsd, takeHold, type HoldDay, type SpendHold } from './spend';
 import { dominantScript } from './text';
 import type { SubtitleCue, SubtitleIndex, SubtitleTrack } from './types';
 
@@ -377,6 +376,26 @@ function scriptFamily(text: string): string | undefined {
   }
 }
 
+/** 第二行译成的语言 → Chrome 本地翻译用的语言代码 */
+const LOCAL_TRANSLATE_CODES: Record<SubtitleLang, string> = { 'zh-CN': 'zh', 'zh-TW': 'zh-Hant', en: 'en', ja: 'ja', ko: 'ko' };
+
+/** 本地翻译这一句用哪对语言。原文语言来自识别结果，读不到时按文字判断；拉丁字母分不出语种时按英文算 */
+export function localTranslatePair(sourceLang: string | undefined, text: string, target: SubtitleLang): { source: string; target: string } {
+  const traditional = /(hant|-tw|-hk|-mo)/i.test(sourceLang ?? '');
+  const family = langFamily(sourceLang) ?? scriptFamily(text) ?? 'en';
+  return { source: family === 'zh' && traditional ? 'zh-Hant' : family, target: LOCAL_TRANSLATE_CODES[target] };
+}
+
+/** 设置页"下载语言包"要准备哪些语言对：常见原文语言 → 你选的两种目标语言 */
+export function localPreparePairs(target: SubtitleLang, alt: SubtitleLang): { source: string; target: string }[] {
+  const pairs: { source: string; target: string }[] = [];
+  for (const source of ['en', 'ja', 'ko', 'zh']) {
+    const t = langFamily(source) === langFamily(target) ? alt : target;
+    if (langFamily(source) !== langFamily(t)) pairs.push({ source, target: LOCAL_TRANSLATE_CODES[t] });
+  }
+  return pairs;
+}
+
 /** 第二行译成什么：原文与目标语言同一语种时改用备选语言；两者都相同就不翻译（返回 undefined） */
 export function translationTarget(sourceLang: string | undefined, text: string, target: SubtitleLang, alt: SubtitleLang): SubtitleLang | undefined {
   const fam = langFamily(sourceLang) ?? scriptFamily(text);
@@ -455,7 +474,7 @@ export function tracksToDrop(index: SubtitleIndex, maxVideos: number = SUBTITLES
 
 // ── 花费 ──
 
-export interface SubtitleDay {
+export interface SubtitleDay extends HoldDay {
   spentUsd: number;
   asrSeconds: number;
   asrUsd: number;
@@ -474,6 +493,8 @@ export interface SubtitleLedger {
 export interface SubtitleSnapshot {
   day: string;
   spentUsd: number;
+  /** 不知道有没有计费、按最坏情况记着的部分 */
+  unconfirmedUsd: number;
   budgetUsd: number;
   remainingUsd: number;
   ratio: number;
@@ -492,38 +513,32 @@ export function asrPrice(model: string): { perMinute: number; known: boolean } {
   return p === undefined ? { perMinute: ASR_UNKNOWN_PRICE_PER_MINUTE, known: false } : { perMinute: p, known: true };
 }
 
-export function llmPrice(model: string): { input: number; output: number; known: boolean } {
-  const p = LLM_PRICES_PER_MTOK[model.trim()];
-  return p ? { ...p, known: true } : { ...LLM_UNKNOWN_PRICE_PER_MTOK, known: false };
-}
-
 export function asrCostUsd(model: string, seconds: number): number {
   return round6((Math.max(0, seconds) / 60) * asrPrice(model).perMinute);
 }
 
-export function translationCostUsd(model: string, inputTokens: number, outputTokens: number): number {
-  const p = llmPrice(model);
-  return round6((inputTokens * p.input + outputTokens * p.output) / 1e6);
-}
+export { llmCostUsd as translationCostUsd, llmPrice } from './spend';
 
 /** 一段音频最坏要花多少：转写 + （要翻译时）一次翻译的预估 */
 export function estimateSegmentUsd(asrModel: string, seconds: number, translationModel: string | undefined): number {
   const e = SUBTITLES.translationEstimate;
-  return round6(asrCostUsd(asrModel, seconds) + (translationModel ? translationCostUsd(translationModel, e.inputTokens, e.outputTokens) : 0));
+  return round6(asrCostUsd(asrModel, seconds) + (translationModel ? llmCostUsd(translationModel, e.inputTokens, e.outputTokens) : 0));
 }
 
 function emptyDay(): SubtitleDay {
   return { spentUsd: 0, asrSeconds: 0, asrUsd: 0, translations: 0, inputTokens: 0, outputTokens: 0, translateUsd: 0 };
 }
 
-export function subtitleSnapshot(ledger: SubtitleLedger, budgetUsd: number, warnRatio: number, day: string, resetAt: number, reservedUsd = 0): SubtitleSnapshot {
+export function subtitleSnapshot(ledger: SubtitleLedger, budgetUsd: number, warnRatio: number, day: string, resetAt: number): SubtitleSnapshot {
   const d = ledger.days[day] ?? emptyDay();
   const spent = round6(d.spentUsd);
-  const remaining = Math.max(0, round6(budgetUsd - spent - reservedUsd));
-  const ratio = budgetUsd > 0 ? Math.min(1, spent / budgetUsd) : 1;
+  const committed = round6(spent + pendingUsd(d));
+  const remaining = Math.max(0, round6(budgetUsd - committed));
+  const ratio = budgetUsd > 0 ? Math.min(1, committed / budgetUsd) : 1;
   return {
     day,
     spentUsd: spent,
+    unconfirmedUsd: round6(d.unconfirmedUsd ?? 0),
     budgetUsd,
     remainingUsd: remaining,
     ratio,
@@ -537,9 +552,25 @@ export function subtitleSnapshot(ledger: SubtitleLedger, budgetUsd: number, warn
 }
 
 function withDay(ledger: SubtitleLedger, day: string, fn: (d: SubtitleDay) => SubtitleDay): SubtitleLedger {
-  const days = { ...ledger.days, [day]: fn({ ...(ledger.days[day] ?? emptyDay()) }) };
-  const keep = Object.keys(days).sort().slice(-7);
-  return { days: Object.fromEntries(keep.map((k) => [k, days[k]!])) };
+  return { days: keepRecentDays({ ...ledger.days, [day]: fn({ ...(ledger.days[day] ?? emptyDay()) }) }) };
+}
+
+export function openSubtitleHold(ledger: SubtitleLedger, day: string, hold: SpendHold): SubtitleLedger {
+  return withDay(ledger, day, (d) => addHold(d, hold));
+}
+
+/** 去掉预扣：请求结果已知（接着按实际用量记账），或服务方明确拒绝、没有计费 */
+export function releaseSubtitleHold(ledger: SubtitleLedger, holdId: string): SubtitleLedger {
+  const t = takeHold(ledger.days, holdId);
+  return t.day ? { days: t.days } : ledger;
+}
+
+/** 不知道有没有计费：按预扣额记成"未确认" */
+export function abandonSubtitleHold(ledger: SubtitleLedger, holdId: string): SubtitleLedger {
+  const t = takeHold(ledger.days, holdId);
+  if (!t.day) return ledger;
+  const d = t.days[t.day]!;
+  return { days: { ...t.days, [t.day]: { ...d, unconfirmedUsd: round6((d.unconfirmedUsd ?? 0) + t.hold!.usd) } } };
 }
 
 export function recordAsr(ledger: SubtitleLedger, day: string, model: string, seconds: number): SubtitleLedger {
@@ -554,7 +585,7 @@ export function recordAsr(ledger: SubtitleLedger, day: string, model: string, se
 }
 
 export function recordTranslation(ledger: SubtitleLedger, day: string, model: string, inputTokens: number, outputTokens: number): SubtitleLedger {
-  const usd = translationCostUsd(model, inputTokens, outputTokens);
+  const usd = llmCostUsd(model, inputTokens, outputTokens);
   return withDay(ledger, day, (d) => ({
     ...d,
     translations: d.translations + 1,
@@ -569,7 +600,7 @@ export function recordTranslation(ledger: SubtitleLedger, day: string, model: st
 /** 一小时连续说话的视频大约花多少（设置页提示用）：按典型用量与平均句长估算 */
 export function hourlyEstimateUsd(asrModel: string | undefined, translationModel: string | undefined): number {
   const e = SUBTITLES.translationTypical;
-  const perCue = translationModel ? translationCostUsd(translationModel, e.inputTokens, e.outputTokens) : 0;
+  const perCue = translationModel ? llmCostUsd(translationModel, e.inputTokens, e.outputTokens) : 0;
   return round6((asrModel ? asrCostUsd(asrModel, 3600) : 0) + perCue * (3600 / e.secondsPerCue));
 }
 

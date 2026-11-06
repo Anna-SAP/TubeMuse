@@ -1,14 +1,17 @@
 // eMails：给文章评分（按文章缓存，同一篇隔天再出现时不再花钱）、写总体结论、收藏与标签（所有写入都经这里，加锁读改写）。
 // 评分和总体结论只在你点按钮时运行，在侧边栏里直接调大模型；发送的内容见 core/prompts.ts 的 buildEmailScorePrompt、buildEmailVerdictPrompt。
 
-import { EMAIL } from '../config/defaults';
+import { EMAIL, LLM_TASKS } from '../config/defaults';
 import { applyEmailOp, digestStats, keepLatest, parseScores, parseVerdict, rankArticles, verdictKey, type EmailArticle, type EmailOp } from '../core/email';
 import { EMAIL_SCORE_SCHEMA, EMAIL_VERDICT_SCHEMA, buildEmailScorePrompt, buildEmailVerdictPrompt } from '../core/prompts';
 import { llmPrice, translationCostUsd } from '../core/subtitles';
 import type { AppContext } from './context';
 import { AppError } from './errors';
-import { getLlm } from './llm-factory';
-import { stores } from './repo';
+import { getLlm, taskModel } from './llm-factory';
+import { stores, type Settings } from './repo';
+
+/** LLM_TASKS 里 eMails 的典型用量按一封多少篇算 */
+const EMAIL_TYPICAL_ARTICLES = 15;
 
 export interface EmailScoreResult {
   /** 这次发给大模型的篇数 */
@@ -35,8 +38,18 @@ export interface EmailScoreOptions {
   onProgress?: (done: number, total: number) => void;
 }
 
+/** 这次评估大约花多少（界面在按钮下面说明）：按典型用量算的估计，实际花费评完显示 */
+export function estimateEmailUsd(settings: Settings, articleCount: number): { usd: number; model: string } {
+  const score = LLM_TASKS.emailScore.typical;
+  const verdict = LLM_TASKS.emailVerdict.typical;
+  const { model } = taskModel(settings, 'emailScore');
+  const usd = translationCostUsd(model, (score.inputTokens / EMAIL_TYPICAL_ARTICLES) * articleCount, (score.outputTokens / EMAIL_TYPICAL_ARTICLES) * articleCount);
+  return { usd: usd + translationCostUsd(taskModel(settings, 'emailVerdict').model, verdict.inputTokens, verdict.outputTokens), model };
+}
+
 /** 按这封邮件现在的分数写总体结论（调用方持有 run:email）。花费记进 result，大模型的回答可用才存 */
-async function writeVerdict(ctx: AppContext, llm: Awaited<ReturnType<typeof getLlm>>, articles: readonly EmailArticle[], result: EmailScoreResult): Promise<void> {
+async function writeVerdict(ctx: AppContext, articles: readonly EmailArticle[], result: EmailScoreResult): Promise<void> {
+  const llm = await getLlm(ctx, 'emailVerdict');
   const rows = rankArticles(articles, await stores.emailScores.read(ctx.kv));
   const stats = digestStats(rows);
   const { system, user } = buildEmailVerdictPrompt(rows, stats);
@@ -61,7 +74,7 @@ export async function scoreArticles(ctx: AppContext, articles: readonly EmailArt
     const todo = opts.force ? [...articles] : articles.filter((a) => !existing[a.id]);
     const result: EmailScoreResult = { asked: todo.length, scored: 0, missing: 0, cached: articles.length - todo.length, usd: 0, estimatedPrice: false, model: '', verdict: 'skipped' };
     if (!todo.length) return result;
-    const llm = await getLlm(ctx);
+    const llm = await getLlm(ctx, 'emailScore');
     result.model = llm.model;
     result.estimatedPrice = !llmPrice(llm.model).known;
     for (let i = 0; i < todo.length; i += EMAIL.batchSize) {
@@ -82,7 +95,7 @@ export async function scoreArticles(ctx: AppContext, articles: readonly EmailArt
     }
     if (result.scored + result.cached > 0) {
       try {
-        await writeVerdict(ctx, llm, articles, result);
+        await writeVerdict(ctx, articles, result);
       } catch (e) {
         result.verdict = 'failed';
         result.verdictError = e;
@@ -100,9 +113,9 @@ export async function concludeArticles(ctx: AppContext, articles: readonly Email
     const scores = await stores.emailScores.read(ctx.kv);
     const cached = articles.filter((a) => scores[a.id]).length;
     if (!cached) throw new AppError('input', '这封邮件还没有评过分', '先点"评估"');
-    const llm = await getLlm(ctx);
+    const llm = await getLlm(ctx, 'emailVerdict');
     const result: EmailScoreResult = { asked: 0, scored: 0, missing: 0, cached, usd: 0, estimatedPrice: !llmPrice(llm.model).known, model: llm.model, verdict: 'skipped' };
-    await writeVerdict(ctx, llm, articles, result);
+    await writeVerdict(ctx, articles, result);
     return result;
   });
 }

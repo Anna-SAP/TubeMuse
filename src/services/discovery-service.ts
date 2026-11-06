@@ -45,10 +45,13 @@ async function runDiscoveryLocked(ctx: AppContext, requestedAt: number): Promise
   const week = state.weeks[weekKey] ?? emptyWeek();
   if (week.generatedAt !== undefined && week.generatedAt > requestedAt) return week;
   const remaining = settings.discovery.weeklySearchCalls - week.searchCalls;
-  if (remaining <= 0) {
+  // 上次搜完没走到最后的结果接着用：search 是稀缺资源，不因为后面一步失败重搜
+  const pending = week.pending ?? [];
+  if (remaining <= 0 && !pending.length) {
     throw new AppError('budget', `本周用于发现新博主的 search 次数（${settings.discovery.weeklySearchCalls} 次）已经用完`, `下周（${addDays(weekKey, 1)} 起）会自动恢复`);
   }
-  const queries = discoveryQueries(clusterState.clusters, remaining);
+  const searched = new Set(pending.map((p) => p.topic));
+  const queries = discoveryQueries(clusterState.clusters, Math.max(0, remaining) + searched.size).filter((q) => !searched.has(q.topic));
   const budget = new OperationBudget({ searchCalls: queries.length, generalUnits: DISCOVERY.generalUnitBudget }, '本周新博主发现');
   const charge = makeCharger(ctx, budget, settings.quota);
   // 每次 search 调用前就记进本周账本（而不是跑完才记）：中途失败或后台被休眠也不会漏记
@@ -80,10 +83,11 @@ async function runDiscoveryLocked(ctx: AppContext, requestedAt: number): Promise
 
   try {
     const publishedAfter = toRfc3339(ctx.now() - DISCOVERY.lookbackDays * DAY_MS);
-    const results = [];
+    const results = [...pending];
     for (const q of queries) {
       const items = await yt.searchChannels({ part: 'snippet', type: 'video', q: q.q, maxResults: '50', order: 'relevance', publishedAfter });
       results.push({ topic: q.topic, clusterWeight: q.clusterWeight, items });
+      await persist({ pending: results });
     }
     const recentlyRecommended = new Set<string>();
     for (const [key, w] of Object.entries(state.weeks)) {
@@ -114,7 +118,13 @@ async function runDiscoveryLocked(ctx: AppContext, requestedAt: number): Promise
     const watched = await watchedChannelCounts(ctx);
     const recommendations = scoreCandidates(details, ex, watched, ctx.now(), Math.min(5, settings.discovery.maxChannels));
     if (!recommendations.length) notes.push('这周没找到符合条件的新博主（都已订阅、近期推荐过、不活跃，或你标过不感兴趣）');
-    const updated = await persist({ generatedAt: ctx.now(), recommendations, notes });
+    const updated = await stores.discovery.update(ctx.kv, ctx.locker, (s) => {
+      const { pending: _done, ...cur } = s.weeks[weekKey] ?? emptyWeek();
+      const weeks = { ...s.weeks, [weekKey]: { ...cur, generatedAt: ctx.now(), recommendations, notes } };
+      // 只保留最近 12 周
+      const keep = Object.keys(weeks).sort().slice(-12);
+      return { ...s, weeks: Object.fromEntries(keep.map((k) => [k, weeks[k]!])) };
+    });
     return updated.weeks[weekKey]!;
   } catch (e) {
     await persist({ notes: [...week.notes, `上次运行失败：${e instanceof Error ? e.message : String(e)}`] });

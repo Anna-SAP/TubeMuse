@@ -1,10 +1,11 @@
 // 类型化的本地数据仓库：每个键一个 Store，读时补默认值，改时加锁。
 
-import { DEFAULT_FACTOR_WEIGHTS, DEFAULT_SETTINGS, DOUBAN } from '../config/defaults';
+import { DEFAULT_FACTOR_WEIGHTS, DEFAULT_SETTINGS, DOUBAN, X_DEFAULTS_VERSION } from '../config/defaults';
 import { EMPTY_LEDGER, type QuotaLedger } from '../core/quota';
 import type { SearchCache } from '../core/cache';
 import type { XLedger } from '../core/x-budget';
-import type { DiscoveryState, DoubanState, HotspotState, SubtitleIndex, SubtitleTrack } from '../core/types';
+import { EMPTY_LLM_LEDGER, type LlmLedger } from '../core/spend';
+import type { DiscoveryState, DoubanState, HotspotDraft, HotspotState, Intent, SubtitleIndex, SubtitleTrack } from '../core/types';
 import type { SubtitleLedger } from '../core/subtitles';
 import type { ClipRecord } from '../core/clips';
 import { sanitizeCcLangs } from '../core/multi-captions';
@@ -47,6 +48,22 @@ function withoutLegacySubtitleKeys(stored: unknown): object {
   return rest;
 }
 
+/**
+ * X 设置从旧版迁移一次：花钱的自动刷新回到"关"（这一步要你明确打开，DECISIONS §48），旧默认的每主题 15 条换成 10 条。
+ * 你之后再改的值带着新版本号存下，不会被改回来。
+ */
+function xSettings(stored: unknown): Settings['x'] {
+  const s = (stored && typeof stored === 'object' ? stored : {}) as Partial<Settings['x']>;
+  const merged = { ...DEFAULT_SETTINGS.x, ...s };
+  if ((s.defaultsVersion ?? 1) >= X_DEFAULTS_VERSION) return merged;
+  return {
+    ...merged,
+    autoRefresh: false,
+    postsPerTopic: s.postsPerTopic === 15 ? DEFAULT_SETTINGS.x.postsPerTopic : merged.postsPerTopic,
+    defaultsVersion: X_DEFAULTS_VERSION,
+  };
+}
+
 /** 设置按分区与默认值合并，旧版本存下的数据缺字段也能正常读取。 */
 export function mergeSettings(stored: unknown): Settings {
   const s = (stored && typeof stored === 'object' ? stored : {}) as Partial<Record<keyof Settings, Record<string, unknown>>>;
@@ -56,6 +73,8 @@ export function mergeSettings(stored: unknown): Settings {
       ...d.llm,
       ...(s.llm as object),
       models: { ...d.llm.models, ...((s.llm?.models as object) ?? {}) },
+      economyModels: { ...d.llm.economyModels, ...((s.llm?.economyModels as object) ?? {}) },
+      taskTiers: { ...((s.llm?.taskTiers as object) ?? {}) },
     },
     quota: { ...d.quota, ...(s.quota as object) },
     search: { ...d.search, ...(s.search as object) },
@@ -66,7 +85,7 @@ export function mergeSettings(stored: unknown): Settings {
     summary: { ...d.summary, ...(s.summary as object) },
     reminder: { ...d.reminder, ...(s.reminder as object) },
     weekly: { ...d.weekly, ...(s.weekly as object) },
-    x: { ...d.x, ...(s.x as object) },
+    x: xSettings(s.x),
     discovery: { ...d.discovery, ...(s.discovery as object) },
     douban: { ...d.douban, ...(s.douban as object) },
     subtitles: {
@@ -144,7 +163,13 @@ export const stores = {
   jobState: new Store<JobState>('jobState', () => ({ failures: {} })),
   // Phase 3
   xLedger: new Store<XLedger>('xLedger', () => ({ days: {} })),
+  /** 大模型花费记账（按本地日），含进行中的预扣 */
+  llmLedger: new Store<LlmLedger>('llmLedger', () => EMPTY_LLM_LEDGER),
+  /** 最近理解过的口令：同一句话短时间内再提交不再调大模型 */
+  intentCache: new Store<IntentCacheEntry[]>('intentCache', () => []),
   hotspots: new Store<HotspotState | null>('hotspots', () => null),
+  /** 读到了、还没整理成热点的帖子：下次刷新直接用，不再读 X */
+  hotspotDraft: new Store<HotspotDraft | null>('hotspotDraft', () => null),
   discovery: new Store<DiscoveryState>('discovery', () => ({ weeks: {}, dismissed: {} })),
   /** 豆瓣评论 RSS：订阅的条目与各自最近一次读取的结果 */
   douban: new Store<DoubanState>('douban', defaultDoubanState),
@@ -197,7 +222,25 @@ export interface JobState {
   firstDay?: string;
   lastRunAt?: number;
   lastMetadataAt?: number;
-  failures: Record<string, { at: number; message: string; hint?: string }>;
+  failures: Record<string, JobFailure>;
+}
+
+export interface JobFailure {
+  at: number;
+  message: string;
+  hint?: string;
+  /** 自动试过几次 */
+  attempts?: number;
+  /** 到这个时间才再试（见 core/schedule.ts 的 nextJobRetry） */
+  nextRetryAt?: number;
+  /** 不再自动重试，等你手动再试 */
+  gaveUp?: boolean;
+}
+
+export interface IntentCacheEntry {
+  key: string;
+  at: number;
+  intent: Intent;
 }
 
 /** 导出时排除的键：API Key 与授权相关信息不进入导出文件。 */

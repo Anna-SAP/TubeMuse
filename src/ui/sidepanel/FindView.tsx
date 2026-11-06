@@ -96,7 +96,7 @@ export function FindView({ quota, prefill }: { quota: QuotaSnapshot | undefined;
     }
   }
 
-  async function submit(utterance: string) {
+  async function submit(utterance: string, fresh = false) {
     setError(undefined);
     setConfirm(undefined);
     setSession(undefined);
@@ -104,7 +104,7 @@ export function FindView({ quota, prefill }: { quota: QuotaSnapshot | undefined;
     setIntent(undefined);
     setPhase('parsing');
     try {
-      const it = await parseUtterance(ctx, utterance);
+      const it = await parseUtterance(ctx, utterance, { fresh });
       setIntent(it);
       setDirty(false);
       await search(it);
@@ -218,7 +218,7 @@ export function FindView({ quota, prefill }: { quota: QuotaSnapshot | undefined;
             setDirty(true);
           }}
           onResearch={() => intent && void search(intent)}
-          onReparse={() => void submit(intent.utterance)}
+          onReparse={() => void submit(intent.utterance, true)}
         />
       )}
 

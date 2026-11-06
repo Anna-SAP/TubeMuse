@@ -6,7 +6,9 @@ import { createBrowserContext, type AppContext } from '../../services/context';
 import { toAppError, type AppError } from '../../services/errors';
 import { quotaSnapshot } from '../../services/quota-service';
 import { xSpend } from '../../services/hotspot-service';
+import { llmSpend } from '../../services/llm-factory';
 import { subtitleSpend } from '../../services/subtitle-service';
+import type { LlmSnapshot } from '../../core/spend';
 import type { SubtitleSnapshot } from '../../core/subtitles';
 import { stores, type Store } from '../../services/repo';
 import type { QuotaSnapshot } from '../../core/quota';
@@ -85,6 +87,22 @@ export function useXSpend(): import('../../core/x-budget').XSnapshot | undefined
     if (!settings?.x.enabled || !secrets?.xBearerToken) return setSnap(undefined);
     void xSpend(appCtx()).then(setSnap);
   }, [ledger, settings, secrets, tick]);
+  return snap;
+}
+
+/** 大模型花费快照，账本或设置变化时刷新 */
+export function useLlmSpend(): LlmSnapshot | undefined {
+  const ledger = useStore(stores.llmLedger);
+  const settings = useStore(stores.settings);
+  const [tick, setTick] = useState(0);
+  const [snap, setSnap] = useState<LlmSnapshot>();
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    void llmSpend(appCtx()).then(setSnap);
+  }, [ledger, settings, tick]);
   return snap;
 }
 

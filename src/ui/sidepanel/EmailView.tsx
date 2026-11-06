@@ -25,7 +25,7 @@ import {
   type EmailVerdict,
 } from '../../core/email';
 import { formatCount } from '../../core/format';
-import { applyEmail, concludeArticles, scoreArticles, type EmailScoreResult } from '../../services/email-service';
+import { applyEmail, concludeArticles, estimateEmailUsd, scoreArticles, type EmailScoreResult } from '../../services/email-service';
 import type { AppError } from '../../services/errors';
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
@@ -268,6 +268,11 @@ function CurrentMail({ onTag, onRemove, onError }: { onTag: (t: string) => void;
             </button>
           )}
         </div>
+      )}
+      {unscored > 0 && (
+        <p class="muted small" data-testid="email-estimate">
+          用 {estimateEmailUsd(settings, unscored).model} 评 {unscored} 篇并写结论，预计约 ${estimateEmailUsd(settings, unscored).usd.toFixed(4)}（估算）；每日大模型预算 ${settings.llm.dailyBudgetUsd.toFixed(2)}。
+        </p>
       )}
       <p class="muted small" data-testid="email-disclosure">
         点"评估"后，文章的标题、摘要、作者、刊物、站点名、阅读时长和互动数发给 {provider}；评完再把每篇的标题、分数和理由发过去，写总体结论。不发邮件主题、发件人、收件人和链接。大模型没有读正文，分数和结论都只是预判。

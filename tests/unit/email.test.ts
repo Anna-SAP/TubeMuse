@@ -321,10 +321,10 @@ describe('评估', () => {
     const r = await scoreArticles(t.ctx, articles);
     expect(t.requests).toHaveLength(1);
     expect(t.requests[0]!.body).not.toContain('source=');
-    expect(r).toMatchObject({ asked: 3, scored: 3, missing: 0, cached: 0, model: 'claude-opus-5-5', estimatedPrice: false, verdict: 'written' });
-    expect(r.usd).toBeCloseTo((2 * (1000 * 4 + 100 * 20)) / 1e6, 6);
+    expect(r).toMatchObject({ asked: 3, scored: 3, missing: 0, cached: 0, model: 'claude-haiku-5-5', estimatedPrice: false, verdict: 'written' });
+    expect(r.usd).toBeCloseTo((2 * (1000 * 0.1 + 100 * 0.5)) / 1e6, 6);
     const scores = await stores.emailScores.read(t.ctx.kv);
-    expect(scores[articles[0]!.id]).toMatchObject({ score: 8, at: NOW, model: 'claude-opus-5-5' });
+    expect(scores[articles[0]!.id]).toMatchObject({ score: 8, at: NOW, model: 'claude-haiku-5-5' });
   });
 
   it('评过的不再花钱；同一篇在别的邮件里出现也算评过；"重新评估"才重发', async () => {
@@ -470,7 +470,7 @@ describe('总体结论', () => {
     expect(t.verdicts[0]!.input).toMatchObject({ total: many.length, scored: many.length });
     expect(r.verdict).toBe('written');
     const saved = (await stores.emailVerdicts.read(t.ctx.kv))[verdictKey(rankArticles(many, await stores.emailScores.read(t.ctx.kv)))];
-    expect(saved).toEqual({ summary: '都是实战复盘，值得先看第一篇。', at: NOW, model: 'claude-opus-5-5' });
+    expect(saved).toEqual({ summary: '都是实战复盘，值得先看第一篇。', at: NOW, model: 'claude-haiku-5-5' });
   });
 
   it('只评了新的文章，结论照样覆盖这封邮件里之前评过的', async () => {
@@ -499,7 +499,7 @@ describe('总体结论', () => {
     const r = await scoreArticles(t.ctx, articles);
     expect(r).toMatchObject({ scored: 3, verdict: 'failed' });
     expect(r.verdictError).toMatchObject({ kind: 'llm' });
-    expect(r.usd).toBeCloseTo((2 * (1000 * 4 + 100 * 20)) / 1e6, 6);
+    expect(r.usd).toBeCloseTo((2 * (1000 * 0.1 + 100 * 0.5)) / 1e6, 6);
     expect(await stores.emailVerdicts.read(t.ctx.kv)).toEqual({});
     expect(Object.keys(await stores.emailScores.read(t.ctx.kv))).toHaveLength(3);
   });
@@ -539,7 +539,7 @@ describe('总体结论', () => {
     const r = await concludeArticles(t.ctx, articles);
     expect(t.requests).toHaveLength(0);
     expect(t.verdicts).toHaveLength(1);
-    expect(r).toMatchObject({ asked: 0, scored: 0, cached: 3, verdict: 'written', model: 'claude-opus-5-5' });
+    expect(r).toMatchObject({ asked: 0, scored: 0, cached: 3, verdict: 'written', model: 'claude-haiku-5-5' });
     expect(r.usd).toBeGreaterThan(0);
     expect(await stores.emailScores.read(t.ctx.kv)).toEqual({ [a.id]: s(6), [b.id]: s(2), [c.id]: s(1) });
   });

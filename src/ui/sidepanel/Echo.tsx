@@ -311,6 +311,11 @@ export function Echo(props: EchoProps) {
         {intent.interpretation && <span class="interp">{intent.interpretation}</span>}
       </div>
       {intent.correctionsUsed > 0 && <div class="muted small">参考了你的 {intent.correctionsUsed} 条理解纠正</div>}
+      {intent.cachedAt !== undefined && (
+        <div class="muted small" data-testid="intent-cached">
+          缓存：这句话刚理解过，没有再调大模型
+        </div>
+      )}
       <ul class="echo-list">
         {intent.constraints.map((c) => (
           <ConstraintRow

@@ -32,6 +32,9 @@ export const YOUTUBE_LIMITS = {
   likedVideosHardMax: 1000,
 } as const;
 
+/** X 热点默认值的版本：2 = 不再自动花钱、每个主题读 10 条（2026-11-06） */
+export const X_DEFAULTS_VERSION = 2;
+
 export const DEFAULT_SETTINGS = {
   llm: {
     provider: 'anthropic' as 'anthropic' | 'openai',
@@ -39,6 +42,12 @@ export const DEFAULT_SETTINGS = {
       anthropic: 'claude-opus-5-5',
       openai: 'gpt-6.1-sol',
     },
+    /** 省钱模型：LLM_TASKS 里 tier 为 economy 的任务默认用它；留空 = 跟随上面的主模型 */
+    economyModels: { anthropic: 'claude-haiku-5-5', openai: 'gpt-6-luna' },
+    /** 你把某个任务改成别的档位时记在这里（没写的按 LLM_TASKS 的默认档） */
+    taskTiers: {} as Partial<Record<LlmTask, LlmTier>>,
+    /** 每日大模型花费上限（美元，按本地日计；不含自动字幕，字幕有自己的预算） */
+    dailyBudgetUsd: 0.5,
   },
   quota: {
     searchDailyCalls: YOUTUBE_QUOTA.searchDailyCalls as number,
@@ -110,12 +119,14 @@ export const DEFAULT_SETTINGS = {
     cacheHours: 6,
     minItems: 5,
     maxItems: 8,
-    /** 打开"发现"页且缓存过期时自动刷新（会产生费用） */
-    autoRefresh: true,
+    /** 打开"发现"页且缓存过期时自动刷新。默认关闭：花钱的读取只在你点"刷新"时发生（见 DECISIONS §48） */
+    autoRefresh: false,
     /** 最多查几个兴趣主题 */
     maxTopics: 4,
-    /** 每个主题读几条帖子（10–100） */
-    postsPerTopic: 15,
+    /** 每个主题读几条帖子（10–100）。10 是 X 允许的最小值，也正好是每个主题交给大模型的候选数 */
+    postsPerTopic: 10,
+    /** 这份默认值的版本：旧版存下的设置按 mergeSettings 迁移一次 */
+    defaultsVersion: X_DEFAULTS_VERSION as number,
   },
   discovery: {
     enabled: true,
@@ -150,6 +161,8 @@ export const DEFAULT_SETTINGS = {
     /** OpenAI 语音转写模型（分段上传；转写方式选 OpenAI 时用） */
     asrModel: 'gpt-transcribe',
     translate: true,
+    /** 第二行谁来译：Chrome 自带的本地翻译（免费，语言包在本机）或大模型（按量计费） */
+    translationEngine: 'local' as SubtitleTranslationEngine,
     /** 第二行译成的语言 */
     targetLang: 'zh-CN' as SubtitleLang,
     /** 原文已经是目标语言时，第二行改译成的语言 */
@@ -211,6 +224,7 @@ export const DEFAULT_SETTINGS = {
 };
 
 export type SubtitleAsrEngine = 'browser' | 'openai';
+export type SubtitleTranslationEngine = 'local' | 'llm';
 
 /** 浏览器识别可选的语言（代码 → 显示名）；识别结果的字形跟语言走：zh-CN 出简体，zh-TW 出繁体 */
 export const BROWSER_SPEECH_LANGS = {
@@ -279,6 +293,11 @@ export const SUBTITLES = {
   maxVideosKept: 100,
   /** 翻译一句的预估 token：预算护栏按此预留（偏保守），实际按返回的用量记账 */
   translationEstimate: { inputTokens: 700, outputTokens: 400 },
+  translationMaxOutputTokens: 2_000,
+  /** Chrome 本地翻译最多等多久（模型加载、翻一句）：语言包有问题时 Chrome 可能一直不回应 */
+  localTranslateTimeoutMs: 15_000,
+  /** 下载语言包最多等多久 */
+  localPrepareTimeoutMs: 300_000,
   /** 设置页"一小时约花多少"的估算：一句的典型用量、平均每几秒一句 */
   translationTypical: { inputTokens: 350, outputTokens: 150, secondsPerCue: 5 },
   // ── 浏览器识别 ──
@@ -324,11 +343,17 @@ export const LLM_PRICES_PER_MTOK: Record<string, { input: number; output: number
 };
 export const LLM_UNKNOWN_PRICE_PER_MTOK = { input: 10, output: 50 } as const;
 
-/** X API（2026-10 官方定价页；按返回的资源条数计费，同一资源在同一 UTC 日内只计一次） */
+/**
+ * X API（2026-11 官方邮件与公告核实；按返回的资源条数计费，同一资源在同一 UTC 日内只计一次）。
+ * 2026-11-22 起 expansions 带回来的对象也按这个价计费。热点只要帖子本身，不发 expansions（x-client.ts 有测试守着）。
+ */
 export const X_API = {
   pricing: {
     postRead: 0.005,
     userRead: 0.01,
+    mediaRead: 0.005,
+    pollRead: 0.005,
+    placeRead: 0.005,
     trendsRequest: 0.01,
   },
   /** 按量付费账号的 recent search 查询串上限 */
@@ -340,6 +365,8 @@ export const X_API = {
   /** 每个主题交给 LLM 的候选帖子数 */
   candidatesPerTopic: 10,
   postTextChars: 280,
+  /** 一次请求最多等多久：挂住的请求不能一直占着"同一时间只刷新一次"的锁 */
+  timeoutMs: 30_000,
 } as const;
 
 export const DISCOVERY = {
@@ -565,6 +592,18 @@ export const WATCH = {
   metadataLookbackDays: 8,
 } as const;
 
+/** 没有 SDK 超时的外部请求最多等多久：挂住的请求会一直占着后台任务的锁 */
+export const HTTP_TIMEOUT_MS = 30_000;
+
+/** 例行任务失败后的重试节奏（DECISIONS §48）。服务方已经计费的失败（输出坏了、被截断）重试也要花钱，所以次数有限 */
+export const JOB_RETRY = {
+  /** 已计费的失败：自动试几次后停下，等你手动重试 */
+  maxBilledAttempts: 2,
+  /** 没计费的失败（断网、限流、服务方出错）：第一次隔这么久，之后翻倍，最多 maxDelayMs */
+  baseDelayMs: 2 * 3_600_000,
+  maxDelayMs: 24 * 3_600_000,
+} as const;
+
 export const SUMMARY = {
   /** 生成每日总结时参考的前几天总结 */
   contextDays: 7,
@@ -676,14 +715,44 @@ export const SHORTS = {
 export const STORAGE_LIMITS = {
   searchSessionsKept: 10,
   quotaDaysKept: 7,
+  /** 花费账本保留几天 */
+  spendDaysKept: 7,
+  /** 理解结果缓存多少句 */
+  intentCacheKept: 30,
 } as const;
 
+/** 大模型任务的档位：economy 用省钱模型，main 用主模型 */
+export type LlmTier = 'economy' | 'main';
+
+/**
+ * 每类大模型调用：默认档位、输出上限、典型用量（设置页估算用）。
+ * 输出上限同时是花费的硬边界：调用前按它预扣预算，所以留够余量（Opus 5.5、Haiku 5.5 的思考也算输出），不会把正常结果截断。
+ * main 档只留给决定后续一切的两步：理解口令、归纳兴趣簇。切换档位在设置页。
+ */
+export const LLM_TASKS = {
+  intent: { label: '理解口令', tier: 'main', maxOutputTokens: 4_000, typical: { inputTokens: 2_200, outputTokens: 700, perDay: 5 } },
+  clusters: { label: '归纳兴趣簇', tier: 'main', maxOutputTokens: 12_000, typical: { inputTokens: 25_000, outputTokens: 4_000, perDay: 0.03 } },
+  daily: { label: '每日总结', tier: 'economy', maxOutputTokens: 6_000, typical: { inputTokens: 3_000, outputTokens: 1_500, perDay: 1 } },
+  weekly: { label: '每周自省', tier: 'economy', maxOutputTokens: 4_000, typical: { inputTokens: 1_500, outputTokens: 800, perDay: 0.14 } },
+  hotspots: { label: 'X 热点整理', tier: 'economy', maxOutputTokens: 4_000, typical: { inputTokens: 5_000, outputTokens: 1_500, perDay: 1 } },
+  emailScore: { label: 'eMails 打分', tier: 'economy', maxOutputTokens: 4_000, typical: { inputTokens: 1_500, outputTokens: 1_200, perDay: 1 } },
+  emailVerdict: { label: 'eMails 总体结论', tier: 'economy', maxOutputTokens: 2_000, typical: { inputTokens: 1_500, outputTokens: 500, perDay: 1 } },
+  ping: { label: '测试连接', tier: 'main', maxOutputTokens: 500, typical: { inputTokens: 40, outputTokens: 20, perDay: 0 } },
+} as const satisfies Record<string, { label: string; tier: LlmTier; maxOutputTokens: number; typical: { inputTokens: number; outputTokens: number; perDay: number } }>;
+
+export type LlmTask = keyof typeof LLM_TASKS;
+
 export const LLM_LIMITS = {
-  maxTokens: 16_000,
   timeoutMs: 90_000,
   /** 一段字幕音频的转写请求最长等待（太久的字幕已经没意义） */
   transcribeTimeoutMs: 30_000,
-  maxRetries: 1,
+  /** SDK 不自动重试：超时后重发可能付两次钱。只有服务方明确拒绝（没有计费）时自己重试一次 */
+  maxRetries: 0,
+  /** 服务方说要等这么久以上就不重试了，直接告诉你 */
+  maxRetryWaitMs: 5_000,
+  retryDelayMs: 1_500,
+  /** 估算输入 token：每个字符按这么多 token 算（中文约 1 字 0.7–1 token，取保守值） */
+  tokensPerChar: 0.8,
   /** 发给 LLM 做聚类的条目上限（数据最小化 + 控制 token） */
   clusterMaxChannels: 300,
   clusterMaxLikedTitles: 300,

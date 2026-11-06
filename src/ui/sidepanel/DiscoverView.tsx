@@ -7,7 +7,7 @@ import { formatClock, formatRelative } from '../../core/time';
 import type { CreatorRecommendation, Hotspot } from '../../core/types';
 import { currentWeekKey, dismissCreator, runDiscovery } from '../../services/discovery-service';
 import type { AppError } from '../../services/errors';
-import { hotspotsFresh, refreshHotspots } from '../../services/hotspot-service';
+import { hotspotsFresh, refreshHotspots, xRefreshMaxUsd } from '../../services/hotspot-service';
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore, useXSpend } from '../shared/app';
 import { ErrorBox, Notice, Spinner } from '../shared/components';
@@ -105,7 +105,7 @@ export function DiscoverView({ onSearch }: { onSearch: (utterance: string) => vo
     }
   };
 
-  // 打开"发现"页且缓存过期时自动刷新一次（设置里可关）
+  // 打开"发现"页且缓存过期时自动刷新一次：默认关闭，只有你在设置里打开才会发生（会花钱）
   useEffect(() => {
     if (!settings || !secrets || autoTried || hotspots === undefined) return;
     setAutoTried(true);
@@ -145,6 +145,10 @@ export function DiscoverView({ onSearch }: { onSearch: (utterance: string) => vo
             <p class="muted small">
               用你的兴趣簇关键词检索 X 上最近 {24} 小时的高互动帖子，再整理成 {settings.x.minItems}–{settings.x.maxItems} 条。按读到的帖子数计费（$0.005/条，同一条当天重复读取不再计费），
               缓存 {settings.x.cacheHours} 小时；每日上限 ${settings.x.dailyBudgetUsd.toFixed(2)}，按 UTC 日计（你的本地时间 {x ? formatClock(x.resetAt) : ''} 重置）。
+            </p>
+            <p class="muted small" data-testid="x-refresh-cost">
+              {settings.x.autoRefresh ? '已开启自动刷新：打开这一页且缓存过期时会花钱。' : '只有点"刷新热点"才花钱，打开这一页不花钱。'}刷新一次在 X 上最多花 ${xRefreshMaxUsd(settings).toFixed(2)}，另加一次大模型整理。
+              {x && x.unconfirmedUsd > 0 ? ` 今天有 $${x.unconfirmedUsd.toFixed(3)} 的请求中断了，不知道有没有计费，按花了算。` : ''}
             </p>
             {x?.warn && !x.exhausted && <Notice kind="warn">今天的 X 预算已用 {Math.round(x.ratio * 100)}%，快到上限了。</Notice>}
             {x?.exhausted && <Notice kind="warn">今天的 X 预算已用完，不会再发请求。</Notice>}

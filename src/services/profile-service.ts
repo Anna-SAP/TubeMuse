@@ -86,7 +86,7 @@ export async function generateClusters(ctx: AppContext): Promise<InterestCluster
   if (!profile.syncedAt) throw new AppError('input', '还没有同步订阅与喜欢的视频', '先点"同步"');
   const channels = [...profile.subscriptions, ...profile.likedChannels];
   if (!channels.length && !profile.likedVideos.length) throw new AppError('input', '订阅和喜欢的视频都是空的，没有可归纳的内容');
-  const llm = await getLlm(ctx);
+  const llm = await getLlm(ctx, 'clusters');
   const locked = state.clusters.filter((c) => c.locked);
   const watchedChannels = (takeout?.channels ?? []).map((c) => ({ id: c.channelId, title: c.title, count: c.count }));
   const prompt = buildClusterPrompt({ channels, likedVideos: profile.likedVideos, locked, watchedChannels });

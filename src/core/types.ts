@@ -164,6 +164,8 @@ export interface Intent {
   parsedAt: number;
   /** 解析过程的提示，例如"本地规则补充了 1 个约束" */
   notes: string[];
+  /** 这份理解来自缓存（当时解析的时间）：回显里标注，这次没有花钱 */
+  cachedAt?: number;
 }
 
 // ───────────────────────── 落实方式（回显用） ─────────────────────────
@@ -514,6 +516,8 @@ export interface SummaryItem {
 export interface DailySummary {
   day: string;
   generatedAt: number;
+  /** 这份总结依据的输入：一样就不用再调大模型 */
+  inputKey?: string;
   /** 用户手动生成（之后到点会按完整的一天重新生成） */
   manual: boolean;
   headline: string;
@@ -626,6 +630,18 @@ export interface HotspotState {
   /** 因预算不足等原因没查完 */
   partial: boolean;
   notes: string[];
+  /** 这次交给大模型的帖子（排序后的 ID）：下次读到的还是这些，就不用再付一次整理的钱 */
+  candidateKey?: string;
+}
+
+/** 读到了、还没整理成热点的帖子：钱已经花了，大模型失败或页面被关后，下次直接用，不再读 X */
+export interface HotspotDraft {
+  at: number;
+  topics: string[];
+  posts: XPost[];
+  spentUsd: number;
+  partial: boolean;
+  notes: string[];
 }
 
 export interface CreatorRecommendation {
@@ -640,6 +656,8 @@ export interface CreatorRecommendation {
 
 export interface DiscoveryWeek {
   searchCalls: number;
+  /** 这周已经搜到、还没变成推荐的结果：中途失败后接着用，不再花 search */
+  pending?: { topic: string; clusterWeight: number; items: { channelId: string; channelTitle: string; rank: number }[] }[];
   generatedAt?: number;
   recommendations: CreatorRecommendation[];
   notes: string[];

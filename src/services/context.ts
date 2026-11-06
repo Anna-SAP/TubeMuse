@@ -2,6 +2,7 @@
 
 import { ENDPOINTS, type Endpoints } from '../config/endpoints';
 import { chromeAuth, type AuthProvider } from './auth';
+import { chromeLocalTranslator, type LocalTranslator } from './local-translator';
 import { chromeKV, webLocker, type KV, type Locker } from './storage';
 
 export interface AppContext {
@@ -12,11 +13,14 @@ export interface AppContext {
   auth: AuthProvider;
   endpoints: Endpoints;
   timeZone: string;
+  /** Chrome 自带的本地翻译；浏览器不支持时为空 */
+  translator?: LocalTranslator;
 }
 
 export function createBrowserContext(): AppContext {
   const kv = chromeKV();
   const locker = webLocker();
+  const translator = chromeLocalTranslator();
   return {
     kv,
     locker,
@@ -26,6 +30,7 @@ export function createBrowserContext(): AppContext {
     auth: chromeAuth(kv, locker),
     endpoints: ENDPOINTS,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+    ...(translator ? { translator } : {}),
   };
 }
 

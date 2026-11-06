@@ -1,7 +1,7 @@
 // 豆瓣评论 RSS：订阅条目、读取并缓存 RSS。
 // 只向 www.douban.com 发一个 GET：不带 Cookie（不暴露你的豆瓣账号）、不带 Referer、不跟随跳转、失败不自动重试。
 
-import { DOUBAN } from '../config/defaults';
+import { DOUBAN, HTTP_TIMEOUT_MS } from '../config/defaults';
 import { DOUBAN_IMAGE_ORIGINS } from '../config/endpoints';
 import { DoubanFeedError, doubanFeedUrl, doubanFresh, parseDoubanFeed, parseSubjectInput, pruneTransientFeeds } from '../core/douban';
 import type { DoubanFeed, DoubanState } from '../core/types';
@@ -18,6 +18,7 @@ async function fetchFeedXml(ctx: AppContext, subjectId: string): Promise<string>
       redirect: 'manual',
       cache: 'no-cache',
       headers: { Accept: 'application/rss+xml, application/xml;q=0.9, text/xml;q=0.8' },
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
   } catch {
     throw new AppError('douban', '无法连接豆瓣（网络错误）', '检查网络后再点"刷新"');

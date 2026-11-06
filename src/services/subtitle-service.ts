@@ -1,15 +1,19 @@
-// 自动字幕的后台流程：内容脚本切好一段音频 → 预算护栏 → OpenAI 转写 → 存字幕、回传原文 → 翻译 → 回传译文 → 记账。
+// 自动字幕的后台流程：内容脚本切好一段音频 → 预算护栏 → OpenAI 转写 → 存字幕、回传原文 → 翻译（默认用 Chrome 本地翻译，不花钱）→ 回传译文 → 记账。
 // 音频只在内存里经过一次：发给 OpenAI 后即丢弃，不落盘、不进导出。字幕文字存本机，回看时直接用，不再花钱。
 
 import { SUBTITLE_LANGS, SUBTITLES } from '../config/defaults';
 import { buildSubtitleTranslationPrompt, SUBTITLE_TRANSLATION_SCHEMA } from '../core/prompts';
 import {
+  abandonSubtitleHold,
   backoffMs,
   base64ToBytes,
   estimateSegmentUsd,
   isCovered,
+  localTranslatePair,
+  openSubtitleHold,
   putCue,
   recognitionLangFor,
+  releaseSubtitleHold,
   tracksToDrop,
   recordAsr,
   recordTranslation,
@@ -19,6 +23,7 @@ import {
   wavInfo,
   type RecognitionPlan,
   type SubtitleDown,
+  type SubtitleLedger,
   type SubtitleSnapshot,
   type SubtitleUp,
 } from '../core/subtitles';
@@ -26,17 +31,16 @@ import { OperationBudget } from '../core/quota';
 import { clip } from '../core/text';
 import { dayKey, nextMidnight } from '../core/time';
 import type { SubtitleCue, SubtitleTrack, VideoMeta } from '../core/types';
+import type { SubtitleLang } from '../config/defaults';
 import type { AppContext } from './context';
 import { AppError, toAppError } from './errors';
 import { makeCharger, makeExhaustedMarker } from './quota-service';
 import { createYouTube } from './youtube';
 import { createLlmClient, createTranscriber, type LlmProvider } from './llm';
-import { stores, subtitleTrackStore, type Secrets, type Settings } from './repo';
+import { LocalTranslateError } from './local-translator';
+import { newId, stores, subtitleTrackStore, type Secrets, type Settings } from './repo';
 
 const PROVIDER_NAMES: Record<LlmProvider, string> = { anthropic: 'Anthropic', openai: 'OpenAI' };
-
-/** 进行中的请求预留的花费：多个标签页同时出字幕时也守住每日预算（只在后台这一个 service worker 里计数） */
-let reservedUsd = 0;
 
 /**
  * 被 OpenAI 限流后的暂停：所有标签页共用（限额按组织 / 项目算，不按标签页）。
@@ -47,7 +51,7 @@ const rateLimitPauses = new WeakMap<AppContext, { until: number; failures: numbe
 export async function subtitleSpend(ctx: AppContext): Promise<SubtitleSnapshot> {
   const [settings, ledger] = await Promise.all([stores.settings.read(ctx.kv), stores.subtitleLedger.read(ctx.kv)]);
   const now = ctx.now();
-  return subtitleSnapshot(ledger, settings.subtitles.dailyBudgetUsd, settings.quota.warnRatio, dayKey(now, ctx.timeZone), nextMidnight(now, ctx.timeZone), reservedUsd);
+  return subtitleSnapshot(ledger, settings.subtitles.dailyBudgetUsd, settings.quota.warnRatio, dayKey(now, ctx.timeZone), nextMidnight(now, ctx.timeZone));
 }
 
 /** 字幕翻译用哪个模型：设置里单独填了就用它，否则跟随"1. 大模型"当前提供商的模型 */
@@ -88,15 +92,30 @@ function missingOpenAiKey(): AppError {
   );
 }
 
-async function reserve<T>(ctx: AppContext, usd: number, fn: () => Promise<T>): Promise<T> {
-  const snap = await subtitleSpend(ctx);
-  if (snap.remainingUsd < usd) throw budgetError(snap);
-  reservedUsd += usd;
-  try {
-    return await fn();
-  } finally {
-    reservedUsd = Math.max(0, reservedUsd - usd);
-  }
+/**
+ * 预扣一笔：写进账本，多个标签页同时出字幕时守得住预算，service worker 中途被回收时这笔钱也还在账上。
+ * 返回预扣的编号，请求回来后由调用方结算。
+ */
+async function holdSpend(ctx: AppContext, usd: number, what: string): Promise<string> {
+  const settings = await stores.settings.read(ctx.kv);
+  const id = newId('t');
+  const now = ctx.now();
+  const day = dayKey(now, ctx.timeZone);
+  await stores.subtitleLedger.update(ctx.kv, ctx.locker, (l) => {
+    const snap = subtitleSnapshot(l, settings.subtitles.dailyBudgetUsd, settings.quota.warnRatio, day, nextMidnight(now, ctx.timeZone));
+    if (snap.remainingUsd < usd) throw budgetError(snap);
+    return openSubtitleHold(l, day, { id, usd, at: now, what });
+  });
+  return id;
+}
+
+/** 请求失败时结算：服务方明确拒绝的退回；已计费、不知道有没有计费的都留在账上 */
+async function closeFailedHold(ctx: AppContext, holdId: string, e: unknown, charged?: (l: SubtitleLedger, usage: { inputTokens: number; outputTokens: number }) => SubtitleLedger): Promise<void> {
+  const billing = e instanceof AppError ? e.billing : { state: 'unknown' as const };
+  await stores.subtitleLedger.update(ctx.kv, ctx.locker, (l) => {
+    if (billing?.state === 'billed' && billing.usage && charged) return charged(releaseSubtitleHold(l, holdId), billing.usage);
+    return billing ? abandonSubtitleHold(l, holdId) : releaseSubtitleHold(l, holdId);
+  });
 }
 
 /**
@@ -212,7 +231,7 @@ export async function transcribeSegment(ctx: AppContext, input: SegmentInput): P
   if (track && isCovered(track.cues, input.start, input.end)) return undefined;
 
   const asrModel = settings.subtitles.asrModel.trim() || 'gpt-transcribe';
-  const translateModel = settings.subtitles.translate ? subtitleTranslationModel(settings).model : undefined;
+  const translateModel = settings.subtitles.translate && settings.subtitles.translationEngine === 'llm' ? subtitleTranslationModel(settings).model : undefined;
   const before = (track?.cues ?? []).filter((c) => c.text && c.start < input.start);
   const prompt = before
     .slice(-SUBTITLES.translationContextCues)
@@ -227,14 +246,14 @@ export async function transcribeSegment(ctx: AppContext, input: SegmentInput): P
   }
 
   let result: Awaited<ReturnType<ReturnType<typeof createTranscriber>['transcribe']>>;
+  const holdId = await holdSpend(ctx, estimateSegmentUsd(asrModel, durationSec, translateModel), '语音转写');
   try {
-    result = await reserve(ctx, estimateSegmentUsd(asrModel, durationSec, translateModel), () =>
-      createTranscriber({ model: asrModel, apiKey: secrets.openaiApiKey!, baseURL: ctx.endpoints.openai, fetch: ctx.http }).transcribe({
-        wav: input.wav,
-        ...(prompt ? { prompt } : {}),
-      }),
-    );
+    result = await createTranscriber({ model: asrModel, apiKey: secrets.openaiApiKey!, baseURL: ctx.endpoints.openai, fetch: ctx.http }).transcribe({
+      wav: input.wav,
+      ...(prompt ? { prompt } : {}),
+    });
   } catch (e) {
+    await closeFailedHold(ctx, holdId, e);
     if (e instanceof AppError && e.kind === 'llm_rate') {
       const failures = (rateLimitPauses.get(ctx)?.failures ?? 0) + 1;
       const wait = backoffMs(failures, e.retryAfterMs);
@@ -245,7 +264,7 @@ export async function transcribeSegment(ctx: AppContext, input: SegmentInput): P
   }
   rateLimitPauses.delete(ctx);
   const now = ctx.now();
-  await stores.subtitleLedger.update(ctx.kv, ctx.locker, (l) => recordAsr(l, dayKey(now, ctx.timeZone), asrModel, result.billedSeconds ?? durationSec));
+  await stores.subtitleLedger.update(ctx.kv, ctx.locker, (l) => recordAsr(releaseSubtitleHold(l, holdId), dayKey(now, ctx.timeZone), asrModel, result.billedSeconds ?? durationSec));
 
   const cue: SubtitleCue = {
     id: `${input.videoId}:${Math.round(input.start * 1000)}`,
@@ -273,6 +292,39 @@ function translationClient(ctx: AppContext, settings: Settings, secrets: Secrets
   });
 }
 
+/** Chrome 本地翻译：不花钱。语言包没准备好时说明怎么办，不会悄悄改用收费的大模型 */
+async function translateLocally(ctx: AppContext, cue: SubtitleCue, target: SubtitleLang): Promise<string> {
+  const engineHint = '想用大模型翻译（按量计费）的话，在设置页「12. 自动字幕」改翻译方式';
+  if (!ctx.translator) throw new AppError('subtitles', '这个浏览器没有本地翻译（需要 Chrome 138 或更新版本）', engineHint);
+  try {
+    return await ctx.translator.translate(localTranslatePair(cue.lang, cue.text, target), cue.text);
+  } catch (e) {
+    if (e instanceof LocalTranslateError && e.reason === 'need_download') throw new AppError('subtitles', e.message, `在设置页「12. 自动字幕」点"下载本地翻译语言包"（Chrome 要求你点一下才能下载）。${engineHint}`);
+    throw new AppError('subtitles', e instanceof Error ? e.message : String(e), engineHint);
+  }
+}
+
+async function translateWithLlm(ctx: AppContext, settings: Settings, secrets: Secrets, videoId: string, cue: SubtitleCue, target: SubtitleLang): Promise<string> {
+  const llm = translationClient(ctx, settings, secrets);
+  const track = await getSubtitleTrack(ctx, videoId);
+  const previous = (track?.cues ?? [])
+    .filter((c) => c.text && c.start < cue.start)
+    .slice(-SUBTITLES.translationContextCues)
+    .map((c) => c.text);
+  const prompt = buildSubtitleTranslationPrompt({ text: cue.text, previous, targetName: SUBTITLE_LANGS[target] });
+  const maxOutputTokens = SUBTITLES.translationMaxOutputTokens;
+  const holdId = await holdSpend(ctx, translationCostUsd(llm.model, SUBTITLES.translationEstimate.inputTokens, maxOutputTokens), '字幕翻译');
+  const record = (l: SubtitleLedger, usage: { inputTokens: number; outputTokens: number }) => recordTranslation(l, dayKey(ctx.now(), ctx.timeZone), llm.model, usage.inputTokens, usage.outputTokens);
+  try {
+    const { value, usage } = await llm.generateJsonWithUsage({ ...prompt, schema: SUBTITLE_TRANSLATION_SCHEMA, schemaName: 'tubemuse_subtitle', effort: 'low', maxOutputTokens });
+    await stores.subtitleLedger.update(ctx.kv, ctx.locker, (l) => record(releaseSubtitleHold(l, holdId), usage));
+    return typeof (value as { translation?: unknown })?.translation === 'string' ? (value as { translation: string }).translation.trim() : '';
+  } catch (e) {
+    await closeFailedHold(ctx, holdId, e, record);
+    throw e;
+  }
+}
+
 /**
  * 给一句字幕补上第二行。翻译失败不影响原文：失败原因写进 translationError，界面照常显示原文并说明原因。
  * 不需要翻译（关掉了翻译、原文已是两种目标语言、这段没有人声）时原样返回。
@@ -284,20 +336,7 @@ export async function translateCue(ctx: AppContext, videoId: string, cue: Subtit
   if (!target) return cue;
   let next: SubtitleCue;
   try {
-    const llm = translationClient(ctx, settings, secrets);
-    const track = await getSubtitleTrack(ctx, videoId);
-    const previous = (track?.cues ?? [])
-      .filter((c) => c.text && c.start < cue.start)
-      .slice(-SUBTITLES.translationContextCues)
-      .map((c) => c.text);
-    const prompt = buildSubtitleTranslationPrompt({ text: cue.text, previous, targetName: SUBTITLE_LANGS[target] });
-    const e = SUBTITLES.translationEstimate;
-    const { value, usage } = await reserve(ctx, translationCostUsd(llm.model, e.inputTokens, e.outputTokens), () =>
-      llm.generateJsonWithUsage({ ...prompt, schema: SUBTITLE_TRANSLATION_SCHEMA, schemaName: 'tubemuse_subtitle', effort: 'low' }),
-    );
-    const now = ctx.now();
-    await stores.subtitleLedger.update(ctx.kv, ctx.locker, (l) => recordTranslation(l, dayKey(now, ctx.timeZone), llm.model, usage.inputTokens, usage.outputTokens));
-    const text = typeof (value as { translation?: unknown })?.translation === 'string' ? (value as { translation: string }).translation.trim() : '';
+    const text = settings.subtitles.translationEngine === 'local' ? await translateLocally(ctx, cue, target) : await translateWithLlm(ctx, settings, secrets, videoId, cue, target);
     if (!text) throw new AppError('llm', '模型没有给出译文');
     next = { ...cue, translation: clip(text, SUBTITLES.cueMaxChars), translationLang: target };
     delete next.translationError;

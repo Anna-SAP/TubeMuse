@@ -1,6 +1,6 @@
 // YouTube Data API v3 客户端。只走官方 API；每次请求前先记账（含单次预算检查），失败一律转成人话。
 
-import { YOUTUBE_LIMITS, YOUTUBE_METHOD_COSTS, type QuotaBucket, type YtMethod } from '../config/defaults';
+import { HTTP_TIMEOUT_MS, YOUTUBE_LIMITS, YOUTUBE_METHOD_COSTS, type QuotaBucket, type YtMethod } from '../config/defaults';
 import { redact } from '../core/redact';
 import type { ChannelInfo, LikedVideo, VideoCandidate, VideoMeta } from '../core/types';
 import type { AuthProvider } from './auth';
@@ -42,9 +42,9 @@ export function createYouTube(deps: YouTubeDeps) {
       await deps.charge(method);
       let res: Response;
       try {
-        res = await deps.http(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+        res = await deps.http(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) });
       } catch {
-        throw new AppError('network', '无法连接 YouTube API（网络错误）', '检查网络后重试');
+        throw new AppError('network', '无法连接 YouTube API（网络错误或超时）', '检查网络后重试');
       }
       if (res.ok) return res.json();
       const body = await res.json().catch(() => ({}));

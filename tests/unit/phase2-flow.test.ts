@@ -212,12 +212,13 @@ describe('每周自省', () => {
     await stores.ratings.write(ctx.kv, {
       x: { videoId: 'x', rating: 3, searchId: 's', utterance: '找 AI 科普', at: Date.parse('2026-10-15T02:00:00Z'), attribution: 'retrieval', video: { title: '震惊！AI', channelId: 'c1', channelTitle: '流量号' } },
       y: { videoId: 'y', rating: 9, searchId: 's', utterance: '找 AI 科普', at: Date.parse('2026-10-16T02:00:00Z'), attribution: 'retrieval', video: { title: '好视频', channelId: 'c2', channelTitle: '好频道' } },
+      z: { videoId: 'z', rating: 2, searchId: 's', utterance: '找 AI 科普', at: Date.parse('2026-10-16T03:00:00Z'), attribution: 'retrieval', video: { title: '惊呆了！AI', channelId: 'c1', channelTitle: '流量号' } },
     });
     await stores.adjustments.write(ctx.kv, [
       { id: 'a1', at: Date.parse('2026-10-15T02:00:00Z'), trigger: { videoId: 'x', title: '震惊！AI', rating: 3, attribution: 'retrieval', searchId: 's', utterance: 'u' }, changes: [{ type: 'channelPref', channelId: 'c1', channelTitle: '流量号', before: 0, after: -0.22, explanation: '' }], reverted: false },
     ]);
     const w = await generateWeeklyReport(ctx, '2026-10-18');
-    expect(w.lowRatings).toBe(1);
+    expect(w.lowRatings).toBe(2);
     expect(w.patterns[0]!.examples[0]).toContain('震惊！AI');
     expect(w.adjustments[0]).toContain('「流量号」-0.22');
     expect(llmCalls.at(-1)!.user).not.toContain('好视频');

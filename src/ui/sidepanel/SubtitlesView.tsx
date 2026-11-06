@@ -144,7 +144,7 @@ export function SubtitlesView() {
         <section class="panel">
           <h2>今日字幕花费</h2>
           <p data-testid="subtitle-spend-detail">
-            {formatUsd(spend.spentUsd)} / ${spend.budgetUsd.toFixed(2)}：{spend.asrSeconds ? `OpenAI 转写 ${formatAudioDuration(spend.asrSeconds)}，` : ''}翻译 {spend.translations} 句。{openai ? '' : '浏览器识别不收费。'}
+            {formatUsd(spend.spentUsd)} / ${spend.budgetUsd.toFixed(2)}：{spend.asrSeconds ? `OpenAI 转写 ${formatAudioDuration(spend.asrSeconds)}，` : ''}{s.translationEngine === 'local' ? '本地翻译不收费。' : `翻译 ${spend.translations} 句。`}{openai ? '' : '浏览器识别不收费。'}
             {spend.exhausted && <strong class="warn-text"> 已到上限，已停止识别。</strong>}
           </p>
           <p class="muted small">
@@ -155,7 +155,7 @@ export function SubtitlesView() {
             {openai
               ? `视频的声音（切成几秒一段）发往 OpenAI 转写为文字（${s.asrModel}）`
               : `视频的声音交给浏览器自带的语音识别（${rec?.mode ? RECOGNITION_MODE_LABELS[rec.mode] : '装了本地语音包时在本机识别，否则由 Chrome 发往 Google'}）`}
-            ；转写出的文字发往{provider === 'anthropic' ? ' Anthropic' : ' OpenAI'}（{model}）翻译成
+            ；转写出的文字{s.translationEngine === 'local' ? '由 Chrome 在本机翻译（不发送）' : `发往${provider === 'anthropic' ? ' Anthropic' : ' OpenAI'}（${model}）翻译`}成
             {SUBTITLE_LANGS[s.targetLang]}（原文已是{SUBTITLE_LANGS[s.targetLang]}时译成 {SUBTITLE_LANGS[s.altTargetLang]}）。音频不保存，字幕文字只存在本机。
           </p>
         </section>
