@@ -48,6 +48,13 @@ function withoutLegacySubtitleKeys(stored: unknown): object {
   return rest;
 }
 
+/** 旧版的"有字幕的视频自动显示"（autoOn）：用户要求默认关闭后换了新键，旧值丢弃，大家都从"关"开始（内容脚本不经过这里，读的也是新键） */
+function withoutLegacyMultiCcKeys(stored: unknown): object {
+  if (!stored || typeof stored !== 'object') return {};
+  const { autoOn: _legacy, ...rest } = stored as Record<string, unknown>;
+  return rest;
+}
+
 /**
  * X 设置从旧版迁移一次：花钱的自动刷新回到"关"（这一步要你明确打开，DECISIONS §48），旧默认的每主题 15 条换成 10 条。
  * 你之后再改的值带着新版本号存下，不会被改回来。
@@ -95,7 +102,7 @@ export function mergeSettings(stored: unknown): Settings {
     },
     multiCaptions: {
       ...d.multiCaptions,
-      ...(s.multiCaptions as object),
+      ...withoutLegacyMultiCcKeys(s.multiCaptions),
       langs: sanitizeCcLangs(s.multiCaptions?.langs) ?? [...d.multiCaptions.langs],
     },
     clips: { ...d.clips, ...(s.clips as object) },

@@ -179,8 +179,11 @@ export const DEFAULT_SETTINGS = {
    */
   multiCaptions: {
     enabled: true,
-    /** 有 YouTube 字幕的视频自动显示；默认关闭：只在你从侧边栏"字幕"页或按 Alt+Shift+C 开启时显示 */
-    autoOn: false,
+    /**
+     * 有 YouTube 字幕的视频自动显示。默认关闭（用户 2026-11-06 要求）：只在你从侧边栏"字幕"页或按 Alt+Shift+C 开启时显示。
+     * 旧版的 autoOn 不再生效，见 mergeSettings。
+     */
+    autoShow: false,
     /** 从上到下显示的语言（最多 MULTI_CC.maxLines 种）；original = 视频原声的语言 */
     langs: ['original', 'en', 'zh-Hans'] as string[],
     /** 你选的语言这个视频没有原生字幕时，用 YouTube 自带的自动翻译补上（标注"机翻"；用户 2026-11-02 选择） */
