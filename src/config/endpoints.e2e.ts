@@ -31,3 +31,6 @@ export const XHS_PAGES: readonly string[] = ['https://www.xiaohongshu.com/', 'ht
 
 /** e2e：本机 mock 的 /gmail/ 下是仿 Gmail 的页面（邮件脚本只注入这里） */
 export const EMAIL_PAGES: readonly string[] = ['https://mail.google.com/', `${MOCK}/gmail/`];
+
+/** e2e：本机 mock 的 /xpage/ 下是仿 X 网页版的页面（mock 的 /x/ 是 X 官方 API，不要混用） */
+export const X_PAGES: readonly string[] = ['https://x.com/', `${MOCK}/xpage/`];

@@ -1,5 +1,5 @@
 // 片段录制：当前标签页这个视频的录制控制（自由录制 / 按时间段截取）、Capture 截图、录好的片段（保存 / 丢弃）、最近录过的片段。
-// 录制在 YouTube 播放页或小红书笔记详情里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
+// 录制在 YouTube 播放页、小红书笔记详情或 X 帖子页里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
 // Capture 的 PNG 由录制脚本截好传回，在这里交给浏览器保存：下载要算在你刚点过的这个页面上，Chrome 才不会拦（见 DECISIONS §50）。
 
 import { useEffect, useState } from 'preact/hooks';
@@ -15,6 +15,7 @@ import {
   parseTimecode,
   type ClipCaptureReply,
   type ClipMode,
+  type ClipSite,
   type ClipTabState,
 } from '../../core/clips';
 import { formatClock, formatRelative } from '../../core/time';
@@ -26,6 +27,15 @@ import { downloadBlob } from '../shared/download';
 import { useActiveTabState } from '../shared/tab-state';
 
 const NO_RESPONSE = '这个标签页没有响应：刷新一下那个页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）';
+
+const CAPTURE_HINT = 'Capture 把当前这一帧直接存成无损 PNG：不带字幕和播放器控件，分辨率是视频当前解码出的真实尺寸';
+
+/** 片段页上各站的说法。noBurn：这个站为什么没有"把字幕烧进画面"；capture：Capture 的说明；logTag："最近录过的片段"里标在前面的站名 */
+const SITE_TEXT: Record<ClipSite, { item: string; noBurn?: string; capture: string; logTag: string; open: string }> = {
+  youtube: { item: '视频', capture: `${CAPTURE_HINT}（要最高清，先在播放器里把清晰度调到最高）。`, logTag: '', open: '在当前标签页打开视频的这一段' },
+  xhs: { item: '笔记', noBurn: '小红书的视频没有单独的字幕层：字幕如果有，是做在画面里的，会原样录下。', capture: `${CAPTURE_HINT}。`, logTag: '小红书 · ', open: '在当前标签页打开这篇小红书笔记' },
+  x: { item: '帖子', noBurn: 'X 播放器里的字幕（CC）不会录进去，做在画面里的字幕会原样录下。片头广告认不出来：等广告放完再开始录。', capture: `${CAPTURE_HINT}。`, logTag: 'X · ', open: '在当前标签页打开这条 X 帖子' },
+};
 
 export function ClipsView() {
   const settings = useStore(stores.settings);
@@ -79,7 +89,7 @@ export function ClipsView() {
       }
       // 截成了才取序号：广告、缓冲时点了不占号
       const seq = await stores.captureSeq.update(appCtx().kv, appCtx().locker, (n) => n + 1);
-      const fileName = captureFileName(r.title, r.videoId, r.time, seq);
+      const fileName = captureFileName(r.title, r.videoId, r.time, seq, state?.site);
       downloadBlob(fileName, new Blob(parts, { type: 'image/png' }));
       setShot({ fileName, width: r.width, height: r.height, bytes: r.bytes });
     } finally {
@@ -122,7 +132,7 @@ export function ClipsView() {
   const setBurn = (on: boolean) => void stores.settings.update(appCtx().kv, appCtx().locker, (s) => ({ ...s, clips: { ...s.clips, burnSubtitles: on } }));
 
   const recording = state?.phase === 'recording' || state?.phase === 'finishing';
-  const xhs = state?.site === 'xhs';
+  const siteText = SITE_TEXT[state?.site ?? 'youtube'];
   const ready = state?.ready;
   const error = localError ? { message: localError } : state?.error;
   const rangeLen = (() => {
@@ -130,8 +140,8 @@ export function ClipsView() {
     const b = parseTimecode(endText);
     return a !== null && b !== null && b > a ? b - a : undefined;
   })();
-  // 只限 YouTube；录制中也能截，不影响正在录的这一段
-  const captureButton = !xhs && (
+  // 录制中也能截，不影响正在录的这一段
+  const captureButton = (
     <button class="btn" data-testid="clip-capture" disabled={busy || capturing || tabId === undefined} title="把当前这一帧存成无损 PNG" onClick={() => void capture()}>
       {capturing ? '截图中…' : 'Capture'}
     </button>
@@ -153,7 +163,7 @@ export function ClipsView() {
         {state ? (
           <>
             <dl class="kv">
-              <dt>{xhs ? '笔记' : '视频'}</dt>
+              <dt>{siteText.item}</dt>
               <dd data-testid="clip-title">{state.title ?? state.videoId ?? '—'}</dd>
               {state.videoId && (
                 <>
@@ -207,9 +217,9 @@ export function ClipsView() {
                     </p>
                   </>
                 )}
-                {xhs ? (
+                {siteText.noBurn ? (
                   <p class="muted small" data-testid="clip-no-burn">
-                    小红书的视频没有单独的字幕层：字幕如果有，是做在画面里的，会原样录下。
+                    {siteText.noBurn}
                   </p>
                 ) : (
                   <label class="inline">
@@ -223,7 +233,7 @@ export function ClipsView() {
                   </button>
                   {captureButton}
                 </div>
-                {!xhs && <p class="muted small">Capture 把当前这一帧直接存成无损 PNG：不带字幕和播放器控件，分辨率是视频当前解码出的真实尺寸（要最高清，先在播放器里把清晰度调到最高）。</p>}
+                <p class="muted small">{siteText.capture}</p>
               </>
             )}
 
@@ -299,7 +309,7 @@ export function ClipsView() {
             )}
           </>
         ) : (
-          <p class="muted small">当前标签页不是 YouTube 视频页或小红书网页版。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。</p>
+          <p class="muted small">当前标签页不是 YouTube 视频页、小红书网页版或 X 网页版。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。</p>
         )}
         <p class="muted small">快捷键 Alt+Shift+R 开始 / 停止（可在 chrome://extensions/shortcuts 修改）；录制中工具栏图标上显示 REC。</p>
       </section>
@@ -310,11 +320,11 @@ export function ClipsView() {
           <ul class="clip-log">
             {log.slice(0, 30).map((r) => (
               <li>
-                <button class="btn link" title={r.site === 'xhs' ? '在当前标签页打开这篇小红书笔记' : '在当前标签页打开视频的这一段'} onClick={() => void chrome.tabs.update({ url: clipWatchUrl(r) })}>
+                <button class="btn link" title={SITE_TEXT[r.site ?? 'youtube'].open} onClick={() => void chrome.tabs.update({ url: clipWatchUrl(r) })}>
                   {r.title ?? r.videoId}
                 </button>
                 <span class="muted small">
-                  {r.site === 'xhs' ? '小红书 · ' : ''}
+                  {SITE_TEXT[r.site ?? 'youtube'].logTag}
                   {formatTimecode(r.start)}–{formatTimecode(r.end)} · {formatBytes(r.bytes)}
                   {r.burned ? ' · 带字幕' : ''} · {formatRelative(r.savedAt, Date.now())}
                 </span>
@@ -333,7 +343,7 @@ export function ClipsView() {
 
       <section class="panel">
         <p class="muted small">
-          可以录 YouTube 播放页与小红书笔记详情里的视频。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
+          可以录 YouTube 播放页、小红书笔记详情和 X 帖子里的视频。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告（X 的片头广告除外）、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
         </p>
       </section>
     </div>
