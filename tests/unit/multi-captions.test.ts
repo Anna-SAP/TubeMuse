@@ -10,15 +10,18 @@ import {
   ORIGINAL,
   bestTrack,
   ccFetchRetry,
+  ccLineCodes,
   ccOptions,
   ccWaitStatus,
   cleanCueText,
   fitLine,
   joinCueLines,
   langMatchKey,
+  moveCcLang,
   parseJson3,
   primeTrack,
   resolveSources,
+  sameCcLangs,
   sanitizeCcLangs,
   sanitizeTrackList,
   textAt,
@@ -77,6 +80,70 @@ const TALK: CcTrackList = {
   ],
   native: null,
 };
+
+describe('调整显示顺序', () => {
+  /** 侧边栏看到的行序 */
+  const linesOf = (list: CcTrackList, langs: string[]) => {
+    const res = resolveSources(list, langs, { autoTranslate: true });
+    return ccLineCodes(ccOptions(list, res, langs));
+  };
+
+  it('上移、下移：相邻两行换位', () => {
+    const langs = ['en', 'zh-Hans', 'ko'];
+    expect(moveCcLang(langs, langs, 'ko', -1)).toEqual(['en', 'ko', 'zh-Hans']);
+    expect(moveCcLang(langs, langs, 'en', 1)).toEqual(['zh-Hans', 'en', 'ko']);
+    expect(langs).toEqual(['en', 'zh-Hans', 'ko']);
+  });
+
+  it('到头了或不在列表里：挪不动', () => {
+    const langs = ['en', 'ko'];
+    expect(moveCcLang(langs, langs, 'en', -1)).toBeUndefined();
+    expect(moveCcLang(langs, langs, 'ko', 1)).toBeUndefined();
+    expect(moveCcLang(langs, langs, 'ja', 1)).toBeUndefined();
+  });
+
+  it('新顺序决定字幕层的行序（上面的语言显示在上方），勾选项跟着变', () => {
+    const langs = moveCcLang(['en', 'zh-Hans', 'ko'], ['en', 'zh-Hans', 'ko'], 'ko', -1)!;
+    const res = resolveSources(MV, langs, { autoTranslate: false });
+    expect(res.sources.map((s) => s.want)).toEqual(['en', 'ko', 'zh-Hans']);
+    expect(ccOptions(MV, res, langs).slice(0, 3).map((o) => o.code)).toEqual(['en', 'ko', 'zh-Hans']);
+  });
+
+  it('和别的行重复而没显示的语言跟着走：调完再调回来和原来一样，换到别的视频上也不丢', () => {
+    // 英文演讲：原声就是英语，默认列表里的 en 没有自己的一行
+    const defaults = [ORIGINAL, 'en', 'zh-Hans'];
+    const lines = linesOf(TALK, defaults);
+    expect(lines).toEqual([ORIGINAL, 'zh-Hans']);
+    const moved = moveCcLang(defaults, lines, 'zh-Hans', -1)!;
+    expect(moved).toEqual(['zh-Hans', ORIGINAL, 'en']);
+    // 这个视频上：机翻简中在上，原声仍是"原声"这一项，没有变成普通的 en
+    expect(linesOf(TALK, moved)).toEqual(['zh-Hans', ORIGINAL]);
+    expect(moveCcLang(moved, linesOf(TALK, moved), ORIGINAL, -1)).toEqual(defaults);
+    // 存成默认后到韩语 MV 上：三种语言都还在，顺序是简中、原声（韩语）、英语
+    expect(resolveSources(MV, moved, { autoTranslate: false, videoLang: 'ko' }).sources.map((s) => s.want)).toEqual(['zh-Hans', 'ko', 'en']);
+  });
+
+  it('这个视频没有的语言：不算一行（按一次屏幕上一定有变化），留在列表里', () => {
+    const langs = ['en', 'ja', 'th', 'ko'];
+    const list: CcTrackList = { ...MV, tracks: MV.tracks.filter((t) => t.lang !== 'ja') };
+    const lines = linesOf(list, langs);
+    expect(lines).toEqual(['en', 'ko']);
+    const moved = moveCcLang(langs, lines, 'ko', -1)!;
+    expect(moved).toEqual(['ko', 'en', 'ja', 'th']);
+    expect(linesOf(list, moved)).toEqual(['ko', 'en']);
+  });
+
+  it('排在第一行前面、又没有行的语言：留在最前面不动', () => {
+    expect(moveCcLang(['ja', 'en', 'ko'], ['en', 'ko'], 'ko', -1)).toEqual(['ja', 'ko', 'en']);
+  });
+
+  it('只比较内容和顺序', () => {
+    expect(sameCcLangs(['en', 'ko'], ['en', 'ko'])).toBe(true);
+    expect(sameCcLangs(['en', 'ko'], ['ko', 'en'])).toBe(false);
+    expect(sameCcLangs(['en'], ['en', 'ko'])).toBe(false);
+    expect(sameCcLangs([], [])).toBe(true);
+  });
+});
 
 describe('json3 解析', () => {
   it('人工字幕：多行句子保留换行，跳过只定义窗口的事件，按开始时间排序', () => {
