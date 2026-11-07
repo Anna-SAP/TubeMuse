@@ -39,6 +39,11 @@ export interface Secrets {
   openaiApiKey?: string;
   /** X API 的 App-only Bearer Token */
   xBearerToken?: string;
+  /**
+   * Google Cloud 里那个"Web 应用"OAuth 客户端的 Client Secret：换授权码、用刷新令牌续期时要带（DECISIONS §53）。
+   * 和其他 Key 一样只存本机、不进导出，只随请求体发往 oauth2.googleapis.com/token。
+   */
+  googleClientSecret?: string;
 }
 
 /** 旧版的"无字幕时自动开始"（autoStart，默认开）：改为默认关闭后换了新键，旧值丢弃，大家都从"关"开始 */
@@ -196,7 +201,7 @@ export const stores = {
   emailScores: new Store<EmailScores>('emailScores', () => ({})),
   /** eMails：每封邮件的总体结论（键是 verdictKey：文章和分数都对得上才显示） */
   emailVerdicts: new Store<EmailVerdicts>('emailVerdicts', () => ({})),
-  /** YouTube 授权：当前访问令牌与续期状态（不进导出） */
+  /** YouTube 授权：访问令牌、刷新令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
   /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */
   authAttempt: new Store<AuthAttempt | null>('authAttempt', () => null),
@@ -211,12 +216,23 @@ export interface YouTubeAuthState {
   accessToken?: string;
   expiresAt?: number;
   scope?: string;
+  /**
+   * 刷新令牌（授权码流程拿到）：有它，访问令牌过期后在后台向 Google 换新的，不弹窗、不依赖浏览器里的 Google 登录。
+   * 没有它的是旧版（隐式授权）记录，访问令牌过期后只能重新授权。
+   */
+  refreshToken?: string;
+  /** 拿到这个刷新令牌的时间（Google 应用处于"测试"状态时，它 7 天后失效） */
+  refreshIssuedAt?: number;
+  /** Google 在响应里给了刷新令牌有效期（refresh_token_expires_in）时，它失效的时间 */
+  refreshExpiresAt?: number;
   /** 首次交互授权的时间；有这条记录就算"已连接过"，断开时删除整条 */
   connectedAt: number;
-  /** 最近一次静默续期失败的时间（成功或重新授权后清除） */
+  /** 最近一次续期被 Google 拒绝的时间（成功或重新授权后清除；网络问题不记） */
   renewFailedAt?: number;
-  /** 那次失败的具体原因（Google 的错误码或浏览器的报错），显示给你，便于判断为什么续不上 */
+  /** 那次失败的具体原因（Google 的错误码加一句人话），显示给你 */
   renewReason?: string;
+  /** 续期失败后要你做的事：secret = 在设置页重新填 Client Secret（刷新令牌还在，不必重新授权）；缺省 = 重新授权 */
+  renewFix?: 'secret';
 }
 
 /** 交互授权由后台执行，发起的页面可能已经关了：开始、结束与失败原因记在这里，界面重新打开后照样看得到 */

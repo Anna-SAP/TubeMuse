@@ -57,7 +57,7 @@ export function useQuota(): QuotaSnapshot | undefined {
 
 export async function secretsList(): Promise<string[]> {
   const s = await stores.secrets.read(appCtx().kv);
-  return [s.anthropicApiKey, s.openaiApiKey, s.xBearerToken].filter((x): x is string => !!x);
+  return [s.anthropicApiKey, s.openaiApiKey, s.xBearerToken, s.googleClientSecret].filter((x): x is string => !!x);
 }
 
 /** 连接 / 重新授权 YouTube：交给后台打开授权窗口、保存令牌（这个页面中途被关掉也不丢结果）。失败时抛出人话错误 */

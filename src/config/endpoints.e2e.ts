@@ -5,6 +5,7 @@ const MOCK = 'http://127.0.0.1:47321';
 
 export const ENDPOINTS: Endpoints = {
   youtubeApi: `${MOCK}/youtube/v3`,
+  googleOAuthToken: `${MOCK}/oauth/token`,
   googleOAuthRevoke: `${MOCK}/oauth/revoke`,
   anthropic: `${MOCK}/anthropic`,
   x: `${MOCK}/x/2`,
@@ -20,7 +21,7 @@ export type { Endpoints };
  */
 export const DOUBAN_IMAGE_ORIGINS: readonly string[] = Array.from({ length: 9 }, (_, i) => `https://img${i + 1}.doubanio.com`);
 
-/** e2e：mock 授权页直接 302 回跳 https://<扩展ID>.chromiumapp.org/#access_token=… */
+/** e2e：mock 授权页直接 302 回跳 https://<扩展ID>.chromiumapp.org/?code=…（授权码再到 mock 的 /oauth/token 换令牌） */
 export const GOOGLE_OAUTH_AUTHORIZE_URL = `${MOCK}/oauth/authorize`;
 
 /** e2e：在本机 mock 的"播放页"上注入观看追踪脚本 */

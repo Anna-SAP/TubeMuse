@@ -1,6 +1,6 @@
 import { render } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import type { AuthStatus } from '../../services/auth';
+import { authProblem, type AuthStatus } from '../../services/auth';
 import { stores } from '../../services/repo';
 import type { AppError } from '../../services/errors';
 import { attemptView } from '../../services/auth-service';
@@ -34,28 +34,52 @@ function SetupBanner() {
     void ctx.auth.status().then(setAuth);
   }, [secrets, ytAuth]);
   if (!settings || !secrets || !auth) return null;
+  // 要做的是填 / 改 Client Secret（刷新令牌还在，或还没填就没法重新授权）：直接去设置页，而不是弹授权窗口
+  const needsSecret = ytAuth?.renewFix === 'secret' || !secrets.googleClientSecret;
+  // 就地重新授权（后台弹出 Google 登录窗口、保存令牌），不用跳去设置页；授权成功后横幅随存储变化自动消失
+  const reauth = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await requestYouTubeConnect();
+    } catch (e) {
+      setError(await asAppError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const fixButton = needsSecret ? (
+    <button class="btn link small" onClick={() => chrome.runtime.openOptionsPage()}>
+      打开设置填 Client Secret
+    </button>
+  ) : (
+    <button class="btn link small" disabled={busy || attemptView(attempt, Date.now()).state === 'pending'} onClick={() => void reauth()}>
+      重新授权
+    </button>
+  );
   if (auth === 'expired') {
-    // 静默续期失败：就地重新授权（后台弹出 Google 登录窗口、保存令牌），不用跳去设置页；授权成功后横幅随存储变化自动消失
-    const reauth = async () => {
-      setBusy(true);
-      setError(undefined);
-      try {
-        await requestYouTubeConnect();
-      } catch (e) {
-        setError(await asAppError(e));
-      } finally {
-        setBusy(false);
-      }
-    };
-    const pending = busy || attemptView(attempt, Date.now()).state === 'pending';
+    const problem = authProblem(ytAuth);
     return (
       <>
         <Notice kind="warn">
           YouTube 授权已过期，自动续期没有成功。
-          <button class="btn link small" disabled={pending} onClick={() => void reauth()}>
-            重新授权
-          </button>
-          {ytAuth?.renewReason && <div class="muted small" data-testid="renew-reason">自动续期失败原因：{ytAuth.renewReason}</div>}
+          {fixButton}
+          {problem && <div class="muted small" data-testid="renew-reason">原因：{problem}</div>}
+        </Notice>
+        <AuthAttemptNote attempt={attempt} hideFailure={!!error} />
+        {error && <ErrorBox error={error} onClose={() => setError(undefined)} />}
+      </>
+    );
+  }
+  if (auth === 'connected' && ytAuth && !ytAuth.refreshToken) {
+    // 旧版授权（升级前连接的）：现在还能用，但过期后续不上——提前说，免得到时候又看到"已过期"
+    return (
+      <>
+        <Notice kind="warn">
+          <span data-testid="legacy-auth">
+            YouTube 授权是旧版：访问令牌过期后不能自动续期。{needsSecret ? '在设置页填好 OAuth Client Secret 后重新授权一次，之后会一直自动续期。' : '点"重新授权"一次，之后会一直自动续期。'}
+          </span>
+          {fixButton}
         </Notice>
         <AuthAttemptNote attempt={attempt} hideFailure={!!error} />
         {error && <ErrorBox error={error} onClose={() => setError(undefined)} />}
@@ -67,7 +91,7 @@ function SetupBanner() {
   const items: string[] = [];
   if (!hasKey) items.push(`填写 ${provider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API Key`);
   if (auth === 'not_configured') items.push('配置 Google OAuth 客户端');
-  else if (auth === 'disconnected') items.push('连接 YouTube 账号');
+  else if (auth === 'disconnected') items.push(secrets.googleClientSecret ? '连接 YouTube 账号' : '填写 Google OAuth Client Secret 并连接 YouTube 账号');
   if (!items.length) return null;
   return (
     <Notice kind="warn">

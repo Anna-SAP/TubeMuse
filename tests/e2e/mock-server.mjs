@@ -1,6 +1,7 @@
 // @ts-check
 // e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI（含语音转写）、X、豆瓣评论 RSS，以及 YouTube 播放页、小红书网页版（/xhs/）与 Gmail（/gmail/）。
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { xMediaSeconds, xPage } from './x-pages.mjs';
@@ -8,6 +9,8 @@ import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
 import { gmailPage } from './email-pages.mjs';
 
 export const PORT = 47321;
+/** e2e 用的假 Client Secret：只有 mock 令牌端点认它 */
+export const E2E_CLIENT_SECRET = 'e2e-client-secret-not-real';
 const ORIGIN = `http://127.0.0.1:${PORT}`;
 const HOUR = 3_600_000;
 
@@ -499,6 +502,17 @@ const transcribeFault = { mode: 'ok', remaining: 0, retryAfter: 0 };
 /** @type {{ mode: 'instant' | 'slow'; delayMs: number }} */
 const authorizePace = { mode: 'instant', delayMs: 0 };
 
+/**
+ * 模拟 Google 令牌端点（授权码 + PKCE + 刷新令牌）。
+ * 授权页发的授权码 → 记下 code_challenge 与回跳地址；换令牌时校验 Client Secret、回跳地址与 PKCE verifier。
+ * /e2e/token-mode?mode=revoked 让现有刷新令牌全部失效（模拟测试状态 7 天到期、或你在 Google 账号里移除了授权）。
+ */
+/** @type {Map<string, { challenge: string; redirect: string }>} */
+const oauthCodes = new Map();
+/** @type {Set<string>} */
+const liveRefresh = new Set();
+let oauthCounter = 0;
+
 // 1×1 PNG（缩略图占位）
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN8+P9/PQAJ1wN/0KxJWAAAAABJRU5ErkJggg==', 'base64');
 
@@ -686,6 +700,10 @@ export function startMockServer() {
           usage: { input_tokens: 100, output_tokens: 100 },
         });
       }
+      if (p === '/e2e/token-mode') {
+        if (url.searchParams.get('mode') === 'revoked') liveRefresh.clear();
+        return send(200, { ok: true });
+      }
       if (p === '/e2e/authorize-mode') {
         authorizePace.mode = /** @type {any} */ (url.searchParams.get('mode') ?? 'instant');
         authorizePace.delayMs = Number(url.searchParams.get('delayMs') ?? 0);
@@ -744,19 +762,43 @@ export function startMockServer() {
         return res.end(xml ?? '');
       }
       if (p === '/oauth/revoke') return send(200, {});
-      // 模拟 Google 授权页：校验后直接 302 回跳 https://<扩展ID>.chromiumapp.org/#access_token=…（隐式授权）
+      // 模拟 Google 授权页（授权码 + PKCE）：校验后直接 302 回跳 https://<扩展ID>.chromiumapp.org/?code=…&state=…
       if (p === '/oauth/authorize') {
         const q = url.searchParams;
         const redirect = q.get('redirect_uri') ?? '';
-        if (!/^https:\/\/[a-p]{32}\.chromiumapp\.org\/$/.test(redirect) || q.get('response_type') !== 'token') return send(400, { error: 'invalid_request' });
-        const frag = new URLSearchParams({ access_token: 'e2e-fake-token', token_type: 'Bearer', expires_in: '3599', scope: q.get('scope') ?? '', state: q.get('state') ?? '' });
-        const target = `${redirect}#${frag.toString()}`;
+        const challenge = q.get('code_challenge') ?? '';
+        if (!/^https:\/\/[a-p]{32}\.chromiumapp\.org\/$/.test(redirect) || q.get('response_type') !== 'code' || q.get('access_type') !== 'offline' || q.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) {
+          return send(400, { error: 'invalid_request' });
+        }
+        const code = `e2e-code-${++oauthCounter}`;
+        oauthCodes.set(code, { challenge, redirect });
+        const target = `${redirect}?${new URLSearchParams({ state: q.get('state') ?? '', code, scope: q.get('scope') ?? '' }).toString()}`;
         if (authorizePace.mode === 'slow') {
           res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
           return res.end(`<!doctype html><title>mock Google</title><p>mock sign-in</p><script>setTimeout(() => location.replace(${JSON.stringify(target)}), ${authorizePace.delayMs});</script>`);
         }
         res.writeHead(302, { location: target });
         return res.end();
+      }
+      // 模拟 Google 令牌端点：换授权码（发访问令牌 + 刷新令牌）、用刷新令牌续期
+      if (p === '/oauth/token' && req.method === 'POST') {
+        const f = new URLSearchParams(body);
+        if (f.get('client_secret') !== E2E_CLIENT_SECRET) return send(401, { error: 'invalid_client', error_description: 'Unauthorized' });
+        const scope = 'https://www.googleapis.com/auth/youtube.readonly';
+        if (f.get('grant_type') === 'authorization_code') {
+          const c = oauthCodes.get(f.get('code') ?? '');
+          oauthCodes.delete(f.get('code') ?? '');
+          const verified = !!c && c.redirect === f.get('redirect_uri') && createHash('sha256').update(f.get('code_verifier') ?? '').digest('base64url') === c.challenge;
+          if (!verified) return send(400, { error: 'invalid_grant', error_description: 'Malformed auth code.' });
+          const refresh = `e2e-refresh-${++oauthCounter}`;
+          liveRefresh.add(refresh);
+          return send(200, { access_token: 'e2e-fake-token', expires_in: 3599, refresh_token: refresh, scope, token_type: 'Bearer' });
+        }
+        if (f.get('grant_type') === 'refresh_token') {
+          if (!liveRefresh.has(f.get('refresh_token') ?? '')) return send(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
+          return send(200, { access_token: 'e2e-fake-token', expires_in: 3599, scope, token_type: 'Bearer' });
+        }
+        return send(400, { error: 'unsupported_grant_type' });
       }
       send(404, { error: { code: 404, message: `mock: no route ${p}` } });
     });

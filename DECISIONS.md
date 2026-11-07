@@ -218,6 +218,8 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 
 ## 25. YouTube 授权改版：launchWebAuthFlow + "Web 应用"客户端（取代 §3）
 
+> **续期做法已被 §53 取代**（2026-11-07）：隐式授权没有刷新令牌，`prompt=none` 静默续期在 Comet 上一直被 Google 以 `interaction_required` 拒绝，改为授权码 + PKCE + 刷新令牌。`launchWebAuthFlow`、"Web 应用"客户端、只申请 `youtube.readonly`、后台发起交互授权（§34）不变。
+
 - **起因**：用户日常使用 Comet（Chromium 内核，非 Google Chrome）。`getAuthToken` 依赖浏览器级 Google 登录（Chrome 的"允许登录 Chrome"/ 账号体系），Comet 没有对应设置，这条路走不通。用户指定改为 `launchWebAuthFlow` + "Web 应用"类型客户端、回跳 URL 中直接取 `access_token`（隐式授权）。
 - **外部事实核实**（2026-10-24）：
   - Google 文档仍提供隐式授权（`response_type=token`），但标注"仅为兼容旧系统与排障保留，因安全隐患强烈不推荐"，推荐授权码 + PKCE；没有给出停用日期。
@@ -916,3 +918,66 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 没有在真实 X 上跑完整扩展：Playwright 自带的 Chromium 解不了 H.264，正式版 Chrome 又不让命令行加载扩展；管线、标题和布局是在真实页面上分别核实的，整体留给手测清单。
 - **顺带修的测试（用户确认后改）**：CI 上"把字幕烧进画面"的 `uncheck()` 报 `Clicking the checkbox did not change its state`，这行是 11-01 写的，本地三轮都没出现。和 §43 的 `check()` 同一类：这个勾选框跟着设置走，点完到设置写进存储之间，侧边栏每秒一次的状态刷新会把它弹回旧值，Playwright 点完立刻核对就赛跑。不是产品问题，最终状态是对的。侧边栏里只有这两处这样写，都改成点击后等设置写进存储、再等勾选框到位；写不进去或勾选框对不上仍然失败。
 - **日后替换**：X 改版时看 `core/clips.ts` 的 `xPostTitle`、`X_STATUS_PATH` 和 `content/clipper.ts` 的 `xVideoEl`。摸清片头广告后在 `adShowing` 里加 X 的判断，去掉 `ClipsView` 里的说明。
+
+## 53. YouTube 授权改为授权码 + PKCE + 刷新令牌：自动续期不再靠浏览器窗口（2026-11-07，用户要求；取代 §25 的续期做法）
+
+- **现象**（用户截图，Comet）：连接后十几分钟到一小时就显示"YouTube 授权已过期，自动续期没有成功"，原因 `Google 要求你在授权窗口里确认或选择账号（interaction_required）`。重新加载扩展后同样如此。用户的硬指标：至少 24 小时无感续期、不手动干预；重新加载扩展后仍保持已登录。
+- **根因**：§25 的隐式授权（`response_type=token`）**没有刷新令牌**。访问令牌约 1 小时有效，之后唯一的续期办法是在隐藏窗口里再走一次授权（`prompt=none`）。这条路能否成功完全由 Google 决定，取决于这个浏览器里网页版 Google 的登录态：
+  - Google 回 `interaction_required`，就是它坚持要你在窗口里操作一次（确认或选择账号），隐藏窗口给不了，所以每次都续不上。§34 记下的"8 天里静默续期一次也没成功"就是同一件事，当时只差把原因记下来；这次原因记下来了。
+  - 最常见的触发是浏览器里登录了不止一个 Google 账号，又没带 `login_hint` 指明是哪个。我们给不了 `login_hint`：它要邮箱或账号 ID，而拿这两样都要申请 `openid` / `email` 范围，违反"只申请 `youtube.readonly`"的红线。Google 在"测试中"的未验证应用上也可能要求确认。到底是哪一种看不到 Comet 内部，**没能直接证实**；但不管是哪一种，扩展都控制不了。所以这不是参数没调好，而是这个续期办法本身没法保证。
+  - "十几分钟就过期"没能复现：访问令牌本身是 1 小时。较可能的情况是在上一个令牌快到期时连上、或令牌被 401 作废后立即续期失败。新做法下访问令牌的长短不再影响你，这一点不再追。
+  - 重新加载扩展：令牌一直存在 `chrome.storage.local`，重新加载不会丢。看起来"掉线"是因为重新加载后访问令牌往往已过 1 小时，续期又失败。
+- **外部事实（2026-11-07 核实，Google 文档经搜索摘录；`developers.google.com` 在本会话的网络里打不开，未能逐字读原文）**：
+  - Web 服务器流程：`access_type=offline` 才发刷新令牌；Google 只在"同意"那一步发刷新令牌，以前授过权的再连接要加 `prompt=consent` 才会再给。`prompt` 可以用空格连写多个值。
+  - "Web 应用"客户端用授权码换令牌要带 `client_secret`（PKCE 不能代替它；有人试过只带 PKCE，被拒）。续期（`grant_type=refresh_token`）同样要带。
+  - 同意屏幕为"外部"、发布状态为"测试中"的项目：申请超出 name / email / profile 的范围时，**刷新令牌 7 天后失效**。发布为正式版后没有这个期限；Google 的说法是半年不用或被撤销才失效。发布前已发的令牌仍按 7 天算，要重新授权一次。未验证的应用最多 100 个用户，授权时显示"未验证"警告。
+  - Google Cloud 控制台自 2025 年起只在创建时显示一次 Client Secret，之后打码；丢了可以在客户端页面"Add secret"再建一个（支持多个并存、轮换）。
+- **做法**：
+  - 连接：`launchWebAuthFlow`（交互）打开 `response_type=code`、`access_type=offline`、`prompt=consent select_account`、PKCE（S256，32 字节随机 verifier）、随机 `state`，只申请 `youtube.readonly`，不带 `include_granted_scopes`。回跳先校验 `state`，再把授权码连同 `client_id`、`client_secret`、`redirect_uri`、`code_verifier` POST 到 `oauth2.googleapis.com/token`，得到访问令牌和刷新令牌。没拿到刷新令牌就明确报错，不存半套状态。
+  - 续期：访问令牌过期（留 2 分钟余量）时，用刷新令牌 POST 到令牌端点换新的。不开窗口，与浏览器里的 Google 登录、多账号都无关。侧边栏、设置页、后台各有一份授权模块，用 Web Locks（`youtubeAuth:renew`）串行：一个换完，其他直接用存下的结果；同一页面里的并发请求只续一次。
+  - 失败分四类（`core/oauth.ts` 的 `classifyTokenError`）：
+    - 网络、5xx、429：**暂时的**，报"连不上 Google、授权本身没有失效"，不标"已过期"，下次用时再试。
+    - `invalid_grant`：刷新令牌失效（测试状态满 7 天、你移除了授权、改了密码）。丢掉这个令牌（之后不再白发请求），状态变"已过期"，写明原因，只能重新授权。
+    - `invalid_client` / `unauthorized_client` 等：Client Secret 不对。**保留刷新令牌**，提示去设置页改 Client Secret；改好后清掉失败标记，立刻续上，不用重新授权。
+    - 其他：记下原因，冷却 15 分钟再试。
+  - 竞态：续期失败只在记录仍是这个刷新令牌、且没有别处刚换来新令牌时才记下（与 §34 的保护同理）。
+  - Client Secret：红线要求密钥由你在设置页填写、只存本地、不进代码与构建产物。所以它不像 Client ID 那样在构建时注入，而是放进 `secrets`（不进导出，"清空"时删除），每次用时现读，只随请求体发往令牌端点。脱敏补上 `GOCSPX-…`、`1//…` 和表单里的 `code=` / `refresh_token=` / `client_secret=` / `code_verifier=`；构建产物扫描补上 Client Secret 与刷新令牌的样式。
+  - 断开：有刷新令牌时吊销它（Google 会连带吊销它换出的访问令牌），访问令牌过期了也照样吊销。
+  - 旧版记录（隐式授权、没有刷新令牌）：访问令牌还有效时照常用；侧边栏提前提示"YouTube 授权是旧版"。过期后状态为"已过期"，原因写"旧版授权，没有刷新令牌"，不发请求、不开窗口。填好 Client Secret、重新授权一次即可。
+  - 界面：设置页「2. YouTube 账号」加"OAuth Client Secret"一栏。状态显示"已连接，自动续期已开启"，下一行写刷新令牌拿到的时间，以及 Google 给的期限；Google 没给期限时说明"测试中 7 天"的规定和发布为正式版的办法。侧边栏横幅写原因：要改 Client Secret 时按钮是"打开设置填 Client Secret"，否则是"重新授权"。
+- **偏差（请过目）**：
+  - §25 里你指定的是隐式授权，这次改成授权码流程，因为隐式授权达不到你这次给的硬指标。
+  - 多了一步手动配置：在设置页填 Client Secret。已有"Web 应用"客户端的，到 Google Cloud 该客户端页面"Add secret"新建一个即可，不用新建客户端。
+  - 每次连接 / 重新授权都会显示 Google 的同意页（`prompt=consent`），这是拿到刷新令牌的条件。
+  - "测试中"状态下每 7 天要重新授权一次，这是 Google 的规定，满足"至少 24 小时"；README 写了发布为正式版去掉期限的办法。是否发布由你决定，不是代码能改的。
+- **放弃**：
+  - 保留隐式授权 + `prompt=none`，加 `login_hint` 解决多账号：要 `openid` / `email` 范围，违反红线；而且仍然依赖网页版 Google 的登录态，达不到"24 小时无感"。
+  - 加没有文档的 `authuser` 参数：账号序号会变，Google 也不保证支持。
+  - `getAuthToken`：Comet 上不可用（§25）。
+  - "桌面应用"类型客户端 + 环回地址：`launchWebAuthFlow` 只截获 `chromiumapp.org`，要另开标签页监视跳转；而且同样要 Client Secret，换了也没有好处。
+  - 把 Client Secret 写进构建产物（像 Client ID 那样）：违反红线。
+  - 定时在后台主动续期：令牌用时再续就够了，主动续期只会多发请求。测试状态的 7 天期限从刷新令牌发放时开始算，续多少次都不会延长。
+- **验证**：
+  - 单测 36 条（`tests/unit/auth.test.ts`）：
+    - 授权地址的参数；RFC 7636 附录 B 的 PKCE 示例；回跳与令牌响应的解析；错误归类；脱敏。
+    - 连接时 Client Secret 与 verifier 只在令牌端点的请求体里。
+    - **连续 30 小时每小时用一次**：只弹过 1 次窗口，续期 30 次，状态一直"已连接"。
+    - 浏览器关了几天后再用，一次续上。
+    - **模拟扩展重新加载**：新的一份授权模块，只共用存储，状态"已连接"，之后 25 小时照样续期。
+    - 侧边栏 + 后台同时续期，只发一次请求。
+    - 401 后的续期；Google 轮换刷新令牌。
+    - 网络 / 5xx 不标"已过期"；`invalid_grant` 丢掉刷新令牌并写明 7 天；`invalid_client` 保留刷新令牌，改好 Secret 立即续上；Secret 被删时不发请求。
+    - 其他错误的冷却；续期途中重新授权的竞态；旧版记录；断开时的吊销；导出排除。
+    - 竞态保护与跨页面锁都做过反向验证：去掉后对应用例失败。
+  - e2e（mock 授权页发授权码，mock 令牌端点校验 Client Secret、`redirect_uri` 与 PKCE）：
+    - 没填 Secret 就点连接：说明原因，不弹窗。
+    - 连接请求的参数；换令牌只 POST 到令牌端点。
+    - 用 mock 让刷新令牌失效 → 侧边栏同步画像 → 横幅写明 `invalid_grant` 和 7 天 → 重新授权（窗口开着时关掉侧边栏，后台照样存下）。
+    - **访问令牌过期 24 小时后**同步画像：自动续期，没有弹窗、没有横幅。
+    - **关掉浏览器再用同一个用户目录启动**：扩展 ID 不变，授权原样还在，设置页"已连接，自动续期已开启"，过期的访问令牌自动续上、不弹窗。
+    - Client Secret 只发往令牌端点；刷新令牌只发往令牌端点与吊销端点。
+  - 想在 e2e 里测"扩展管理页的重新加载"，但 Playwright 的 Chromium 对命令行加载的扩展执行 `chrome.runtime.reload()` 后不会再启用它（页面报 `ERR_BLOCKED_BY_CLIENT`），所以改测更彻底的整个浏览器重启。真正的"重新加载"按钮留在 README 手测清单里。
+  - 没有在真实 Google、真实 Comet 上跑过：要你的 Client Secret 和账号。手测清单已更新（24 小时、重新加载、移除授权后重新授权）。
+- **以后怎么换**：
+  - 若某天 Google 允许"Web 应用"客户端只用 PKCE 换令牌，删掉 `connect` / `renew` 里的 `client_secret` 和设置页那一栏即可。
+  - 若改用别的身份提供方，`AuthProvider` 接口与调用方不用动，只换 `services/auth.ts` 的 `webAuthFlowAuth`。
