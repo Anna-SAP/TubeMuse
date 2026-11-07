@@ -779,16 +779,29 @@ export const ANTHROPIC_FALLBACK = {
 
 export const GOOGLE_OAUTH_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
 
-/** YouTube 授权：launchWebAuthFlow + Google 隐式授权（访问令牌约 1 小时有效，没有刷新令牌）。 */
+/**
+ * YouTube 授权：launchWebAuthFlow + Google 授权码 + PKCE，拿刷新令牌在后台续期（DECISIONS §53）。
+ * 访问令牌约 1 小时有效；过期后用刷新令牌向 oauth2.googleapis.com/token 换新的，不弹窗、不依赖浏览器里的 Google 登录。
+ */
 export const GOOGLE_OAUTH = {
   /** 提前这么久视为过期，避免请求途中失效 */
   expiryMarginMs: 2 * 60_000,
-  /** 回跳里没带 expires_in 时按此估算（Google 惯例 3599 秒） */
+  /** 响应里没带 expires_in 时按此估算（Google 惯例 3599 秒） */
   defaultExpiresInSec: 3599,
-  /** 静默续期失败后，这段时间内不再静默重试（直接请用户重新授权） */
-  silentRetryAfterMs: 15 * 60_000,
-  /** 静默续期（prompt=none）最长等待 */
-  silentTimeoutMs: 10_000,
+  /**
+   * 交互授权的 prompt：consent 保证每次都发刷新令牌（Google 只在"同意"那一步发，以前授过权时不加就拿不到），
+   * select_account 让浏览器里登录了多个 Google 账号时挑账号。Google 允许用空格连写多个值。
+   */
+  interactivePrompt: 'consent select_account',
+  /** 续期请求（令牌端点）最长等待 */
+  tokenTimeoutMs: 15_000,
+  /** 续期被 Google 拒绝（不是网络问题）后，这段时间内不再重试，直接说原因 */
+  renewRetryAfterMs: 15 * 60_000,
+  /**
+   * Google 的规定（外部事实，2026-11-07 核实）：OAuth 同意屏幕为"外部"、发布状态为"测试"的项目，
+   * 申请 youtube.readonly 这类范围时，刷新令牌 7 天后失效；发布为"正式版"后没有这个期限（半年不用、被你移除授权时仍会失效）。
+   */
+  testingRefreshTtlDays: 7,
   /** 交互授权窗口最多等这么久（在窗口里登录、选账号）；超过后后台不再保活，界面说明"窗口没有交回结果" */
   interactiveMaxMs: 10 * 60_000,
 } as const;

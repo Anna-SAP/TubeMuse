@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockServer, PORT } from './mock-server.mjs';
+import { startMockServer, PORT, E2E_CLIENT_SECRET } from './mock-server.mjs';
 import { X_GIF_POST, X_POST, X_TEXT_POST } from './x-pages.mjs';
 import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID, XHS_V1 } from './xhs-pages.mjs';
 
@@ -30,22 +30,25 @@ function check(cond, msg) {
 
 const { server, requests } = /** @type {{ server: import('node:http').Server; requests: any[] }} */ (await startMockServer());
 const userDataDir = mkdtempSync(join(tmpdir(), 'tubemuse-e2e-'));
-const context = await chromium.launchPersistentContext(userDataDir, {
-  channel: 'chromium',
-  headless: true,
-  viewport: { width: 420, height: 900 },
-  args: [
-    `--disable-extensions-except=${extDir}`,
-    `--load-extension=${extDir}`,
-    '--disable-background-networking',
-    '--disable-component-update',
-    '--disable-sync',
-    '--no-first-run',
-    '--disable-default-apps',
-    '--disable-features=Translate,OptimizationHints,MediaRouter,AutofillServerCommunication',
-    '--autoplay-policy=no-user-gesture-required',
-  ],
-});
+/** 用同一个用户目录启动浏览器（结尾还会再启动一次，验证重启后授权仍在） */
+const launchBrowser = () =>
+  chromium.launchPersistentContext(userDataDir, {
+    channel: 'chromium',
+    headless: true,
+    viewport: { width: 420, height: 900 },
+    args: [
+      `--disable-extensions-except=${extDir}`,
+      `--load-extension=${extDir}`,
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-sync',
+      '--no-first-run',
+      '--disable-default-apps',
+      '--disable-features=Translate,OptimizationHints,MediaRouter,AutofillServerCommunication',
+      '--autoplay-policy=no-user-gesture-required',
+    ],
+  });
+let context = await launchBrowser();
 
 /** @type {string[]} */
 const blocked = [];
@@ -53,7 +56,8 @@ const blocked = [];
 const doubanImages = [];
 /** 仿 X 的动图：测试现场录一小段视频填进来，见下面的路由 */
 let xGifBody = Buffer.alloc(0);
-await context.route('**/*', (route) => {
+/** 网络护栏：只放行扩展自身与本机 mock，其余一律在本地应答或拦下并记为失败 */
+const guard = (/** @type {import('playwright').Route} */ route) => {
   const url = route.request().url();
   if (url.startsWith('chrome-extension://') || url.startsWith(MOCK) || url.startsWith('data:') || url.startsWith('blob:')) return route.continue();
   // 授权回跳地址由浏览器截获；万一真的发起加载，也在本地应答，绝不出网
@@ -67,7 +71,8 @@ await context.route('**/*', (route) => {
   if (url === X_GIF_POST.src) return route.fulfill({ status: 200, contentType: 'video/webm', body: xGifBody });
   blocked.push(url);
   return route.abort();
-});
+};
+await context.route('**/*', guard);
 
 /** @type {string[]} */
 const consoleErrors = [];
@@ -97,35 +102,63 @@ try {
   await options.getByText('已保存（出于安全不回显）').first().waitFor({ state: 'attached' }).catch(() => undefined);
   const keyInput = await options.getByTestId('anthropic-key').getAttribute('placeholder');
   check(keyInput === '已保存（出于安全不回显）', '保存 Anthropic Key 后输入框不回显 Key');
+  const readAuth = async (/** @type {import('playwright').Worker} */ w = sw) => /** @type {any} */ (await w.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('youtubeAuth'))).youtubeAuth;
+  const tokenGrants = (/** @type {string} */ grant) => requests.filter((r) => r.path === '/oauth/token' && new URLSearchParams(r.body).get('grant_type') === grant);
+  // 没填 Client Secret 就点"连接"：说清楚要先填什么，不弹授权窗口
   await options.getByRole('button', { name: '连接 YouTube' }).click();
-  await options.getByTestId('auth-status').filter({ hasText: '已连接' }).waitFor({ timeout: 15000 });
+  await options.getByText('还没有填写 Google OAuth Client Secret').waitFor({ timeout: 5000 });
+  check(requests.filter((r) => r.path === '/oauth/authorize').length === 0, '没填 Client Secret 就点"连接"：说明要先填它，不弹授权窗口');
+  await options.getByTestId('google-client-secret').fill(E2E_CLIENT_SECRET);
+  await options.locator('#youtube .btn', { hasText: '保存' }).first().click();
+  await options.getByTestId('google-client-secret').and(options.locator('[placeholder="已保存（出于安全不回显）"]')).waitFor({ state: 'attached' });
+  check(true, '保存 Client Secret 后输入框不回显');
+  await options.getByRole('button', { name: '连接 YouTube' }).click();
+  await options.getByTestId('auth-status').filter({ hasText: '自动续期已开启' }).waitFor({ timeout: 15000 });
   const authReq = requests.filter((r) => r.path === '/oauth/authorize');
-  check(authReq.length === 1, 'YouTube 已连接（launchWebAuthFlow → mock 授权页 → 回跳）');
+  check(authReq.length === 1, 'YouTube 已连接（launchWebAuthFlow → mock 授权页 → 回跳授权码 → 换令牌）');
   const aq = authReq[0]?.query ?? {};
   check(
-    aq.response_type === 'token' && aq.scope === 'https://www.googleapis.com/auth/youtube.readonly' && aq.redirect_uri === `https://${extId}.chromiumapp.org/` && aq.prompt === 'select_account' && /^[0-9a-f]{32}$/.test(aq.state ?? '') && !('include_granted_scopes' in aq),
-    '授权请求只申请 youtube.readonly，回跳到 chromiumapp.org，带随机 state',
+    aq.response_type === 'code' &&
+      aq.access_type === 'offline' &&
+      aq.prompt === 'consent select_account' &&
+      aq.code_challenge_method === 'S256' &&
+      /^[A-Za-z0-9_-]{43}$/.test(aq.code_challenge ?? '') &&
+      aq.scope === 'https://www.googleapis.com/auth/youtube.readonly' &&
+      aq.redirect_uri === `https://${extId}.chromiumapp.org/` &&
+      /^[0-9a-f]{32}$/.test(aq.state ?? '') &&
+      !('include_granted_scopes' in aq) &&
+      !JSON.stringify(aq).includes(E2E_CLIENT_SECRET),
+    '授权请求只申请 youtube.readonly，要刷新令牌（offline）、带 PKCE 与随机 state，Client Secret 不进授权地址',
   );
+  const exchange = tokenGrants('authorization_code');
+  const ef = new URLSearchParams(exchange[0]?.body ?? '');
+  check(
+    exchange.length === 1 && exchange[0]?.method === 'POST' && ef.get('client_secret') === E2E_CLIENT_SECRET && !!ef.get('code_verifier') && ef.get('redirect_uri') === `https://${extId}.chromiumapp.org/` && !JSON.stringify(exchange[0]?.query).includes(E2E_CLIENT_SECRET),
+    '换令牌：POST 到令牌端点，Client Secret 与 PKCE verifier 只在请求体里',
+  );
+  const linked = await readAuth();
+  check(!!linked?.refreshToken && linked.expiresAt > Date.now() + 30 * 60_000, '存下了访问令牌与刷新令牌');
+  check(((await options.getByTestId('refresh-note').textContent()) ?? '').includes('7 天'), '设置页说明刷新令牌的期限（测试状态 7 天）');
   check((await options.getByTestId('redirect-url').textContent()) === `https://${extId}.chromiumapp.org/`, '设置页显示授权回跳地址');
   await options.screenshot({ path: join(shots, '01-options.png'), fullPage: true });
 
-  // ── 授权过期 → 侧边栏"重新授权"，授权窗口还开着时把侧边栏关掉：令牌照样由后台存下（以前会静默丢失，横幅一直显示"已过期"）──
-  console.log('\n[重新授权]');
+  // ── 刷新令牌失效（invalid_grant）→ 横幅写明原因 → 侧边栏"重新授权"；授权窗口还开着时把侧边栏关掉：令牌照样由后台存下 ──
+  console.log('\n[刷新令牌失效 → 重新授权]');
   {
-    const readAuth = async () => /** @type {any} */ (await sw.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('youtubeAuth'))).youtubeAuth;
     const before = await readAuth();
-    await sw.evaluate((st) => /** @type {any} */ (globalThis).chrome.storage.local.set({ youtubeAuth: st }), {
-      ...before,
-      expiresAt: Date.now() - 60_000,
-      renewFailedAt: Date.now(),
-      renewReason: 'Google 要求重新登录（login_required）',
-    });
+    await fetch(`${MOCK}/e2e/token-mode?mode=revoked`);
+    await sw.evaluate((st) => /** @type {any} */ (globalThis).chrome.storage.local.set({ youtubeAuth: st }), { ...before, expiresAt: Date.now() - 60_000 });
     const reauthPanel = await context.newPage();
     reauthPanel.on('pageerror', (e) => consoleErrors.push(`reauth pageerror: ${e.message}`));
     await reauthPanel.goto(`chrome-extension://${extId}/sidepanel.html`);
-    await reauthPanel.getByText('YouTube 授权已过期').waitFor();
-    check(((await reauthPanel.getByTestId('renew-reason').textContent()) ?? '').includes('login_required'), '横幅写明自动续期失败的具体原因');
-    // 授权页像真实的 Google 一样停留几秒（用户在窗口里登录、选账号）
+    // 用一次 YouTube（同步画像）：访问令牌已过期 → 后台用刷新令牌续期 → Google 说 invalid_grant
+    await reauthPanel.getByRole('tab', { name: '画像' }).click();
+    await reauthPanel.getByRole('button', { name: '同步订阅与喜欢的视频' }).click();
+    await reauthPanel.getByText('YouTube 授权已过期').first().waitFor({ timeout: 10000 });
+    const reason = (await reauthPanel.getByTestId('renew-reason').textContent()) ?? '';
+    check(reason.includes('invalid_grant') && reason.includes('7 天'), `横幅写明续期失败的具体原因：${reason.slice(0, 60)}…`);
+    check(!(await readAuth())?.refreshToken, '失效的刷新令牌已丢弃（不再白发续期请求）');
+    // 授权页像真实的 Google 一样停留几秒（用户在窗口里登录、选账号、同意）
     await fetch(`${MOCK}/e2e/authorize-mode?mode=slow&delayMs=2500`);
     const authorizeBefore = requests.filter((r) => r.path === '/oauth/authorize').length;
     await reauthPanel.getByRole('button', { name: '重新授权' }).click();
@@ -135,10 +168,10 @@ try {
     let renewed;
     for (const end = Date.now() + 15000; Date.now() < end && !renewed; ) {
       const a = await readAuth();
-      if (a?.expiresAt > Date.now() + 30 * 60_000 && !a.renewFailedAt) renewed = a;
+      if (a?.expiresAt > Date.now() + 30 * 60_000 && !a.renewFailedAt && a.refreshToken) renewed = a;
       else await new Promise((r) => setTimeout(r, 300));
     }
-    check(!!renewed, '授权窗口开着时关掉侧边栏：新令牌照样由后台存下，"已过期"标记清除');
+    check(!!renewed, '授权窗口开着时关掉侧边栏：新的访问令牌与刷新令牌照样由后台存下，"已过期"标记清除');
     check(requests.filter((r) => r.path === '/oauth/authorize').length === authorizeBefore + 1, '只打开了一次授权窗口');
     await fetch(`${MOCK}/e2e/authorize-mode?mode=instant`);
     const reopened = await context.newPage();
@@ -147,6 +180,28 @@ try {
     await reopened.waitForTimeout(500);
     check((await reopened.getByText('YouTube 授权已过期').count()) === 0 && (await reopened.getByTestId('auth-pending').count()) === 0, '重新打开侧边栏：不再显示"已过期"');
     await reopened.close();
+  }
+
+  // ── 从旧版升级：存着的是隐式授权的记录（没有刷新令牌）→ 侧边栏提前提示，点一次"重新授权"换成能自动续期的授权 ──
+  console.log('\n[旧版授权升级]');
+  {
+    const { refreshToken: _r, refreshIssuedAt: _i, ...legacy } = await readAuth();
+    await sw.evaluate((st) => /** @type {any} */ (globalThis).chrome.storage.local.set({ youtubeAuth: st }), { ...legacy, expiresAt: Date.now() + 40 * 60_000 });
+    const legacyPanel = await context.newPage();
+    legacyPanel.on('pageerror', (e) => consoleErrors.push(`legacy pageerror: ${e.message}`));
+    await legacyPanel.goto(`chrome-extension://${extId}/sidepanel.html`);
+    await legacyPanel.getByTestId('legacy-auth').waitFor({ timeout: 5000 });
+    check(true, '旧版授权（没有刷新令牌）还没过期时，侧边栏提前提示它过期后续不上');
+    await legacyPanel.getByRole('button', { name: '重新授权' }).click();
+    let upgraded;
+    for (const end = Date.now() + 15000; Date.now() < end && !upgraded; ) {
+      const a = await readAuth();
+      if (a?.refreshToken) upgraded = a;
+      else await new Promise((r) => setTimeout(r, 300));
+    }
+    await legacyPanel.getByTestId('legacy-auth').waitFor({ state: 'detached', timeout: 5000 }).catch(() => undefined);
+    check(!!upgraded && (await legacyPanel.getByTestId('legacy-auth').count()) === 0, '点一次"重新授权"后换成带刷新令牌的授权，提示消失');
+    await legacyPanel.close();
   }
 
   // ── 侧边栏（以标签页方式打开同一页面）──
@@ -158,10 +213,23 @@ try {
   await panel.goto(`chrome-extension://${extId}/sidepanel.html`);
 
   console.log('\n[画像]');
+  // 访问令牌早就过期（模拟连接后过了一整天）：用的时候在后台用刷新令牌换新的，不弹窗、不报"已过期"
+  const authorizeCount = requests.filter((r) => r.path === '/oauth/authorize').length;
+  const refreshCount = tokenGrants('refresh_token').length;
+  await sw.evaluate((st) => /** @type {any} */ (globalThis).chrome.storage.local.set({ youtubeAuth: st }), { ...(await readAuth()), expiresAt: Date.now() - 24 * 3_600_000 });
   await panel.getByRole('tab', { name: '画像' }).click();
   await panel.getByRole('button', { name: '同步订阅与喜欢的视频' }).click();
   await panel.getByText(/同步完成/).waitFor();
   check(true, '同步订阅与喜欢的视频完成');
+  const refreshed = await readAuth();
+  check(
+    tokenGrants('refresh_token').length > refreshCount &&
+      requests.filter((r) => r.path === '/oauth/authorize').length === authorizeCount &&
+      refreshed?.expiresAt > Date.now() + 30 * 60_000 &&
+      !refreshed?.renewFailedAt &&
+      (await panel.getByText('YouTube 授权已过期').count()) === 0,
+    '访问令牌过期 24 小时后再用：后台用刷新令牌自动续期，没有弹授权窗口，也没有"已过期"横幅',
+  );
   await panel.getByRole('button', { name: /生成兴趣簇/ }).click();
   await panel.locator('.cluster').first().waitFor();
   const clusterCount = await panel.locator('.cluster').count();
@@ -2402,6 +2470,46 @@ try {
     check(modelSaved && (await settled(async () => /** @type {any} */ (await storedSettings()).llm.models[provider] === original)), `${provider} 模型名存得上，清空后回到默认模型`);
   }
 
+  // ── 关掉浏览器再打开（同一个用户目录）：service worker 与所有页面重启、内存清空，授权状态仍在，过期后照样自动续期 ──
+  // 想测的是"在扩展管理页重新加载扩展"，但 Playwright 的 Chromium 对命令行加载的扩展执行 chrome.runtime.reload() 后
+  // 不会再启用它（页面报 ERR_BLOCKED_BY_CLIENT），只能测更彻底的整个浏览器重启；两者存储都由 Chrome 保留（DECISIONS §53）。
+  console.log('\n[重启浏览器]');
+  {
+    const before = await readAuth();
+    await context.close();
+    context = await launchBrowser();
+    await context.route('**/*', guard);
+    let [sw2] = context.serviceWorkers();
+    sw2 ??= await context.waitForEvent('serviceworker', { timeout: 20000 });
+    check(new URL(sw2.url()).host === extId, '重启后扩展 ID 不变');
+    const after = await readAuth(sw2);
+    check(!!after?.refreshToken && after.refreshToken === before?.refreshToken && after.connectedAt === before?.connectedAt, '重启后，存储里的授权（含刷新令牌）原样还在');
+    // 计数要在让令牌过期之前记下：浏览器一启动，后台的例行任务（onStartup）就可能先用到 YouTube、先续上
+    const authorizeN = requests.filter((r) => r.path === '/oauth/authorize').length;
+    const refreshN = tokenGrants('refresh_token').length;
+    // 模拟又过了几个小时：访问令牌已过期
+    await sw2.evaluate((st) => /** @type {any} */ (globalThis).chrome.storage.local.set({ youtubeAuth: st }), { ...after, expiresAt: Date.now() - 3 * 3_600_000 });
+    const opts2 = await context.newPage();
+    opts2.on('pageerror', (e) => consoleErrors.push(`options(restart) pageerror: ${e.message}`));
+    await opts2.goto(`chrome-extension://${extId}/options.html`);
+    await opts2.getByTestId('auth-status').filter({ hasText: '自动续期已开启' }).waitFor({ timeout: 10000 });
+    check(true, '重启后设置页显示"已连接，自动续期已开启"（访问令牌过期也算：有刷新令牌）');
+    const panel2 = await context.newPage();
+    panel2.on('pageerror', (e) => consoleErrors.push(`sidepanel(restart) pageerror: ${e.message}`));
+    await panel2.goto(`chrome-extension://${extId}/sidepanel.html`);
+    await panel2.getByRole('tab', { name: '画像' }).click();
+    await panel2.getByRole('button', { name: '同步订阅与喜欢的视频' }).click();
+    await panel2.getByText(/同步完成/).waitFor({ timeout: 15000 });
+    const renewedAfterRestart = await readAuth(sw2);
+    const refreshed2 = tokenGrants('refresh_token').length - refreshN;
+    const authorized2 = requests.filter((r) => r.path === '/oauth/authorize').length - authorizeN;
+    const banner2 = await panel2.getByText('YouTube 授权已过期').count();
+    check(
+      refreshed2 > 0 && authorized2 === 0 && renewedAfterRestart?.expiresAt > Date.now() + 30 * 60_000 && !renewedAfterRestart?.renewFailedAt && banner2 === 0,
+      `重启后用 YouTube：后台自动续期，不弹授权窗口，没有"已过期"横幅（续期 ${refreshed2} 次、授权窗口 ${authorized2} 次、横幅 ${banner2}）`,
+    );
+  }
+
   console.log('\n[Phase 3：X 网络红线]');
   const xr = requests.filter((r) => r.path.startsWith('/x/'));
   check(xr.length > 0 && xr.every((r) => r.headers.authorization === `Bearer ${X_TOKEN}` && !JSON.stringify(r.query).includes(X_TOKEN)), 'X 请求只在请求头里带 Token');
@@ -2418,6 +2526,8 @@ try {
   check(yt.every((r) => !JSON.stringify(r).includes(FAKE_KEY)), 'LLM Key 从未发往 YouTube');
   check(llm.every((r) => !JSON.stringify(r).includes('e2e-fake-token')), 'YouTube 令牌从未发往 LLM');
   check(requests.every((r) => !JSON.stringify(r.query).includes(FAKE_KEY)), 'Key 不出现在任何 URL 中');
+  check(requests.filter((r) => r.path !== '/oauth/token').every((r) => !JSON.stringify(r).includes(E2E_CLIENT_SECRET)), 'Google Client Secret 只发往令牌端点');
+  check(requests.filter((r) => r.path !== '/oauth/token' && r.path !== '/oauth/revoke').every((r) => !JSON.stringify(r).includes('e2e-refresh-')), '刷新令牌只发往令牌端点（与吊销端点）');
   check(blocked.length === 0, `没有发往 mock 以外的请求${blocked.length ? `：${blocked.join(', ')}` : ''}`);
   check(consoleErrors.length === 0, `页面没有控制台错误${consoleErrors.length ? `：\n    ${consoleErrors.join('\n    ')}` : ''}`);
 } catch (e) {

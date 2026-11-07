@@ -3,13 +3,13 @@
 import { render } from 'preact';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { BROWSER_SPEECH_LANGS, DEFAULT_SETTINGS, GOOGLE_OAUTH_SCOPE, LLM_TASKS, MULTI_CC, MULTI_CC_LANGS, SUBTITLE_LANGS, type BrowserSpeechLang, type LlmTask, type LlmTier, type SubtitleLang } from '../../config/defaults';
+import { BROWSER_SPEECH_LANGS, DEFAULT_SETTINGS, GOOGLE_OAUTH, GOOGLE_OAUTH_SCOPE, LLM_TASKS, MULTI_CC, MULTI_CC_LANGS, SUBTITLE_LANGS, type BrowserSpeechLang, type LlmTask, type LlmTier, type SubtitleLang } from '../../config/defaults';
 import { ORIGINAL } from '../../core/multi-captions';
 import { asrPrice, hourlyEstimateUsd, llmPrice, localPreparePairs } from '../../core/subtitles';
 import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { browserSpeechEnv, detectLocal, installLocal, type LocalAvailability } from '../../services/speech';
 import { ENDPOINTS } from '../../config/endpoints';
-import { oauthClientId, oauthRedirectUrl, type AuthStatus } from '../../services/auth';
+import { authProblem, clearSecretFailure, oauthClientId, oauthRedirectUrl, type AuthStatus } from '../../services/auth';
 import { attemptView } from '../../services/auth-service';
 import { clearAll, exportAll } from '../../services/data-service';
 import type { AppError } from '../../services/errors';
@@ -52,7 +52,7 @@ function NumField({ label, value, min, max, step = 1, onChange, hint }: { label:
   );
 }
 
-function KeyField({ label, saved, onSave, onClear, testid }: { label: string; saved: boolean; onSave: (v: string) => void; onClear: () => void; testid: string }) {
+function KeyField({ label, saved, onSave, onClear, testid, placeholder = '粘贴 API Key' }: { label: string; saved: boolean; onSave: (v: string) => void; onClear: () => void; testid: string; placeholder?: string }) {
   const [draft, setDraft] = useState('');
   return (
     <div class="field">
@@ -63,7 +63,7 @@ function KeyField({ label, saved, onSave, onClear, testid }: { label: string; sa
           type="password"
           autocomplete="off"
           data-testid={testid}
-          placeholder={saved ? '已保存（出于安全不回显）' : '粘贴 API Key'}
+          placeholder={saved ? '已保存（出于安全不回显）' : placeholder}
           value={draft}
           onInput={(e) => setDraft(e.currentTarget.value)}
         />
@@ -191,16 +191,26 @@ function App() {
   const clientId = oauthClientId();
   const redirectUrl = oauthRedirectUrl();
   const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const day = (t: number) => new Date(t).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  /** 旧版（隐式授权）记录：没有刷新令牌，过期后不能自动续期 */
+  const legacy = !!ytAuth && !ytAuth.refreshToken;
   const authText =
     auth === 'not_configured'
       ? '未配置 OAuth 客户端'
       : auth === 'expired'
-        ? `授权已过期，自动续期没有成功${ytAuth?.renewReason ? `（${ytAuth.renewReason}）` : ''}，请重新授权`
+        ? `需要你处理一次：${authProblem(ytAuth) ?? '自动续期没有成功'}`
         : auth === 'connected'
-          ? ytAuth?.expiresAt && ytAuth.expiresAt > Date.now()
-            ? `已连接（访问令牌有效至 ${hhmm(ytAuth.expiresAt)}，过期后自动续期）`
-            : '已连接（访问令牌已过期，下次使用时自动续期）'
+          ? legacy
+            ? `已连接（旧版授权：访问令牌${ytAuth?.expiresAt ? ` ${hhmm(ytAuth.expiresAt)} ` : ''}过期后不能自动续期。填好下面的 Client Secret 后点"重新授权"一次，之后会一直自动续期）`
+            : `已连接，自动续期已开启（${ytAuth?.expiresAt && ytAuth.expiresAt > Date.now() ? `当前访问令牌有效至 ${hhmm(ytAuth.expiresAt)}，` : ''}过期后在后台用刷新令牌换新的，不弹窗）`
           : '未连接';
+  /** 刷新令牌什么时候会被 Google 作废（给了期限就照实说；没给就说明"测试"状态的 7 天规定） */
+  const refreshNote =
+    auth === 'connected' && ytAuth?.refreshToken
+      ? ytAuth.refreshExpiresAt
+        ? `刷新令牌获得于 ${day(ytAuth.refreshIssuedAt ?? ytAuth.connectedAt)}，Google 规定它在 ${day(ytAuth.refreshExpiresAt)} 失效，届时需要重新授权一次。`
+        : `刷新令牌获得于 ${day(ytAuth.refreshIssuedAt ?? ytAuth.connectedAt)}。若 Google Cloud 里的应用仍是"测试"状态，Google 会在 ${GOOGLE_OAUTH.testingRefreshTtlDays} 天后（约 ${day((ytAuth.refreshIssuedAt ?? ytAuth.connectedAt) + GOOGLE_OAUTH.testingRefreshTtlDays * 86_400_000)}）让它失效，届时需要重新授权一次；把应用发布为"正式版"可去掉这个期限（见 README）。`
+      : undefined;
   const provider = settings.llm.provider;
 
   return (
@@ -275,10 +285,26 @@ function App() {
             <code>{GOOGLE_OAUTH_SCOPE}</code>（只读：订阅、喜欢的视频、搜索）
           </dd>
           <dt>状态</dt>
-          <dd data-testid="auth-status">{authText}</dd>
+          <dd data-testid="auth-status">
+            {authText}
+            {refreshNote && (
+              <div class="muted small" data-testid="refresh-note">
+                {refreshNote}
+              </div>
+            )}
+          </dd>
         </dl>
+        <KeyField
+          label="OAuth Client Secret"
+          testid="google-client-secret"
+          placeholder="粘贴 Client Secret（多以 GOCSPX- 开头）"
+          saved={!!secrets.googleClientSecret}
+          onSave={(v) => void stores.secrets.update(ctx.kv, ctx.locker, (s) => ({ ...s, googleClientSecret: v })).then(() => clearSecretFailure(ctx.kv, ctx.locker))}
+          onClear={() => updateSecrets({ googleClientSecret: '' })}
+        />
         <p class="muted small">
-          在 Google Cloud 创建"Web 应用"类型的 OAuth 客户端，"已获授权的重定向 URI"填上面的回跳地址（整段复制，含结尾的 /）。点"连接 YouTube"会弹出 Google 登录窗口，在窗口里登录你加进测试用户的 Google 账号即可，不需要登录浏览器本身。
+          在 Google Cloud 创建"Web 应用"类型的 OAuth 客户端，"已获授权的重定向 URI"填上面的回跳地址（整段复制，含结尾的 /）；创建时把 Client Secret 复制到上面（Google 只显示这一次，丢了就在该客户端页面点"Add secret"新建一个）。点"连接 YouTube"会弹出 Google 登录窗口，在窗口里登录你加进测试用户的 Google 账号即可，不需要登录浏览器本身。
+          授权一次后拿到刷新令牌：访问令牌每小时过期，后台自动换新，不弹窗，扩展重新加载、浏览器重启后照样有效。Client Secret 与刷新令牌只存在本机，只随请求体发往 {new URL(ENDPOINTS.googleOAuthToken).host}。
         </p>
         <AuthAttemptNote attempt={authAttempt} hideFailure={!!error} />
         <div class="row">
@@ -287,7 +313,7 @@ function App() {
             disabled={busy || auth === 'not_configured' || attemptView(authAttempt, Date.now()).state === 'pending'}
             onClick={() => act(async () => (await requestYouTubeConnect(), 'YouTube 已连接'))}
           >
-            {auth === 'expired' ? '重新授权' : '连接 YouTube'}
+            {auth === 'expired' || (auth === 'connected' && legacy) ? '重新授权' : '连接 YouTube'}
           </button>
           {(auth === 'connected' || auth === 'expired') && (
             <button
@@ -295,7 +321,7 @@ function App() {
               disabled={busy}
               onClick={() =>
                 act(async () =>
-                  (await ctx.auth.disconnect()).revoked ? '已断开，并已向 Google 吊销访问令牌' : '已断开（本地令牌已删除）。如需彻底撤销，到 Google 账号「第三方应用和服务」里移除 TubeMuse',
+                  (await ctx.auth.disconnect()).revoked ? '已断开，并已向 Google 吊销授权' : '已断开（本地令牌已删除）。如需彻底撤销，到 Google 账号「第三方应用和服务」里移除 TubeMuse',
                 )
               }
             >
@@ -699,6 +725,9 @@ function App() {
         <ul class="small">
           <li>
             <code>{ENDPOINTS.youtubeApi}</code>（YouTube Data API v3，只读）
+          </li>
+          <li>
+            <code>{ENDPOINTS.googleOAuthToken}</code>（连接时换令牌、之后用刷新令牌自动续期；Client Secret 与刷新令牌只发往这里）
           </li>
           <li>
             <code>{ENDPOINTS.googleOAuthRevoke}</code>（断开时吊销授权）

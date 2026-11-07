@@ -3,6 +3,8 @@
 
 export const ENDPOINTS = {
   youtubeApi: 'https://www.googleapis.com/youtube/v3',
+  /** Google 令牌端点：用授权码换令牌、用刷新令牌续期（Client Secret 与刷新令牌只发往这里，放在请求体里） */
+  googleOAuthToken: 'https://oauth2.googleapis.com/token',
   googleOAuthRevoke: 'https://oauth2.googleapis.com/revoke',
   anthropic: 'https://api.anthropic.com',
   /** X 官方 API v2（Phase 3：热点） */

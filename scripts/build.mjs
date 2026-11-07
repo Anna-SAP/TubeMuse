@@ -186,6 +186,8 @@ const forbidden = [
   { re: /\bsk-(?:proj-)?[A-Za-z0-9]{32,}/, what: 'OpenAI API Key' },
   { re: /AIza[0-9A-Za-z_-]{35}/, what: 'Google API Key' },
   { re: /ya29\.[0-9A-Za-z_-]{20,}/, what: 'Google 访问令牌' },
+  { re: /GOCSPX-[0-9A-Za-z_-]{20,}/, what: 'Google OAuth Client Secret' },
+  { re: /\b1\/\/0[0-9A-Za-z_-]{30,}/, what: 'Google 刷新令牌' },
   { re: /AAAAAAAAAAAAAAAAAAAA[A-Za-z0-9%]{30,}/, what: 'X Bearer Token' },
 ];
 if (!e2e) {
