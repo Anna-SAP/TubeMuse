@@ -102,6 +102,16 @@ function xPostTitle(title: string): string {
 }
 
 /**
+ * 首页信息流里的帖子没有自己的页面标题：用帖子上的作者名和正文拼成和帖子页一样的"作者 - 正文"
+ * （去掉 t.co 短链，换行压成空格）；只有视频没有文字时只留作者，两样都没有返回空。
+ */
+export function xFeedTitle(author: string, text: string): string {
+  const clean = (s: string) => s.replace(TCO_LINK, '').replace(/\s+/g, ' ').trim();
+  const [a, t] = [clean(author), clean(text)];
+  return a && t ? `${a} - ${t}` : a || t;
+}
+
+/**
  * 酷播播放页的标题："片名-免费在线观看-酷播"，剧集是"剧名-集数-免费在线观看-酷播"（2026-11-10 实测）→"片名"或"剧名-集数"。
  * 首页等别的页面（"酷播-海量高清视频免费在线观看"）返回空；认不出的写法原样用。
  */
@@ -255,6 +265,22 @@ export function parseXStatusUrl(url: string): { id: string; url: string } | unde
   return m ? { id: m[2]!, url: `${prefix}${m[1] ?? 'i'}/status/${m[2]}` } : undefined;
 }
 
+/**
+ * 这个网址是不是 X 的首页信息流（x.com/home：为你推荐 / 正在关注 / 置顶的列表都在这个网址下）。
+ * 2026-11-10 起这里也能录（用户要求，见 DECISIONS §55）；个人主页、搜索、书签等别的信息流不算。
+ */
+export function isXHomeUrl(url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  const full = u.origin + u.pathname;
+  const prefix = X_PAGES.find((p) => full.startsWith(p));
+  return !!prefix && /^home\/?$/.test(full.slice(prefix.length));
+}
+
 /** 一个视频现在的样子：录制脚本从页面量出来，判断逻辑是纯函数 */
 export interface XVideoView {
   /** 正在屏幕里的面积（平方像素），滚到屏幕外是 0 */
@@ -291,6 +317,34 @@ export function pickXVideo(videos: readonly XVideoView[]): number {
     if (best < 0 || better(v, videos[best]!)) best = i;
   });
   return best;
+}
+
+/** 首页信息流里一个视频现在的样子 */
+export interface XFeedVideoView {
+  /** 正在播放 */
+  playing: boolean;
+  /** 没有声音：静音，或音量拉到了 0 */
+  muted: boolean;
+  /** 正在屏幕里的面积（平方像素）。录制脚本只给"在播且有声音"的和上次锁定的那个量，别的给 0 */
+  visibleArea: number;
+}
+
+/**
+ * 首页信息流里录哪个视频（2026-11-10 实测）：信息流里的视频滚到眼前时静音自动播放（muted=true），
+ * 还没播过的那些反而是 muted=false、暂停着，所以"没静音"单独说明不了什么；你打开声音的那个才是"在播且有声音"。
+ * 只认正在播放且有声音的（不止一个时取屏幕里更大的，再一样取靠前的）。
+ * 一个都没有时，上次锁定的那个（held 是它的下标，没有给 -1）只要还有声音、还在屏幕里就继续算数：
+ * 你把它暂停下来截图、或它播完了要按时间段重截时不丢目标；滚出屏幕（X 会暂停它）或被静音就放开。
+ * 返回下标，没有可录的返回 -1。
+ */
+export function pickXFeedVideo(videos: readonly XFeedVideoView[], held = -1): number {
+  let best = -1;
+  videos.forEach((v, i) => {
+    if (v.playing && !v.muted && (best < 0 || v.visibleArea > videos[best]!.visibleArea)) best = i;
+  });
+  if (best >= 0) return best;
+  const h = videos[held];
+  return h && !h.muted && h.visibleArea > 0 ? held : -1;
 }
 
 // ── 酷播的播放页 ──
@@ -343,6 +397,8 @@ export interface ClipStartRequest {
 export interface ClipStartContext {
   /** 不给时是 YouTube */
   site?: ClipSite;
+  /** X 的首页信息流（不是帖子页）：视频和帖子都是从信息流里认出来的，不能录时的说法不同 */
+  feed?: boolean;
   enabled: boolean;
   videoId: string | null;
   shorts: boolean;
@@ -370,14 +426,21 @@ export function checkRange(start: number | null | undefined, end: number | null 
 const CLIP_UNAVAILABLE_TEXT: Record<ClipSite, { noPage: string; noVideo: string }> = {
   youtube: { noPage: '这个页面不是视频播放页', noVideo: '没找到播放器里的视频，等视频开始播放后再试' },
   xhs: { noPage: '这个页面不是笔记详情：打开一篇视频笔记再录', noVideo: '这篇笔记里没有视频（图文笔记录不了）；视频笔记等画面出来后再试' },
-  x: { noPage: '这个页面不是帖子详情：点开一条带视频的帖子再录', noVideo: '这条帖子里没有视频；有视频的话等画面出来后再试' },
+  x: { noPage: '这个页面不是帖子详情，也不是首页信息流：点开一条带视频的帖子再录', noVideo: '这条帖子里没有视频；有视频的话等画面出来后再试' },
   kubb: { noPage: '这个页面不是播放页：点开一部影片再录', noVideo: '没找到播放器里的视频，等画面出来后再试' },
 };
 
+/** X 首页信息流上不能录的原因：没有锁定的视频；锁定了视频但认不出它属于哪条帖子（广告没有帖子链接） */
+const X_FEED_TEXT = {
+  noVideo: '信息流里没有正在播放、开着声音的视频：把想录的那个视频的声音打开再录（静音自动播放的不算）',
+  noPost: '认不出这个视频属于哪条帖子（广告没有帖子链接）：点开帖子再录',
+};
+
 /** 这个页面现在为什么录不了（侧边栏显示、开录前检查共用）；能录返回 undefined */
-export function clipUnavailable(site: ClipSite, c: Pick<ClipStartContext, 'enabled' | 'videoId' | 'shorts' | 'hasVideo'>): string | undefined {
+export function clipUnavailable(site: ClipSite, c: Pick<ClipStartContext, 'enabled' | 'videoId' | 'shorts' | 'hasVideo' | 'feed'>): string | undefined {
   if (!c.enabled) return '片段录制已在设置中关闭';
   if (c.shorts) return 'Shorts 暂不支持录制';
+  if (site === 'x' && c.feed) return !c.hasVideo ? X_FEED_TEXT.noVideo : !c.videoId ? X_FEED_TEXT.noPost : undefined;
   if (!c.videoId) return CLIP_UNAVAILABLE_TEXT[site].noPage;
   if (!c.hasVideo) return CLIP_UNAVAILABLE_TEXT[site].noVideo;
   return undefined;
@@ -404,7 +467,7 @@ export function checkClipStart(req: ClipStartRequest, c: ClipStartContext): stri
 
 // ── Capture 截图 ──
 
-export interface ClipCaptureContext extends Pick<ClipStartContext, 'site' | 'enabled' | 'videoId' | 'shorts' | 'hasVideo'> {
+export interface ClipCaptureContext extends Pick<ClipStartContext, 'site' | 'feed' | 'enabled' | 'videoId' | 'shorts' | 'hasVideo'> {
   ad: boolean;
   /** 受版权保护：画上去是黑的，不绕过 */
   drm: boolean;
@@ -644,7 +707,7 @@ export interface ClipTabState {
   site: ClipSite;
   /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID，或酷播的影片 ID（剧集带分集 ID） */
   videoId: string | null;
-  /** 视频标题（来自页面标题，只用来显示和起文件名） */
+  /** 视频标题（来自页面标题；X 首页信息流上来自这条帖子的作者名和正文），只用来显示和起文件名 */
   title?: string;
   /** 不能录的原因（不是视频页、Shorts、设置里关了、图文笔记、帖子里没有视频） */
   unavailable?: string;

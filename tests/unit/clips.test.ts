@@ -22,6 +22,7 @@ import {
   frameTimestamp,
   isKubbAd,
   isKubbPage,
+  isXHomeUrl,
   isXPage,
   layoutBurnIn,
   mp4TrackKinds,
@@ -30,6 +31,7 @@ import {
   parseTimecode,
   parseXStatusUrl,
   pickClipFormat,
+  pickXFeedVideo,
   pickXVideo,
   safeFileTitle,
   sanitizeClipRecord,
@@ -37,12 +39,14 @@ import {
   videoBitrate,
   visibleArea,
   wrapText,
+  xFeedTitle,
   type ClipCaptureContext,
   type ClipControl,
   type ClipRecord,
   type ClipSample,
   type ClipStartContext,
   type MeasureText,
+  type XFeedVideoView,
   type XVideoView,
 } from '../../src/core/clips';
 import { mergeSettings, stores } from '../../src/services/repo';
@@ -636,6 +640,94 @@ describe('X 帖子页', () => {
       expect(pickXVideo([v({ visibleArea: 100 }), v({ visibleArea: 200 })])).toBe(1);
       expect(pickXVideo([v({ visibleArea: 100 }), v({ visibleArea: 100 })])).toBe(0);
       expect(pickXVideo([])).toBe(-1);
+    });
+  });
+
+  describe('首页信息流（2026-11-10 起能录）', () => {
+    it('网址：只认 x.com/home；个人主页、搜索、书签、帖子页、伪造域名都不算', () => {
+      for (const url of ['https://x.com/home', 'https://x.com/home/', 'https://x.com/home?lang=zh', 'https://x.com/home#top']) expect(isXHomeUrl(url)).toBe(true);
+      for (const url of [
+        'https://x.com/',
+        'https://x.com/ayoships',
+        'https://x.com/homework',
+        'https://x.com/home/foo',
+        'https://x.com/search?q=home',
+        'https://x.com/i/bookmarks',
+        `https://x.com/home/status/${POST}`,
+        `https://x.com/ayoships/status/${POST}`,
+        'https://x.com.evil.example/home',
+        'https://x.com@evil.example/home',
+        'https://api.x.com/home',
+        'http://x.com/home',
+        'not a url',
+      ]) {
+        expect(isXHomeUrl(url)).toBe(false);
+      }
+    });
+
+    const v = (over: Partial<XFeedVideoView>): XFeedVideoView => ({ playing: false, muted: false, visibleArea: 0, ...over });
+    it('实测的信息流：静音自动播放的不算，没播过的（没静音、暂停着）也不算，一个都没有', () => {
+      expect(pickXFeedVideo([v({ playing: true, muted: true, visibleArea: 151_548 }), v({}), v({}), v({})])).toBe(-1);
+      expect(pickXFeedVideo([])).toBe(-1);
+    });
+    it('只认正在播放且开着声音的那个，不管它排第几、旁边有没有更大的静音视频', () => {
+      expect(pickXFeedVideo([v({ playing: true, muted: true, visibleArea: 300_000 }), v({ playing: true, visibleArea: 112_623 }), v({})])).toBe(1);
+      // 刚滚出屏幕、X 还没来得及暂停：你还听得见它，仍然是它
+      expect(pickXFeedVideo([v({ playing: true, visibleArea: 0 })])).toBe(0);
+    });
+    it('不止一个在播且有声音时取屏幕里更大的，一样大取靠前的', () => {
+      expect(pickXFeedVideo([v({ playing: true, visibleArea: 100 }), v({ playing: true, visibleArea: 200 })])).toBe(1);
+      expect(pickXFeedVideo([v({ playing: true, visibleArea: 100 }), v({ playing: true, visibleArea: 100 })])).toBe(0);
+    });
+    it('锁定过的视频暂停或播完后仍然算数（暂停下来截图、按时间段重截），只要还有声音、还在屏幕里', () => {
+      expect(pickXFeedVideo([v({}), v({ visibleArea: 112_623 })], 1)).toBe(1);
+      // 没锁定过的同样的视频不算
+      expect(pickXFeedVideo([v({}), v({ visibleArea: 112_623 })])).toBe(-1);
+      expect(pickXFeedVideo([v({}), v({ visibleArea: 112_623 })], 0)).toBe(-1);
+    });
+    it('锁定的视频滚出屏幕、被静音、或已经不在页面上时放开；别的视频带声音播起来时换成它', () => {
+      expect(pickXFeedVideo([v({ visibleArea: 0 })], 0)).toBe(-1);
+      expect(pickXFeedVideo([v({ muted: true, visibleArea: 112_623 })], 0)).toBe(-1);
+      expect(pickXFeedVideo([v({ playing: true, muted: true, visibleArea: 112_623 })], 0)).toBe(-1);
+      expect(pickXFeedVideo([v({ visibleArea: 112_623 })], 3)).toBe(-1);
+      expect(pickXFeedVideo([v({ visibleArea: 112_623 }), v({ playing: true, visibleArea: 50_000 })], 0)).toBe(1);
+    });
+
+    it('标题：帖子上的作者名和正文拼成和帖子页一样的"作者 - 正文"，换行压成空格，去掉 t.co 短链', () => {
+      expect(xFeedTitle('Matt Shumer', 'Fable 5.2 is the best model ever created.\n\nThe things I created with it are mind-blowing.')).toBe(
+        'Matt Shumer - Fable 5.2 is the best model ever created. The things I created with it are mind-blowing.',
+      );
+      expect(xFeedTitle(' Ayo O ', 'I reverse engineered tiktok https://t.co/TEV1YKfAZQ')).toBe('Ayo O - I reverse engineered tiktok');
+      // 和帖子页的页面标题得到同一个标题，文件名也就一样
+      expect(xFeedTitle('Ayo O', 'I reverse engineered tiktok')).toBe(titleFromDocumentTitle('X 上的 Ayo O：“I reverse engineered tiktok https://t.co/TEV1YKfAZQ” / X', 'x'));
+    });
+    it('标题：只有视频没有文字时只留作者；作者读不到时只留正文；都没有是空的（文件名退回 x-帖子ID）', () => {
+      expect(xFeedTitle('Ayo O', '')).toBe('Ayo O');
+      expect(xFeedTitle('Ayo O', ' https://t.co/TEV1YKfAZQ ')).toBe('Ayo O');
+      expect(xFeedTitle('', '只有正文')).toBe('只有正文');
+      expect(xFeedTitle('', '')).toBe('');
+      expect(clipFileName(xFeedTitle('', '') || undefined, POST, 5, 15, 'mp4', 'x')).toBe(`x-${POST}_00m05s-00m15s.mp4`);
+    });
+
+    it('不能录的原因：没有在播且有声音的视频 / 认不出帖子（广告）；能录时不拦', () => {
+      const feed = { feed: true, enabled: true, shorts: false };
+      expect(clipUnavailable('x', { ...feed, videoId: null, hasVideo: false })).toContain('没有正在播放、开着声音的视频');
+      expect(clipUnavailable('x', { ...feed, videoId: null, hasVideo: true })).toContain('认不出这个视频属于哪条帖子');
+      expect(clipUnavailable('x', { ...feed, videoId: POST, hasVideo: true })).toBeUndefined();
+      expect(clipUnavailable('x', { ...feed, enabled: false, videoId: POST, hasVideo: true })).toContain('已在设置中关闭');
+      // 别的站不受这一项影响
+      expect(clipUnavailable('youtube', { ...feed, videoId: null, hasVideo: false })).toContain('不是视频播放页');
+    });
+    it('开录和 Capture 用同一套说法', () => {
+      const start: ClipStartContext = { site: 'x', feed: true, enabled: true, videoId: null, shorts: false, hasVideo: false, busy: false, duration: 59, currentTime: 5, ended: false, maxSec: 600 };
+      expect(checkClipStart({ mode: 'free' }, start)).toContain('没有正在播放、开着声音的视频');
+      expect(checkClipStart({ mode: 'free' }, { ...start, videoId: POST, hasVideo: true })).toBeUndefined();
+      const shot: ClipCaptureContext = { site: 'x', feed: true, enabled: true, videoId: null, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+      expect(checkCapture(shot)).toContain('认不出这个视频属于哪条帖子');
+      expect(checkCapture({ ...shot, videoId: POST })).toBeUndefined();
+    });
+    it('别的 X 页面（个人主页、搜索）：说明只有帖子页和首页信息流能录', () => {
+      expect(clipUnavailable('x', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('也不是首页信息流');
     });
   });
 
