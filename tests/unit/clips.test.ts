@@ -20,18 +20,23 @@ import {
   formatBytes,
   formatTimecode,
   frameTimestamp,
+  igProfileName,
+  isIgHomeUrl,
+  isIgPage,
   isKubbAd,
   isKubbPage,
   isXHomeUrl,
   isXPage,
   layoutBurnIn,
+  loopedToStart,
   mp4TrackKinds,
   outputSize,
+  parseIgPostUrl,
   parseKubbPlayUrl,
   parseTimecode,
   parseXStatusUrl,
   pickClipFormat,
-  pickXFeedVideo,
+  pickFeedVideo,
   pickXVideo,
   safeFileTitle,
   sanitizeClipRecord,
@@ -39,14 +44,14 @@ import {
   videoBitrate,
   visibleArea,
   wrapText,
-  xFeedTitle,
+  feedPostTitle,
   type ClipCaptureContext,
   type ClipControl,
   type ClipRecord,
   type ClipSample,
   type ClipStartContext,
   type MeasureText,
-  type XFeedVideoView,
+  type FeedVideoView,
   type XVideoView,
 } from '../../src/core/clips';
 import { mergeSettings, stores } from '../../src/services/repo';
@@ -665,48 +670,48 @@ describe('X 帖子页', () => {
       }
     });
 
-    const v = (over: Partial<XFeedVideoView>): XFeedVideoView => ({ playing: false, muted: false, visibleArea: 0, ...over });
+    const v = (over: Partial<FeedVideoView>): FeedVideoView => ({ playing: false, muted: false, visibleArea: 0, ...over });
     it('实测的信息流：静音自动播放的不算，没播过的（没静音、暂停着）也不算，一个都没有', () => {
-      expect(pickXFeedVideo([v({ playing: true, muted: true, visibleArea: 151_548 }), v({}), v({}), v({})])).toBe(-1);
-      expect(pickXFeedVideo([])).toBe(-1);
+      expect(pickFeedVideo([v({ playing: true, muted: true, visibleArea: 151_548 }), v({}), v({}), v({})])).toBe(-1);
+      expect(pickFeedVideo([])).toBe(-1);
     });
     it('只认正在播放且开着声音的那个，不管它排第几、旁边有没有更大的静音视频', () => {
-      expect(pickXFeedVideo([v({ playing: true, muted: true, visibleArea: 300_000 }), v({ playing: true, visibleArea: 112_623 }), v({})])).toBe(1);
+      expect(pickFeedVideo([v({ playing: true, muted: true, visibleArea: 300_000 }), v({ playing: true, visibleArea: 112_623 }), v({})])).toBe(1);
       // 刚滚出屏幕、X 还没来得及暂停：你还听得见它，仍然是它
-      expect(pickXFeedVideo([v({ playing: true, visibleArea: 0 })])).toBe(0);
+      expect(pickFeedVideo([v({ playing: true, visibleArea: 0 })])).toBe(0);
     });
     it('不止一个在播且有声音时取屏幕里更大的，一样大取靠前的', () => {
-      expect(pickXFeedVideo([v({ playing: true, visibleArea: 100 }), v({ playing: true, visibleArea: 200 })])).toBe(1);
-      expect(pickXFeedVideo([v({ playing: true, visibleArea: 100 }), v({ playing: true, visibleArea: 100 })])).toBe(0);
+      expect(pickFeedVideo([v({ playing: true, visibleArea: 100 }), v({ playing: true, visibleArea: 200 })])).toBe(1);
+      expect(pickFeedVideo([v({ playing: true, visibleArea: 100 }), v({ playing: true, visibleArea: 100 })])).toBe(0);
     });
     it('锁定过的视频暂停或播完后仍然算数（暂停下来截图、按时间段重截），只要还有声音、还在屏幕里', () => {
-      expect(pickXFeedVideo([v({}), v({ visibleArea: 112_623 })], 1)).toBe(1);
+      expect(pickFeedVideo([v({}), v({ visibleArea: 112_623 })], 1)).toBe(1);
       // 没锁定过的同样的视频不算
-      expect(pickXFeedVideo([v({}), v({ visibleArea: 112_623 })])).toBe(-1);
-      expect(pickXFeedVideo([v({}), v({ visibleArea: 112_623 })], 0)).toBe(-1);
+      expect(pickFeedVideo([v({}), v({ visibleArea: 112_623 })])).toBe(-1);
+      expect(pickFeedVideo([v({}), v({ visibleArea: 112_623 })], 0)).toBe(-1);
     });
     it('锁定的视频滚出屏幕、被静音、或已经不在页面上时放开；别的视频带声音播起来时换成它', () => {
-      expect(pickXFeedVideo([v({ visibleArea: 0 })], 0)).toBe(-1);
-      expect(pickXFeedVideo([v({ muted: true, visibleArea: 112_623 })], 0)).toBe(-1);
-      expect(pickXFeedVideo([v({ playing: true, muted: true, visibleArea: 112_623 })], 0)).toBe(-1);
-      expect(pickXFeedVideo([v({ visibleArea: 112_623 })], 3)).toBe(-1);
-      expect(pickXFeedVideo([v({ visibleArea: 112_623 }), v({ playing: true, visibleArea: 50_000 })], 0)).toBe(1);
+      expect(pickFeedVideo([v({ visibleArea: 0 })], 0)).toBe(-1);
+      expect(pickFeedVideo([v({ muted: true, visibleArea: 112_623 })], 0)).toBe(-1);
+      expect(pickFeedVideo([v({ playing: true, muted: true, visibleArea: 112_623 })], 0)).toBe(-1);
+      expect(pickFeedVideo([v({ visibleArea: 112_623 })], 3)).toBe(-1);
+      expect(pickFeedVideo([v({ visibleArea: 112_623 }), v({ playing: true, visibleArea: 50_000 })], 0)).toBe(1);
     });
 
     it('标题：帖子上的作者名和正文拼成和帖子页一样的"作者 - 正文"，换行压成空格，去掉 t.co 短链', () => {
-      expect(xFeedTitle('Matt Shumer', 'Fable 5.2 is the best model ever created.\n\nThe things I created with it are mind-blowing.')).toBe(
+      expect(feedPostTitle('Matt Shumer', 'Fable 5.2 is the best model ever created.\n\nThe things I created with it are mind-blowing.')).toBe(
         'Matt Shumer - Fable 5.2 is the best model ever created. The things I created with it are mind-blowing.',
       );
-      expect(xFeedTitle(' Ayo O ', 'I reverse engineered tiktok https://t.co/TEV1YKfAZQ')).toBe('Ayo O - I reverse engineered tiktok');
+      expect(feedPostTitle(' Ayo O ', 'I reverse engineered tiktok https://t.co/TEV1YKfAZQ')).toBe('Ayo O - I reverse engineered tiktok');
       // 和帖子页的页面标题得到同一个标题，文件名也就一样
-      expect(xFeedTitle('Ayo O', 'I reverse engineered tiktok')).toBe(titleFromDocumentTitle('X 上的 Ayo O：“I reverse engineered tiktok https://t.co/TEV1YKfAZQ” / X', 'x'));
+      expect(feedPostTitle('Ayo O', 'I reverse engineered tiktok')).toBe(titleFromDocumentTitle('X 上的 Ayo O：“I reverse engineered tiktok https://t.co/TEV1YKfAZQ” / X', 'x'));
     });
     it('标题：只有视频没有文字时只留作者；作者读不到时只留正文；都没有是空的（文件名退回 x-帖子ID）', () => {
-      expect(xFeedTitle('Ayo O', '')).toBe('Ayo O');
-      expect(xFeedTitle('Ayo O', ' https://t.co/TEV1YKfAZQ ')).toBe('Ayo O');
-      expect(xFeedTitle('', '只有正文')).toBe('只有正文');
-      expect(xFeedTitle('', '')).toBe('');
-      expect(clipFileName(xFeedTitle('', '') || undefined, POST, 5, 15, 'mp4', 'x')).toBe(`x-${POST}_00m05s-00m15s.mp4`);
+      expect(feedPostTitle('Ayo O', '')).toBe('Ayo O');
+      expect(feedPostTitle('Ayo O', ' https://t.co/TEV1YKfAZQ ')).toBe('Ayo O');
+      expect(feedPostTitle('', '只有正文')).toBe('只有正文');
+      expect(feedPostTitle('', '')).toBe('');
+      expect(clipFileName(feedPostTitle('', '') || undefined, POST, 5, 15, 'mp4', 'x')).toBe(`x-${POST}_00m05s-00m15s.mp4`);
     });
 
     it('不能录的原因：没有在播且有声音的视频 / 认不出帖子（广告）；能录时不拦', () => {
@@ -753,6 +758,168 @@ describe('X 帖子页', () => {
     const saved = await recordSavedClip(ctx, { ...record, url: `https://x.com/ayoships/status/${POST}` }, 'x');
     expect(saved).toMatchObject({ site: 'x', videoId: POST, url: `https://x.com/ayoships/status/${POST}` });
     expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_x']);
+  });
+});
+
+describe('Instagram 首页信息流', () => {
+  const CODE = 'DfZNnxxxjB1';
+  const record = {
+    id: 'clip_ig',
+    videoId: CODE,
+    title: 'womanqueen42 - 《#BiongBion地球娛樂室》 #兔瓏 來台灣啦🐰🍡',
+    mode: 'free',
+    start: 2,
+    end: 12,
+    durationSec: 10,
+    bytes: 1_800_000,
+    format: 'MP4（H.264 + AAC）',
+    fileName: 'womanqueen42 - 《#BiongBion地球娛樂室》 #兔瓏 來台灣啦🐰🍡_00m02s-00m12s.mp4',
+    burned: false,
+    savedAt: 1_700_000_000_000,
+  };
+
+  it('判断站点：只认 www.instagram.com 本身', () => {
+    expect(isIgPage('https://www.instagram.com/')).toBe(true);
+    expect(isIgPage('https://www.instagram.com/p/DfZNnxxxjB1/')).toBe(true);
+    expect(isIgPage('https://www.instagram.com.evil.example/')).toBe(false);
+    expect(isIgPage('https://instagram.com/')).toBe(false);
+    expect(isIgPage('https://x.com/home')).toBe(false);
+  });
+  it('网址：只有首页算信息流（带 ?variant= 也算）；帖子页、Reels、探索、个人主页、伪造域名都不算', () => {
+    for (const url of ['https://www.instagram.com/', 'https://www.instagram.com', 'https://www.instagram.com/?variant=following', 'https://www.instagram.com/#top']) expect(isIgHomeUrl(url)).toBe(true);
+    for (const url of [
+      `https://www.instagram.com/p/${CODE}/`,
+      `https://www.instagram.com/reels/${CODE}/`,
+      'https://www.instagram.com/reels/',
+      'https://www.instagram.com/explore/',
+      'https://www.instagram.com/womanqueen42/',
+      'https://www.instagram.com/direct/inbox/',
+      'https://www.instagram.com.evil.example/',
+      'https://www.instagram.com@evil.example/',
+      'http://www.instagram.com/',
+      'https://x.com/home',
+      'not a url',
+    ]) {
+      expect(isIgHomeUrl(url)).toBe(false);
+    }
+  });
+  it('帖子链接：/p/、/reel/、/reels/、带用户名的写法都认，规范链接一律 /p/短码/，去掉查询参数', () => {
+    const canonical = { id: CODE, url: `https://www.instagram.com/p/${CODE}/` };
+    expect(parseIgPostUrl(`https://www.instagram.com/p/${CODE}/`)).toEqual(canonical);
+    expect(parseIgPostUrl(`https://www.instagram.com/p/${CODE}`)).toEqual(canonical);
+    expect(parseIgPostUrl(`https://www.instagram.com/reel/${CODE}/?igsh=sharerToken`)).toEqual(canonical);
+    expect(parseIgPostUrl(`https://www.instagram.com/reels/${CODE}/`)).toEqual(canonical);
+    expect(parseIgPostUrl(`https://www.instagram.com/womanqueen42/p/${CODE}/`)).toEqual(canonical);
+    expect(parseIgPostUrl('https://www.instagram.com/p/Dfch523M0ca/?img_index=2')?.id).toBe('Dfch523M0ca');
+  });
+  it('帖子链接：首页、个人主页、音频页、广告跳转、伪造域名都不是', () => {
+    for (const url of [
+      'https://www.instagram.com/',
+      'https://www.instagram.com/womanqueen42/',
+      'https://www.instagram.com/reels/audio/970549657221125/',
+      'https://www.instagram.com/reels/',
+      'https://www.instagram.com/p/',
+      'https://www.instagram.com/p/a%20b/',
+      `https://www.instagram.com/p/${CODE}/comments/`,
+      'https://www.facebook.com/ads/ig_redirect/',
+      `https://www.instagram.com.evil.example/p/${CODE}/`,
+      `http://www.instagram.com/p/${CODE}/`,
+      `https://x.com/p/${CODE}/`,
+      'not a url',
+    ]) {
+      expect(parseIgPostUrl(url)).toBeUndefined();
+    }
+  });
+  it('作者：个人主页链接里的用户名；帖子、Reels、探索、话题、限时动态这些不是个人主页', () => {
+    expect(igProfileName('https://www.instagram.com/womanqueen42/')).toBe('womanqueen42');
+    expect(igProfileName('https://www.instagram.com/aiapply.co/')).toBe('aiapply.co');
+    expect(igProfileName('https://www.instagram.com/andys.bastelzauber')).toBe('andys.bastelzauber');
+    for (const url of [
+      'https://www.instagram.com/',
+      `https://www.instagram.com/p/${CODE}/`,
+      'https://www.instagram.com/reels/',
+      'https://www.instagram.com/explore/',
+      'https://www.instagram.com/explore/tags/%E5%85%94%E7%93%8F/',
+      'https://www.instagram.com/stories/ferragamo/3761234567890/',
+      'https://www.instagram.com/direct/',
+      'https://www.facebook.com/womanqueen42/',
+      'not a url',
+    ]) {
+      expect(igProfileName(url)).toBeUndefined();
+    }
+  });
+
+  it('标题：用户名 - 露出来的那段正文（话题、表情保留，换行压成空格）；没有正文只留用户名', () => {
+    expect(feedPostTitle('womanqueen42', '《#BiongBion地球娛樂室》 #兔瓏 來台灣啦🐰🍡\n\n')).toBe(record.title);
+    expect(feedPostTitle('ferragamo', '')).toBe('ferragamo');
+    expect(titleFromDocumentTitle('Instagram', 'ig')).toBe('');
+    expect(titleFromDocumentTitle('(3) Instagram', 'ig')).toBe('');
+  });
+  it('文件名：用户名 - 正文_起点-终点；没有标题时用 ig-短码', () => {
+    expect(clipFileName(record.title, CODE, 2.2, 12.7, 'mp4', 'ig')).toBe(record.fileName);
+    expect(clipFileName(undefined, CODE, 2, 12, 'webm', 'ig')).toBe(`ig-${CODE}_00m02s-00m12s.webm`);
+    expect(captureFileName(undefined, CODE, 1, 2, 'ig')).toBe(`ig-${CODE}_00-00-01-000_original_00002.png`);
+  });
+
+  it('实测的信息流：静音自动播放（音量 0）的和没播过的都不算；打开声音的那个才算', () => {
+    const v = (over: Partial<FeedVideoView>): FeedVideoView => ({ playing: false, muted: true, visibleArea: 0, ...over });
+    expect(pickFeedVideo([v({ playing: true, visibleArea: 273_780 }), v({}), v({})])).toBe(-1);
+    expect(pickFeedVideo([v({}), v({ playing: true, muted: false, visibleArea: 273_780 }), v({})])).toBe(1);
+    // 暂停下来仍然算数；滚出屏幕（Instagram 会暂停它）就放开
+    expect(pickFeedVideo([v({}), v({ muted: false, visibleArea: 273_780 })], 1)).toBe(1);
+    expect(pickFeedVideo([v({}), v({ muted: false, visibleArea: 0 })], 1)).toBe(-1);
+  });
+  it('放到结尾自己跳回开头（实测 16.14 秒的视频）：算放完了一遍', () => {
+    expect(loopedToStart(16.05, 0, 16.14)).toBe(true);
+    expect(loopedToStart(15.9, 0.08, 16.14)).toBe(true);
+    // 正常往前播、还没到结尾、时长未知、跳到的不是开头，都不算
+    expect(loopedToStart(15.9, 16.0, 16.14)).toBe(false);
+    expect(loopedToStart(8, 0, 16.14)).toBe(false);
+    expect(loopedToStart(16.05, 0, NaN)).toBe(false);
+    expect(loopedToStart(16.05, 5, 16.14)).toBe(false);
+  });
+  it('放完一遍：自由录制在这里结束，时间段录到东西后也在这里结束', () => {
+    const control: ClipControl = { mode: 'free', videoId: CODE, recordedSec: 6, bytes: 1000, maxSec: 600, maxBytes: 1e9, userPaused: false };
+    const sample: ClipSample = { videoId: CODE, currentTime: 0, paused: false, ended: true, seeking: true, ready: true, ad: false, visible: true };
+    expect(decideClip(control, sample)).toEqual({ kind: 'stop', reason: 'ended' });
+    expect(decideClip({ ...control, mode: 'range', start: 10, end: 16 }, sample)).toEqual({ kind: 'stop', reason: 'range-end' });
+  });
+
+  it('不能录的原因：不是首页 / 没有在播且有声音的视频 / 认不出帖子（广告）', () => {
+    expect(clipUnavailable('ig', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是 Instagram 的首页信息流');
+    const feed = { feed: true, enabled: true, shorts: false };
+    expect(clipUnavailable('ig', { ...feed, videoId: null, hasVideo: false })).toContain('没有正在播放、开着声音的视频');
+    expect(clipUnavailable('ig', { ...feed, videoId: null, hasVideo: true })).toContain('这个视频录不了');
+    expect(clipUnavailable('ig', { ...feed, videoId: null, hasVideo: true })).not.toContain('点开帖子');
+    expect(clipUnavailable('ig', { ...feed, videoId: CODE, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('ig', { ...feed, enabled: false, videoId: CODE, hasVideo: true })).toContain('已在设置中关闭');
+    const shot: ClipCaptureContext = { site: 'ig', feed: true, enabled: true, videoId: CODE, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    expect(checkCapture(shot)).toBeUndefined();
+    expect(checkCapture({ ...shot, hasVideo: false, videoId: null })).toContain('没有正在播放、开着声音的视频');
+  });
+
+  it('录制记录：短码与链接对得上才收，链接规范化；站点由后台定，不信记录自己写的', () => {
+    const raw = { ...record, url: `https://www.instagram.com/reel/${CODE}/?igsh=sharerToken`, site: 'youtube' };
+    expect(sanitizeClipRecord(raw, 'ig')).toEqual({ ...record, site: 'ig', url: `https://www.instagram.com/p/${CODE}/` });
+    expect(sanitizeClipRecord({ ...raw, url: 'https://www.instagram.com/p/Dfch523M0ca/' }, 'ig')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: `https://evil.example/p/${CODE}/` }, 'ig')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: 'https://www.instagram.com/' }, 'ig')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: undefined }, 'ig')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: '../../etc' }, 'ig')).toBeNull();
+    // 同样的记录从 X 页面、YouTube 页面送来：不收，或不带站点和链接
+    expect(sanitizeClipRecord(raw, 'x')).toBeNull();
+    expect(sanitizeClipRecord(raw)?.site).toBeUndefined();
+    expect(sanitizeClipRecord(raw)?.url).toBeUndefined();
+  });
+  it('回到这条帖子：有链接用链接，没有时拼 /p/短码/', () => {
+    expect(clipWatchUrl({ site: 'ig', videoId: CODE, url: `https://www.instagram.com/p/${CODE}/`, start: 5 })).toBe(`https://www.instagram.com/p/${CODE}/`);
+    expect(clipWatchUrl({ site: 'ig', videoId: CODE, start: 5 })).toBe(`https://www.instagram.com/p/${CODE}/`);
+  });
+  it('后台：Instagram 的片段存进本地，带上站点和帖子链接', async () => {
+    const ctx = { kv: memoryKV(), locker: memoryLocker() } as unknown as AppContext;
+    const saved = await recordSavedClip(ctx, { ...record, url: `https://www.instagram.com/p/${CODE}/` }, 'ig');
+    expect(saved).toMatchObject({ site: 'ig', videoId: CODE, url: `https://www.instagram.com/p/${CODE}/` });
+    expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_ig']);
   });
 });
 

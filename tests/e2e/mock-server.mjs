@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { igMediaSeconds, igPage } from './ig-pages.mjs';
 import { kubbMediaSeconds, kubbPage } from './kubb-pages.mjs';
 import { xMediaSeconds, xPage } from './x-pages.mjs';
 import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
@@ -549,7 +550,7 @@ export function startMockServer() {
       }
       const p = url.pathname;
       // 仿小红书、X 网页版、酷播的视频：一段有声音的 WAV（同源，与真实页面的 blob: 流一样读得到）
-      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p) ?? kubbMediaSeconds(p);
+      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p) ?? kubbMediaSeconds(p) ?? igMediaSeconds(p);
       if (mediaSeconds !== undefined) {
         const wav = speechWav(mediaSeconds);
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
@@ -565,6 +566,13 @@ export function startMockServer() {
       // 仿 X 网页版（/x/ 是 X 官方 API 的 mock）
       if (p.startsWith('/xpage/')) {
         const html = xPage(p);
+        if (!html) return send(404, {});
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+      // 仿 Instagram 网页版（首页信息流就是 /igpage/ 本身）
+      if (p.startsWith('/igpage/')) {
+        const html = igPage(p);
         if (!html) return send(404, {});
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);

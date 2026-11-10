@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockServer, PORT, E2E_CLIENT_SECRET } from './mock-server.mjs';
+import { IG_FEED_POST, IG_PLAIN_POST } from './ig-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from './kubb-pages.mjs';
 import { X_FEED_POST, X_GIF_POST, X_POST, X_TEXT_POST } from './x-pages.mjs';
 import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID, XHS_V1 } from './xhs-pages.mjs';
@@ -2360,6 +2361,110 @@ try {
     `X 页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${xPageReqs.length ? `：${xPageReqs.map((r) => r.path).join(', ')}` : ''}`,
   );
   await xPage.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── Instagram：片段录制 ─────────────────────────
+  console.log('\n[Instagram：首页信息流里录正在播放、开着声音的那个视频（静音自动播放的、没播过的、广告不算）；帖子信息来自视频所在的那条帖子；放到结尾自动结束]');
+  const igReqStart = requests.length;
+  const [ig] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/igpage/`)]);
+  ig.on('pageerror', (e) => consoleErrors.push(`ig pageerror: ${e.message}`));
+  await ig.waitForLoadState('domcontentloaded');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '片段', exact: true }).click();
+  // 把侧边栏拿到前台时，当前标签页变成了侧边栏自己：切回 Instagram 那个标签页（就像你点回它）
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/igpage/'));
+    await c.tabs.update(t.id, { active: true });
+  });
+  const igAppHtml = () => ig.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  const igTitle = async () => (await panel.getByTestId('clip-title').textContent()) ?? '';
+  /** 在 Instagram 首页上对广告的视频（ad）、带正文的帖子的视频（v）、没有正文的帖子的视频（plain）做点什么（模拟你开关声音、播放，或 Instagram 自己的行为） */
+  const onIg = (/** @type {string} */ code) =>
+    ig.evaluate(`(() => { const ad = document.querySelector('#ig-ad video'); const v = document.querySelector('#ig-post video'); const plain = document.querySelector('#ig-plain video'); ${code} })()`);
+  await ig.waitForFunction(() => [...document.querySelectorAll('video')].every((v) => v.readyState >= 2), null, { timeout: 30000 });
+  await onIg('ad.muted = true; return ad.play();');
+  await clipStatus.filter({ hasText: '没有正在播放、开着声音的视频' }).waitFor({ timeout: 10000 });
+  const igIdle = /** @type {{ adAutoplay: boolean, idle: boolean }} */ (await onIg('return { adAutoplay: !ad.paused && ad.muted, idle: v.paused && v.muted };'));
+  check(
+    igIdle.adAutoplay && igIdle.idle && (await igTitle()) === '—' && (await panel.getByTestId('clip-start').count()) === 0,
+    'Instagram 首页：静音自动播放的视频、没播过的视频都不算，说明要把想录的那个的声音打开',
+  );
+  await onIg('ad.currentTime = 0; ad.muted = false; return ad.play();');
+  await clipStatus.filter({ hasText: '这个视频录不了' }).waitFor({ timeout: 5000 });
+  check((await panel.getByTestId('clip-start').count()) === 0, '广告帖子带着声音播放：它没有帖子链接，认不出属于哪条帖子，不让录');
+  await onIg('ad.pause(); ad.muted = true;');
+
+  // 打开这条帖子的声音（Instagram 上是 muted=false、音量 0.5），从 2 秒处播
+  await onIg('v.currentTime = 2; v.muted = false; v.volume = 0.5; return v.play();');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-position').filter({ hasText: / 0:0(5|6)$/ }).waitFor({ timeout: 5000 });
+  check(
+    (await igTitle()) === IG_FEED_POST.title,
+    `锁定打开了声音的那个视频；"帖子"来自它所在的那条帖子（用户名 - 露出来的正文：话题和表情保留，不含折叠的"更多"）：${await igTitle()}`,
+  );
+  check(
+    ((await panel.getByTestId('clip-no-burn').textContent()) ?? '').includes('录到结尾就自动结束') && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-capture').count()) === 1,
+    '界面写明信息流里录的是哪个视频、放到结尾自动结束；不提供字幕烧录，有 Capture',
+  );
+  await onIg('v.currentTime = 2;');
+  const igHtmlBefore = await igAppHtml();
+  // 不点停止：视频放到结尾自己跳回开头时，这一段自动结束并保存，不把第二遍接着录进去
+  const [igDl] = await Promise.all([ig.waitForEvent('download', { timeout: 20000 }), panel.getByTestId('clip-start').click()]);
+  const igName = igDl.suggestedFilename();
+  check(igName.startsWith(`${IG_FEED_POST.title}_00m0`) && /_00m0[2-3]s-00m0[5-6]s\.(mp4|webm)$/.test(igName), `视频放到结尾跳回开头时自动结束并保存，文件名用用户名、正文与起止时间：${igName}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '视频播完了' }).waitFor({ timeout: 5000 });
+  const igClip = await analyzeClip(ig, /** @type {string} */ (await igDl.path()));
+  check(
+    container(igClip.head) === igName.split('.').pop() && igClip.duration > 2 && igClip.duration < 5.5 && igClip.rms > 0.02,
+    `只录了这一遍（${igClip.duration.toFixed(1)} 秒，视频从 2 秒放到 6 秒），有声音（响度 ${igClip.rms.toFixed(3)}）`,
+  );
+  await panel.getByTestId('clip-log').filter({ hasText: igName }).waitFor({ timeout: 5000 });
+  const igLog = (await clipLog())[0];
+  check(
+    igLog?.site === 'ig' && igLog.videoId === IG_FEED_POST.code && igLog.title === IG_FEED_POST.title && igLog.url === `${MOCK}/igpage/p/${IG_FEED_POST.code}/` && igLog.fileName === igName,
+    '"最近录过的片段"记下这是 Instagram 的帖子，链接是这条帖子自己的（不是首页）',
+  );
+  check(((await panel.getByTestId('clip-log').textContent()) ?? '').includes('Instagram · '), '侧边栏的片段清单标出 Instagram');
+  check((await igAppHtml()) === igHtmlBefore && (await ig.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '录制没有往 Instagram 页面里加任何元素，没有点到 Instagram 自己的任何东西（包括"更多"）');
+  await panel.getByRole('button', { name: '释放内存' }).click();
+
+  // 换成有画面的视频（静音、暂停着交回来）：带声音放一下再暂停，暂停着截
+  await useFramedVideo(ig, '#ig-post video');
+  await onIg('v.muted = false; return v.play().then(() => new Promise((r) => setTimeout(r, 400))).then(() => v.pause());');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 5000 });
+  const igSeqBefore = await captureSeq();
+  const igShot = await capture();
+  const igShotName = igShot.suggestedFilename();
+  const igPng = await readPng(/** @type {string} */ (await igShot.path()), ig);
+  check(
+    igShotName.startsWith(`${IG_FEED_POST.title}_00-00-0`) && igShotName.endsWith(`_original_${String(igSeqBefore + 1).padStart(5, '0')}.png`) && igPng.width === 720 && igPng.height === 1280 && igPng.left[0] > 150 && igPng.right[2] > 150,
+    `暂停着 Capture：仍然锁定着，文件名用帖子的用户名和正文，按视频的真实尺寸存：${igShotName}（${igPng.width}×${igPng.height}）`,
+  );
+  await ig.evaluate(() => window.scrollTo(0, 2600));
+  await clipStatus.filter({ hasText: '没有正在播放、开着声音的视频' }).waitFor({ timeout: 5000 });
+  check(true, '暂停着滚出屏幕：放开');
+  await ig.evaluate(() => window.scrollTo(0, 0));
+
+  // 没有正文的帖子：下面露着别人的评论
+  await onIg('v.muted = true; plain.muted = false; plain.volume = 0.5; return plain.play();');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-title').filter({ hasText: IG_PLAIN_POST.user }).waitFor({ timeout: 5000 });
+  check((await igTitle()) === IG_PLAIN_POST.user, `没有正文的帖子：只显示用户名，不把别人的评论当成正文：${await igTitle()}`);
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await ig.waitForTimeout(1500);
+  // 点开评论时 Instagram 把网址换成这条帖子的（站内跳转，不重新加载）：离开了首页，这一段自动结束并保存
+  const [igLeaveDl] = await Promise.all([ig.waitForEvent('download', { timeout: 10000 }), ig.evaluate((path) => history.pushState(null, '', path), `/igpage/p/${IG_PLAIN_POST.code}/`)]);
+  check(/^plain\.user_00m\d\ds-00m\d\ds\.(mp4|webm)$/.test(igLeaveDl.suggestedFilename()), `离开首页时这一段自动结束并保存：${igLeaveDl.suggestedFilename()}`);
+  await clipStatus.filter({ hasText: '不是 Instagram 的首页信息流' }).waitFor({ timeout: 5000 });
+  check((await clipLog())[0]?.url === `${MOCK}/igpage/p/${IG_PLAIN_POST.code}/`, '帖子页等别的 Instagram 页面：说明只有首页信息流能录；刚才那一段记下的是它自己的帖子链接');
+  const igPageReqs = requests.slice(igReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/igpage/`));
+  check(
+    igPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/igpage/') || r.path === '/favicon.ico')),
+    `Instagram 页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${igPageReqs.length ? `：${igPageReqs.map((r) => r.path).join(', ')}` : ''}`,
+  );
+  await ig.close();
   await panel.bringToFront();
 
   // ───────────────────────── 酷播：片段录制 ─────────────────────────

@@ -58,3 +58,10 @@ export const X_PAGES: readonly string[] = ['https://x.com/'];
  * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
  */
 export const KUBB_PAGES: readonly string[] = ['https://www.kubb.tv/'];
+
+/**
+ * Instagram 网页版（2026-11-10 新增，见 DECISIONS §56）：片段录制脚本注入的页面，只录首页信息流里正在播放、开着声音的那个视频。
+ * Instagram 是单页应用，从别的页面回到首页不重新加载，所以注入范围是整个站，脚本自己只认首页。
+ * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
+ */
+export const IG_PAGES: readonly string[] = ['https://www.instagram.com/'];

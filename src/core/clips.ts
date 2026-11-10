@@ -3,16 +3,17 @@
 // 录制本身（画布、MediaRecorder、保存）在 content/clipper.ts；侧边栏"片段"页只经消息控制它。
 
 import { CLIPS } from '../config/defaults';
-import { KUBB_PAGES, XHS_PAGES, X_PAGES } from '../config/endpoints';
+import { IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } from '../config/endpoints';
 import { canonicalXhsUrl, isXhsId } from './xhs';
 
 export type ClipMode = 'free' | 'range';
 
 /**
  * 录的是哪个站的视频：YouTube 播放页、小红书网页版的视频笔记（2026-11-04 新增，见 DECISIONS §43）、
- * X 网页版的帖子（2026-11-06 新增，见 DECISIONS §52）、酷播（kubb.tv）的播放页（2026-11-10 新增，见 DECISIONS §54）
+ * X 网页版的帖子（2026-11-06 新增，见 DECISIONS §52）、酷播（kubb.tv）的播放页（2026-11-10 新增，见 DECISIONS §54）、
+ * Instagram 网页版的首页信息流（2026-11-10 新增，见 DECISIONS §56）
  */
-export type ClipSite = 'youtube' | 'xhs' | 'x' | 'kubb';
+export type ClipSite = 'youtube' | 'xhs' | 'x' | 'kubb' | 'ig';
 
 /** 侧边栏 → 内容脚本、内容脚本 → 侧边栏 / 后台 的消息类型 */
 export const CLIP_MSG = {
@@ -102,10 +103,10 @@ function xPostTitle(title: string): string {
 }
 
 /**
- * 首页信息流里的帖子没有自己的页面标题：用帖子上的作者名和正文拼成和帖子页一样的"作者 - 正文"
+ * 首页信息流（X、Instagram）里的帖子没有自己的页面标题：用帖子上的作者名和正文拼成"作者 - 正文"，和 X 帖子页的写法一样
  * （去掉 t.co 短链，换行压成空格）；只有视频没有文字时只留作者，两样都没有返回空。
  */
-export function xFeedTitle(author: string, text: string): string {
+export function feedPostTitle(author: string, text: string): string {
   const clean = (s: string) => s.replace(TCO_LINK, '').replace(/\s+/g, ' ').trim();
   const [a, t] = [clean(author), clean(text)];
   return a && t ? `${a} - ${t}` : a || t;
@@ -121,9 +122,13 @@ function kubbTitle(title: string): string {
   return /^酷播\s*(?:-|$)/.test(title.trim()) ? '' : title.trim();
 }
 
-/** 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"；X 见 xPostTitle；酷播见 kubbTitle） */
+/**
+ * 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"；X 见 xPostTitle；酷播见 kubbTitle）。
+ * Instagram 首页的页面标题只是"Instagram"，说明不了是哪条帖子：不用（标题来自帖子本身，见 feedPostTitle）。
+ */
 export function titleFromDocumentTitle(docTitle: string, site: ClipSite = 'youtube'): string {
   const title = docTitle.replace(/^\(\d+\+?\)\s*/, '');
+  if (site === 'ig') return '';
   if (site === 'x') return xPostTitle(title);
   if (site === 'kubb') return kubbTitle(title);
   return title.replace(site === 'xhs' ? /\s*[-–—]\s*(?:小红书|rednote)\s*$/i : /\s*[-–—]\s*YouTube\s*$/i, '').trim();
@@ -319,8 +324,8 @@ export function pickXVideo(videos: readonly XVideoView[]): number {
   return best;
 }
 
-/** 首页信息流里一个视频现在的样子 */
-export interface XFeedVideoView {
+/** 首页信息流（X、Instagram）里一个视频现在的样子 */
+export interface FeedVideoView {
   /** 正在播放 */
   playing: boolean;
   /** 没有声音：静音，或音量拉到了 0 */
@@ -330,14 +335,15 @@ export interface XFeedVideoView {
 }
 
 /**
- * 首页信息流里录哪个视频（2026-11-10 实测）：信息流里的视频滚到眼前时静音自动播放（muted=true），
- * 还没播过的那些反而是 muted=false、暂停着，所以"没静音"单独说明不了什么；你打开声音的那个才是"在播且有声音"。
+ * 首页信息流里录哪个视频（2026-11-10 实测 X 与 Instagram）：信息流里的视频滚到眼前时静音自动播放（muted=true）。
+ * X 上还没播过的那些反而是 muted=false、暂停着，所以"没静音"单独说明不了什么；你打开声音的那个才是"在播且有声音"。
+ * Instagram 上没播过的也是静音的；打开声音是 muted=false、音量大于 0，静音时音量是 0。
  * 只认正在播放且有声音的（不止一个时取屏幕里更大的，再一样取靠前的）。
  * 一个都没有时，上次锁定的那个（held 是它的下标，没有给 -1）只要还有声音、还在屏幕里就继续算数：
- * 你把它暂停下来截图、或它播完了要按时间段重截时不丢目标；滚出屏幕（X 会暂停它）或被静音就放开。
+ * 你把它暂停下来截图、或它播完了要按时间段重截时不丢目标；滚出屏幕（X、Instagram 都会暂停它）或被静音就放开。
  * 返回下标，没有可录的返回 -1。
  */
-export function pickXFeedVideo(videos: readonly XFeedVideoView[], held = -1): number {
+export function pickFeedVideo(videos: readonly FeedVideoView[], held = -1): number {
   let best = -1;
   videos.forEach((v, i) => {
     if (v.playing && !v.muted && (best < 0 || v.visibleArea > videos[best]!.visibleArea)) best = i;
@@ -345,6 +351,64 @@ export function pickXFeedVideo(videos: readonly XFeedVideoView[], held = -1): nu
   if (best >= 0) return best;
   const h = videos[held];
   return h && !h.muted && h.visibleArea > 0 ? held : -1;
+}
+
+// ── Instagram 的首页信息流 ──
+
+/** 帖子短码：/p/<短码>/ 里的那一段（2026-11-10 实测 11 位，字母、数字、- 和 _） */
+const IG_POST_PATH = /^(?:[A-Za-z0-9._]{1,30}\/)?(?:p|reels?|tv)\/([A-Za-z0-9_-]{5,40})\/?$/;
+/** 只有一段的路径里不是用户名的那些（站内的功能页） */
+const IG_RESERVED = /^(?:p|reels?|tv|explore|stories|direct|accounts|about|legal|developer|web|challenge|emails?)$/i;
+
+/** 这个网址是不是 Instagram 网页版（录制脚本靠它判断自己在哪个站） */
+export function isIgPage(url: string): boolean {
+  return IG_PAGES.some((p) => url.startsWith(p));
+}
+
+/** 网址去掉查询参数后，在 Instagram 站内的路径（不带开头的斜杠）；不是 Instagram 返回 undefined */
+function igPath(url: string): { prefix: string; path: string } | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const full = u.origin + u.pathname;
+  const prefix = IG_PAGES.find((p) => full.startsWith(p));
+  return prefix ? { prefix, path: full.slice(prefix.length) } : undefined;
+}
+
+/**
+ * 这个网址是不是 Instagram 的首页信息流（www.instagram.com/，带不带 ?variant=following 都算）。
+ * 只有这里能录（用户 2026-11-10 要求，见 DECISIONS §56）；帖子页、Reels、探索、个人主页都不算。
+ */
+export function isIgHomeUrl(url: string): boolean {
+  return igPath(url)?.path === '';
+}
+
+/**
+ * Instagram 帖子的链接 → 短码与规范链接。信息流里包着发布时间的链接是 /p/<短码>/（视频帖子也是），
+ * 另有 /reel/<短码>/、/reels/<短码>/ 和带用户名的写法；规范链接一律写成 /p/<短码>/，查询参数（分享来源等）去掉。
+ * 不是帖子链接返回 undefined。
+ */
+export function parseIgPostUrl(url: string): { id: string; url: string } | undefined {
+  const at = igPath(url);
+  const code = at ? IG_POST_PATH.exec(at.path)?.[1] : undefined;
+  return at && code ? { id: code, url: `${at.prefix}p/${code}/` } : undefined;
+}
+
+/** Instagram 个人主页的链接（/用户名/）→ 用户名；帖子、Reels、探索等功能页和别的网站返回 undefined */
+export function igProfileName(url: string): string | undefined {
+  const name = /^([A-Za-z0-9._]{1,30})\/?$/.exec(igPath(url)?.path ?? '')?.[1];
+  return name && !IG_RESERVED.test(name) ? name : undefined;
+}
+
+/**
+ * Instagram 的视频放到结尾会自己跳回开头接着放（2026-11-10 实测：没有 loop 属性，也看不到"播完"，只看到进度从结尾跳回 0）。
+ * 上一轮还在结尾附近、这一轮回到了开头，就算放完了一遍：这一段在这里结束，不把第二遍接着录进去。
+ */
+export function loopedToStart(previousTime: number, currentTime: number, duration: number): boolean {
+  return atVideoEnd(previousTime, duration) && currentTime < CLIPS.endSlackSec && currentTime < previousTime;
 }
 
 // ── 酷播的播放页 ──
@@ -428,19 +492,22 @@ const CLIP_UNAVAILABLE_TEXT: Record<ClipSite, { noPage: string; noVideo: string 
   xhs: { noPage: '这个页面不是笔记详情：打开一篇视频笔记再录', noVideo: '这篇笔记里没有视频（图文笔记录不了）；视频笔记等画面出来后再试' },
   x: { noPage: '这个页面不是帖子详情，也不是首页信息流：点开一条带视频的帖子再录', noVideo: '这条帖子里没有视频；有视频的话等画面出来后再试' },
   kubb: { noPage: '这个页面不是播放页：点开一部影片再录', noVideo: '没找到播放器里的视频，等画面出来后再试' },
+  // Instagram 只在首页信息流上录，"没有视频"的说法在 FEED_TEXT 里；这里的 noVideo 用不到，留着是为了每个站都有一句
+  ig: { noPage: '这个页面不是 Instagram 的首页信息流：回到首页（www.instagram.com）再录', noVideo: '没找到正在播放的视频，等画面出来后再试' },
 };
 
-/** X 首页信息流上不能录的原因：没有锁定的视频；锁定了视频但认不出它属于哪条帖子（广告没有帖子链接） */
-const X_FEED_TEXT = {
+/** 首页信息流（X、Instagram）上不能录的原因：没有锁定的视频；锁定了视频但认不出它属于哪条帖子（广告没有帖子链接） */
+const FEED_TEXT = {
   noVideo: '信息流里没有正在播放、开着声音的视频：把想录的那个视频的声音打开再录（静音自动播放的不算）',
-  noPost: '认不出这个视频属于哪条帖子（广告没有帖子链接）：点开帖子再录',
+  // X 上还能点开帖子去帖子页录；Instagram 只有首页能录
+  noPost: { x: '认不出这个视频属于哪条帖子（广告没有帖子链接）：点开帖子再录', ig: '认不出这个视频属于哪条帖子（广告没有帖子链接）：这个视频录不了' },
 };
 
 /** 这个页面现在为什么录不了（侧边栏显示、开录前检查共用）；能录返回 undefined */
 export function clipUnavailable(site: ClipSite, c: Pick<ClipStartContext, 'enabled' | 'videoId' | 'shorts' | 'hasVideo' | 'feed'>): string | undefined {
   if (!c.enabled) return '片段录制已在设置中关闭';
   if (c.shorts) return 'Shorts 暂不支持录制';
-  if (site === 'x' && c.feed) return !c.hasVideo ? X_FEED_TEXT.noVideo : !c.videoId ? X_FEED_TEXT.noPost : undefined;
+  if ((site === 'x' || site === 'ig') && c.feed) return !c.hasVideo ? FEED_TEXT.noVideo : !c.videoId ? FEED_TEXT.noPost[site] : undefined;
   if (!c.videoId) return CLIP_UNAVAILABLE_TEXT[site].noPage;
   if (!c.hasVideo) return CLIP_UNAVAILABLE_TEXT[site].noVideo;
   return undefined;
@@ -705,9 +772,9 @@ export interface ReadyClipInfo {
 
 export interface ClipTabState {
   site: ClipSite;
-  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID，或酷播的影片 ID（剧集带分集 ID） */
+  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID（剧集带分集 ID），或 Instagram 的帖子短码 */
   videoId: string | null;
-  /** 视频标题（来自页面标题；X 首页信息流上来自这条帖子的作者名和正文），只用来显示和起文件名 */
+  /** 视频标题（来自页面标题；X、Instagram 首页信息流上来自这条帖子的作者名和正文），只用来显示和起文件名 */
   title?: string;
   /** 不能录的原因（不是视频页、Shorts、设置里关了、图文笔记、帖子里没有视频） */
   unavailable?: string;
@@ -735,13 +802,14 @@ export interface ClipTabState {
 
 export interface ClipRecord {
   id: string;
-  /** 小红书的记录带 'xhs'，X 的带 'x'，酷播的带 'kubb'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
+  /** 小红书的记录带 'xhs'，X 的带 'x'，酷播的带 'kubb'，Instagram 的带 'ig'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
   site?: ClipSite;
-  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID，或酷播的影片 ID（剧集是"影片ID.分集ID"） */
+  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID（剧集是"影片ID.分集ID"），或 Instagram 的帖子短码 */
   videoId: string;
   /**
    * 小红书：笔记链接（只留站点、路径与 xsec_token / xsec_source，从外面打开笔记要带 xsec_token）；
-   * X：帖子链接（parseXStatusUrl 的规范链接）；酷播：播放页链接（parseKubbPlayUrl 的规范链接）
+   * X：帖子链接（parseXStatusUrl 的规范链接）；酷播：播放页链接（parseKubbPlayUrl 的规范链接）；
+   * Instagram：帖子链接（parseIgPostUrl 的规范链接）
    */
   url?: string;
   title?: string;
@@ -762,8 +830,8 @@ const VIDEO_ID = /^[A-Za-z0-9_-]{6,20}$/;
 function clipSourceUrl(site: ClipSite, raw: unknown, id: string | null): string | null | undefined {
   if (site === 'youtube') return undefined;
   if (typeof raw !== 'string') return null;
-  if (site === 'x' || site === 'kubb') {
-    const page = site === 'x' ? parseXStatusUrl(raw) : parseKubbPlayUrl(raw);
+  if (site === 'x' || site === 'kubb' || site === 'ig') {
+    const page = site === 'x' ? parseXStatusUrl(raw) : site === 'ig' ? parseIgPostUrl(raw) : parseKubbPlayUrl(raw);
     return page?.id === id ? page.url : null;
   }
   const note = canonicalXhsUrl(raw);
@@ -780,8 +848,8 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
   const str = (v: unknown, max: number) => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null);
   const id = str(r.id, 64);
-  // X 的帖子 ID、酷播的影片 ID 由下面的链接核对（只能是从链接里解析出来的那个）
-  const idFromUrl = site === 'x' || site === 'kubb';
+  // X 的帖子 ID、酷播的影片 ID、Instagram 的帖子短码由下面的链接核对（只能是从链接里解析出来的那个）
+  const idFromUrl = site === 'x' || site === 'kubb' || site === 'ig';
   const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : idFromUrl || VIDEO_ID.test(r.videoId)) ? r.videoId : null;
   const sourceUrl = clipSourceUrl(site, r.url, videoId);
   if (sourceUrl === null) return null;
@@ -807,6 +875,7 @@ export function addClipRecord(log: ClipRecord[], rec: ClipRecord, max: number = 
 export function clipWatchUrl(r: Pick<ClipRecord, 'videoId' | 'start' | 'site' | 'url'>): string {
   if (r.site === 'xhs') return r.url ?? `${XHS_PAGES[0]}explore/${encodeURIComponent(r.videoId)}`;
   if (r.site === 'x') return r.url ?? `${X_PAGES[0]}i/status/${encodeURIComponent(r.videoId)}`;
+  if (r.site === 'ig') return r.url ?? `${IG_PAGES[0]}p/${encodeURIComponent(r.videoId)}/`;
   if (r.site === 'kubb') {
     const [show = '', episode] = r.videoId.split('.');
     return r.url ?? `${KUBB_PAGES[0]}play/${encodeURIComponent(show)}${episode ? `?id=${encodeURIComponent(episode)}` : ''}`;
