@@ -3,16 +3,16 @@
 // 录制本身（画布、MediaRecorder、保存）在 content/clipper.ts；侧边栏"片段"页只经消息控制它。
 
 import { CLIPS } from '../config/defaults';
-import { XHS_PAGES, X_PAGES } from '../config/endpoints';
+import { KUBB_PAGES, XHS_PAGES, X_PAGES } from '../config/endpoints';
 import { canonicalXhsUrl, isXhsId } from './xhs';
 
 export type ClipMode = 'free' | 'range';
 
 /**
  * 录的是哪个站的视频：YouTube 播放页、小红书网页版的视频笔记（2026-11-04 新增，见 DECISIONS §43）、
- * X 网页版的帖子（2026-11-06 新增，见 DECISIONS §52）
+ * X 网页版的帖子（2026-11-06 新增，见 DECISIONS §52）、酷播（kubb.tv）的播放页（2026-11-10 新增，见 DECISIONS §54）
  */
-export type ClipSite = 'youtube' | 'xhs' | 'x';
+export type ClipSite = 'youtube' | 'xhs' | 'x' | 'kubb';
 
 /** 侧边栏 → 内容脚本、内容脚本 → 侧边栏 / 后台 的消息类型 */
 export const CLIP_MSG = {
@@ -101,10 +101,21 @@ function xPostTitle(title: string): string {
   return text ? `${author} - ${text}` : author;
 }
 
-/** 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"；X 见 xPostTitle） */
+/**
+ * 酷播播放页的标题："片名-免费在线观看-酷播"，剧集是"剧名-集数-免费在线观看-酷播"（2026-11-10 实测）→"片名"或"剧名-集数"。
+ * 首页等别的页面（"酷播-海量高清视频免费在线观看"）返回空；认不出的写法原样用。
+ */
+function kubbTitle(title: string): string {
+  const play = /^(.*?)\s*-\s*免费在线观看\s*-\s*酷播\s*$/.exec(title);
+  if (play) return play[1]!.trim();
+  return /^酷播\s*(?:-|$)/.test(title.trim()) ? '' : title.trim();
+}
+
+/** 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"；X 见 xPostTitle；酷播见 kubbTitle） */
 export function titleFromDocumentTitle(docTitle: string, site: ClipSite = 'youtube'): string {
   const title = docTitle.replace(/^\(\d+\+?\)\s*/, '');
   if (site === 'x') return xPostTitle(title);
+  if (site === 'kubb') return kubbTitle(title);
   return title.replace(site === 'xhs' ? /\s*[-–—]\s*(?:小红书|rednote)\s*$/i : /\s*[-–—]\s*YouTube\s*$/i, '').trim();
 }
 
@@ -282,6 +293,45 @@ export function pickXVideo(videos: readonly XVideoView[]): number {
   return best;
 }
 
+// ── 酷播的播放页 ──
+
+const KUBB_ID = /^[A-Za-z0-9_-]{6,24}$/;
+const KUBB_PLAY_PATH = /^play\/([A-Za-z0-9_-]{6,24})\/?$/;
+
+/** 这个网址是不是酷播网页版（录制脚本靠它判断自己在哪个站） */
+export function isKubbPage(url: string): boolean {
+  return KUBB_PAGES.some((p) => url.startsWith(p));
+}
+
+/**
+ * 酷播播放页的网址 → 这一条的 ID 与规范链接（2026-11-10 实测）：/play/<影片ID>；剧集换集（你点的或自动播下一集）时网址带上
+ * ?id=<分集ID>，不带时是站点替你接着看的那一集。ID 是"影片ID"或"影片ID.分集ID"，所以换一集就算换了视频。
+ * 链接只留这两项，别的查询参数去掉。不是播放页返回 undefined。
+ */
+export function parseKubbPlayUrl(url: string): { id: string; url: string } | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const full = u.origin + u.pathname;
+  const prefix = KUBB_PAGES.find((p) => full.startsWith(p));
+  const show = prefix ? KUBB_PLAY_PATH.exec(full.slice(prefix.length))?.[1] : undefined;
+  if (!prefix || !show) return undefined;
+  const raw = u.searchParams.get('id');
+  const episode = raw && KUBB_ID.test(raw) ? raw : undefined;
+  return { id: episode ? `${show}.${episode}` : show, url: `${prefix}play/${show}${episode ? `?id=${episode}` : ''}` };
+}
+
+/**
+ * 酷播的片头广告和正片用同一个 <video> 放（2026-11-10 实测）：正片是 blob: 流，广告是直接给地址的短片（实测 20 秒）。
+ * 地址不是 blob:、时长又不超过 CLIPS.kubbAdMaxSec 的算广告。时长还不知道时不算：宁可漏判，也不把正片当成广告一直不录。
+ */
+export function isKubbAd(currentSrc: string, duration: number): boolean {
+  return !!currentSrc && !currentSrc.startsWith('blob:') && Number.isFinite(duration) && duration > 0 && duration <= CLIPS.kubbAdMaxSec;
+}
+
 // ── 开录前检查 ──
 
 export interface ClipStartRequest {
@@ -321,6 +371,7 @@ const CLIP_UNAVAILABLE_TEXT: Record<ClipSite, { noPage: string; noVideo: string 
   youtube: { noPage: '这个页面不是视频播放页', noVideo: '没找到播放器里的视频，等视频开始播放后再试' },
   xhs: { noPage: '这个页面不是笔记详情：打开一篇视频笔记再录', noVideo: '这篇笔记里没有视频（图文笔记录不了）；视频笔记等画面出来后再试' },
   x: { noPage: '这个页面不是帖子详情：点开一条带视频的帖子再录', noVideo: '这条帖子里没有视频；有视频的话等画面出来后再试' },
+  kubb: { noPage: '这个页面不是播放页：点开一部影片再录', noVideo: '没找到播放器里的视频，等画面出来后再试' },
 };
 
 /** 这个页面现在为什么录不了（侧边栏显示、开录前检查共用）；能录返回 undefined */
@@ -465,7 +516,8 @@ export function decideClip(c: ClipControl, s: ClipSample, tolerance: number = CL
   if (c.bytes >= c.maxBytes) return { kind: 'stop', reason: 'max-bytes' };
   const range = c.mode === 'range' && c.start !== undefined && c.end !== undefined;
   // 卡在结尾也算播完：小红书的播放器放到最后一帧就停在那里，既不暂停也不报"播完"（2026-11-04 实测）
-  const finished = s.ended || (!!s.stalled && atVideoEnd(s.currentTime, s.duration ?? 0));
+  // 广告放完不算视频播完：酷播的片头广告和正片用同一个播放器放，广告放到头时也报"播完"，接着才换成正片（2026-11-10）
+  const finished = !s.ad && (s.ended || (!!s.stalled && atVideoEnd(s.currentTime, s.duration ?? 0)));
   // 时间段：已经录到东西、又到了终点（含拖过终点、播完）就结束
   if (range && c.recordedSec > 0 && (s.currentTime >= c.end! || finished)) return { kind: 'stop', reason: 'range-end' };
   if (!range && finished) return { kind: 'stop', reason: 'ended' };
@@ -590,7 +642,7 @@ export interface ReadyClipInfo {
 
 export interface ClipTabState {
   site: ClipSite;
-  /** YouTube 的视频 ID、小红书的笔记 ID，或 X 的帖子 ID */
+  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID，或酷播的影片 ID（剧集带分集 ID） */
   videoId: string | null;
   /** 视频标题（来自页面标题，只用来显示和起文件名） */
   title?: string;
@@ -620,13 +672,13 @@ export interface ClipTabState {
 
 export interface ClipRecord {
   id: string;
-  /** 小红书的记录带 'xhs'，X 的带 'x'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
+  /** 小红书的记录带 'xhs'，X 的带 'x'，酷播的带 'kubb'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
   site?: ClipSite;
-  /** YouTube 的视频 ID、小红书的笔记 ID，或 X 的帖子 ID */
+  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID，或酷播的影片 ID（剧集是"影片ID.分集ID"） */
   videoId: string;
   /**
    * 小红书：笔记链接（只留站点、路径与 xsec_token / xsec_source，从外面打开笔记要带 xsec_token）；
-   * X：帖子链接（parseXStatusUrl 的规范链接）
+   * X：帖子链接（parseXStatusUrl 的规范链接）；酷播：播放页链接（parseKubbPlayUrl 的规范链接）
    */
   url?: string;
   title?: string;
@@ -643,13 +695,13 @@ export interface ClipRecord {
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{6,20}$/;
 
-/** 小红书、X 的记录要带回到原处的链接：规范化后的链接；与这条记录的 ID 对不上时 null。YouTube 不带（undefined） */
+/** 小红书、X、酷播的记录要带回到原处的链接：规范化后的链接；与这条记录的 ID 对不上时 null。YouTube 不带（undefined） */
 function clipSourceUrl(site: ClipSite, raw: unknown, id: string | null): string | null | undefined {
   if (site === 'youtube') return undefined;
   if (typeof raw !== 'string') return null;
-  if (site === 'x') {
-    const post = parseXStatusUrl(raw);
-    return post?.id === id ? post.url : null;
+  if (site === 'x' || site === 'kubb') {
+    const page = site === 'x' ? parseXStatusUrl(raw) : parseKubbPlayUrl(raw);
+    return page?.id === id ? page.url : null;
   }
   const note = canonicalXhsUrl(raw);
   return note?.link.kind === 'note' && note.link.noteId === id ? note.url : null;
@@ -657,7 +709,7 @@ function clipSourceUrl(site: ClipSite, raw: unknown, id: string | null): string 
 
 /**
  * 校验内容脚本送来的记录（来自网页环境，字段逐一检查、截断）。
- * site 由后台按发消息的页面决定（不信记录里自己写的）：小红书、X 的 ID 与链接必须对得上。
+ * site 由后台按发消息的页面决定（不信记录里自己写的）：小红书、X、酷播的 ID 与链接必须对得上。
  */
 export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): ClipRecord | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -665,8 +717,9 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
   const str = (v: unknown, max: number) => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null);
   const id = str(r.id, 64);
-  // X 的帖子 ID 由下面的链接核对（链接里的 ID 只能是数字）
-  const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : site === 'x' || VIDEO_ID.test(r.videoId)) ? r.videoId : null;
+  // X 的帖子 ID、酷播的影片 ID 由下面的链接核对（只能是从链接里解析出来的那个）
+  const idFromUrl = site === 'x' || site === 'kubb';
+  const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : idFromUrl || VIDEO_ID.test(r.videoId)) ? r.videoId : null;
   const sourceUrl = clipSourceUrl(site, r.url, videoId);
   if (sourceUrl === null) return null;
   const mode = r.mode === 'free' || r.mode === 'range' ? r.mode : null;
@@ -687,9 +740,13 @@ export function addClipRecord(log: ClipRecord[], rec: ClipRecord, max: number = 
   return [rec, ...log.filter((r) => r.id !== rec.id)].slice(0, max);
 }
 
-/** 回到视频里这一段的地址；小红书、X 没有按时间打开的地址，回到这篇笔记或这条帖子 */
+/** 回到视频里这一段的地址；小红书、X、酷播没有按时间打开的地址，回到这篇笔记、这条帖子或这部影片（这一集） */
 export function clipWatchUrl(r: Pick<ClipRecord, 'videoId' | 'start' | 'site' | 'url'>): string {
   if (r.site === 'xhs') return r.url ?? `${XHS_PAGES[0]}explore/${encodeURIComponent(r.videoId)}`;
   if (r.site === 'x') return r.url ?? `${X_PAGES[0]}i/status/${encodeURIComponent(r.videoId)}`;
+  if (r.site === 'kubb') {
+    const [show = '', episode] = r.videoId.split('.');
+    return r.url ?? `${KUBB_PAGES[0]}play/${encodeURIComponent(show)}${episode ? `?id=${encodeURIComponent(episode)}` : ''}`;
+  }
   return `https://www.youtube.com/watch?v=${encodeURIComponent(r.videoId)}&t=${Math.floor(r.start)}s`;
 }

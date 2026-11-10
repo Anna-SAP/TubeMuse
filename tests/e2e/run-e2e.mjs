@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockServer, PORT, E2E_CLIENT_SECRET } from './mock-server.mjs';
+import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from './kubb-pages.mjs';
 import { X_GIF_POST, X_POST, X_TEXT_POST } from './x-pages.mjs';
 import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID, XHS_V1 } from './xhs-pages.mjs';
 
@@ -2275,6 +2276,120 @@ try {
     `X 页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${xPageReqs.length ? `：${xPageReqs.map((r) => r.path).join(', ')}` : ''}`,
   );
   await xPage.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── 酷播：片段录制 ─────────────────────────
+  console.log('\n[酷播：首页说明要点开影片；站内跳进播放页后录播放器里的视频，不认投屏按钮里和页面角落的那两个]');
+  const kubbReqStart = requests.length;
+  const [kubb] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/kubb/home`)]);
+  kubb.on('pageerror', (e) => consoleErrors.push(`kubb pageerror: ${e.message}`));
+  await kubb.waitForLoadState('domcontentloaded');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '片段', exact: true }).click();
+  // 把侧边栏拿到前台时，当前标签页变成了侧边栏自己：切回酷播那个标签页（就像你点回它）
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/kubb/'));
+    await c.tabs.update(t.id, { active: true });
+  });
+  await clipStatus.filter({ hasText: '不是播放页' }).waitFor({ timeout: 10000 });
+  check(true, '首页上：说明要点开一部影片才能录');
+  const kubbVideo = '#video_player';
+  const kubbPlaying = () => kubb.waitForFunction((s) => (/** @type {HTMLVideoElement | null} */ (document.querySelector(s))?.readyState ?? 0) >= 2, kubbVideo, { timeout: 30000 });
+  /** 侧边栏"当前位置"里的总时长是这么多秒（时长要等视频元数据到了、下一轮推送才进侧边栏；选错视频会超时） */
+  const kubbShowsDuration = (/** @type {number} */ seconds) =>
+    panel.getByTestId('clip-position').filter({ hasText: new RegExp(` 0:(${seconds - 1}|${seconds})$`) }).waitFor({ timeout: 5000 });
+  await kubb.evaluate(() => /** @type {any} */ (window).__openMovie());
+  await kubbPlaying();
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  check(
+    ((await panel.getByTestId('clip-title').textContent()) ?? '') === KUBB_MOVIE.title && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-capture').count()) === 1,
+    '站内跳进播放页后不用刷新就能录：标题来自页面标题（去掉"-免费在线观看-酷播"），不提供字幕烧录，有 Capture',
+  );
+  const kubbNote = (await panel.getByTestId('clip-no-burn').textContent()) ?? '';
+  check(kubbNote.includes('弹幕') && kubbNote.includes('别的广告认不出来'), '界面写明弹幕不会录进去，片头广告只认得出一种');
+  await kubbShowsDuration(KUBB_MOVIE.seconds);
+  check(true, `选中播放器的视频（${KUBB_MOVIE.seconds} 秒），不是投屏按钮里空的那个，也不是页面角落 1×1 的（7 秒）：${(await panel.getByTestId('clip-position').textContent()) ?? ''}`);
+  const kubbAppHtml = () => kubb.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  const kubbAppBefore = await kubbAppHtml();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  const kubbBadge = await sw2.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/kubb/'));
+    return c.action.getBadgeText({ tabId: t.id });
+  });
+  check(kubbBadge === 'REC', `酷播上录制中，工具栏图标也显示 REC（实际："${kubbBadge}"）`);
+  await kubb.waitForTimeout(2500);
+  const [kubbDl] = await Promise.all([kubb.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const kubbName = kubbDl.suggestedFilename();
+  check(/^八仙！_00m\d\ds-00m\d\ds\.(mp4|webm)$/.test(kubbName), `停止后保存，文件名用片名与起止时间：${kubbName}`);
+  const kubbClip = await analyzeClip(kubb, /** @type {string} */ (await kubbDl.path()));
+  check(container(kubbClip.head) === kubbName.split('.').pop() && kubbClip.duration > 1.5 && kubbClip.rms > 0.02, `录到了这个视频的声音（${kubbClip.duration.toFixed(1)} 秒，响度 ${kubbClip.rms.toFixed(3)}）`);
+  await panel.getByTestId('clip-log').filter({ hasText: kubbName }).waitFor({ timeout: 5000 });
+  const kubbMovieUrl = `${MOCK}/kubb/play/${KUBB_MOVIE.id}`;
+  const kubbLog = (await clipLog())[0];
+  check(kubbLog?.site === 'kubb' && kubbLog.videoId === KUBB_MOVIE.id && kubbLog.title === KUBB_MOVIE.title && kubbLog.url === kubbMovieUrl && kubbLog.fileName === kubbName, '"最近录过的片段"记下这是酷播的影片和它的播放页链接');
+  check(((await panel.getByTestId('clip-log').textContent()) ?? '').includes('酷播 · '), '侧边栏的片段清单标出酷播');
+  check((await kubbAppHtml()) === kubbAppBefore && (await kubb.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '录制没有往酷播页面里加任何元素，没有点到酷播自己的任何东西');
+
+  console.log('\n[酷播：换一集（网址带上 ?id=，播放器还是同一个）时这一段自动结束并保存，接下来录的是新的一集]');
+  await kubb.evaluate(() => /** @type {any} */ (window).__openShow());
+  await kubbPlaying();
+  await panel.getByTestId('clip-title').filter({ hasText: KUBB_SHOW.title }).waitFor({ timeout: 10000 });
+  await kubbShowsDuration(KUBB_SHOW.seconds);
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await kubb.waitForTimeout(1500);
+  const [switchDl] = await Promise.all([kubb.waitForEvent('download', { timeout: 10000 }), kubb.evaluate(() => /** @type {any} */ (window).__switchEpisode())]);
+  check(/^玉簟秋-24_.*\.(mp4|webm)$/.test(switchDl.suggestedFilename()), `换集时自动结束这一段并保存，文件名是开录时那一集：${switchDl.suggestedFilename()}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '切到了别的视频' }).waitFor({ timeout: 5000 });
+  check(true, '侧边栏说明这一段为什么结束');
+  await panel.getByTestId('clip-log').filter({ hasText: switchDl.suggestedFilename() }).waitFor({ timeout: 5000 });
+  const kubbShowLog = (await clipLog())[0];
+  check(kubbShowLog?.videoId === KUBB_SHOW.id && kubbShowLog.url === `${MOCK}/kubb/play/${KUBB_SHOW.id}`, '不带 ?id= 打开的那一集：记录里的链接是播放页本身');
+  await kubbPlaying();
+  await panel.getByTestId('clip-title').filter({ hasText: KUBB_EPISODE.title }).waitFor({ timeout: 10000 });
+  await kubbShowsDuration(KUBB_EPISODE.seconds);
+  check(true, `换集后侧边栏跟上新的一集：${(await panel.getByTestId('clip-title').textContent()) ?? ''}`);
+
+  console.log('\n[酷播：片头广告和正片用同一个播放器放：广告时不截图、不录，广告放完不当成"视频播完"，换成正片后接着录，声音也接得上]');
+  await kubb.evaluate(() => /** @type {any} */ (window).__playAd());
+  await kubb.waitForFunction((s) => { const v = /** @type {HTMLVideoElement} */ (document.querySelector(s)); return v.readyState >= 2 && !v.currentSrc.startsWith('blob:'); }, kubbVideo, { timeout: 15000 });
+  const kubbSeqAtAd = await captureSeq();
+  await panel.getByTestId('clip-capture').click();
+  await panel.getByRole('alert').filter({ hasText: '正在播广告' }).waitFor({ timeout: 5000 });
+  check((await captureSeq()) === kubbSeqAtAd && (await panel.getByTestId('clip-capture-saved').count()) === 0, '广告时点 Capture：不截，说明原因，不占序号');
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '广告中' }).waitFor({ timeout: 10000 });
+  // 广告放到头：真实页面上它报"播完"，约 1.4 秒后才换成正片
+  await kubb.waitForFunction((s) => /** @type {HTMLVideoElement} */ (document.querySelector(s)).ended, kubbVideo, { timeout: (KUBB_AD_SECONDS + 10) * 1000 });
+  await kubb.waitForTimeout(1200);
+  check(
+    (await panel.getByTestId('clip-live').count()) === 1 && (await recordedSec()) === 0 && ((await clipStatus.textContent()) ?? '').includes('广告中'),
+    '广告期间不计时；广告放完不算视频播完，这一段还在等正片',
+  );
+  await kubb.evaluate(() => /** @type {any} */ (window).__endAd());
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await kubb.waitForTimeout(2500);
+  const [adDl] = await Promise.all([kubb.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const adName = adDl.suggestedFilename();
+  const adClip = await analyzeClip(kubb, /** @type {string} */ (await adDl.path()));
+  check(/^玉簟秋-02_00m0\ds-00m0\ds\.(mp4|webm)$/.test(adName), `成片从正片开始算起止时间，不带广告的时间：${adName}`);
+  check(adClip.duration > 1.5 && adClip.duration < KUBB_AD_SECONDS && adClip.rms > 0.02, `成片只有正片这一段，换片源后声音接上了（${adClip.duration.toFixed(1)} 秒，响度 ${adClip.rms.toFixed(3)}）`);
+  await panel.getByTestId('clip-log').filter({ hasText: adName }).waitFor({ timeout: 5000 });
+  const kubbEpisodeLog = (await clipLog())[0];
+  check(
+    kubbEpisodeLog?.site === 'kubb' && kubbEpisodeLog.videoId === `${KUBB_SHOW.id}.${KUBB_EPISODE.id}` && kubbEpisodeLog.url === `${MOCK}/kubb/play/${KUBB_SHOW.id}?id=${KUBB_EPISODE.id}`,
+    '换过集的记录：ID 带上分集，链接只留 ?id=（别的参数去掉），点标题能回到这一集',
+  );
+  check((await kubb.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '全程没有点到酷播自己的任何东西');
+  const kubbPageReqs = requests.slice(kubbReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/kubb/`));
+  check(
+    kubbPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/kubb/') || r.path === '/favicon.ico')),
+    `酷播页面上 TubeMuse 没有发出任何请求（只有页面自己取的视频）${kubbPageReqs.length ? `：${[...new Set(kubbPageReqs.map((r) => r.path))].join(', ')}` : ''}`,
+  );
+  await kubb.close();
   await panel.bringToFront();
 
   // ───────────────────────── eMails ─────────────────────────
