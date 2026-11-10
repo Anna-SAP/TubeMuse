@@ -3,18 +3,20 @@
 // 2026-11-06 起也注入 X 网页版，录帖子里的视频（用户要求，见 DECISIONS §52）；2026-11-10 起首页信息流（x.com/home）上
 // 也能录正在播放、开着声音的那个视频，为此只读它所在那一条帖子的链接、作者名和正文（用户批准的红线变更，见 DECISIONS §55）；
 // 2026-11-10 起也注入酷播（www.kubb.tv），录播放页 /play/<ID> 里的视频（用户要求，见 DECISIONS §54）；
-// 2026-11-10 起也注入 Instagram 网页版，只录首页信息流里正在播放、开着声音的那个视频，逻辑与 X 首页信息流相同（用户要求，见 DECISIONS §56）：
+// 2026-11-10 起也注入 Instagram 网页版，只录首页信息流里正在播放、开着声音的那个视频，逻辑与 X 首页信息流相同（用户要求，见 DECISIONS §56）；
+// 2026-11-10 起也注入抖音网页版，录精选页（/jingxuan 及其类目）里打开的那条视频（网址带 ?modal_id=，用户要求，见 DECISIONS §57）：
 // 1. 只在你从侧边栏"片段"页或快捷键开始录制后工作：把正在播放的这个视频逐帧画到一块不放进页面的画布上
 //    （开启字幕烧录时再叠加播放器里当时显示的字幕，只限 YouTube），声音经 video.captureStream() 取这个视频的音轨，
 //    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载这些网站的音视频流。
-// 2. 广告（YouTube 认得出；酷播只认得出"不是正片的流、又很短"的片头广告；X 认不出；Instagram 的广告帖子没有帖子链接，不让录）、
+// 2. 广告（YouTube 认得出；酷播只认得出"不是正片的流、又很短"的片头广告；X 认不出；Instagram 的广告帖子没有帖子链接，不让录；抖音没有片头广告）、
 //    暂停、缓冲、标签页在后台时自动暂停录制；切到别的视频（小红书：关掉这篇笔记；X：离开这条帖子；酷播：换一部或换一集；
-//    Instagram：离开首页）时这一段自动结束。
+//    Instagram：离开首页；抖音：划到下一条或关掉这条视频）时这一段自动结束。
 // 3. 录好的片段只在这个页面的内存里；你点"保存"（或开着"停止后直接保存"）时由浏览器存进下载文件夹，
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
 //    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
 // 4. 读取的页面信息只有：播放器状态、页面标题（只用来显示和起文件名）、开启字幕烧录时播放器里当时显示的字幕文字；
-//    X、Instagram 首页信息流上另读锁定的视频所在那一条帖子的链接、作者名和正文（显示、起文件名、记下回到帖子的链接），别的帖子不读。
+//    X、Instagram 首页信息流上另读锁定的视频所在那一条帖子的链接、作者名和正文（显示、起文件名、记下回到帖子的链接），别的帖子不读；
+//    抖音另读当前这条视频上的作者昵称和描述（页面标题在划到下一条时不更新，不能用），别的视频不读。
 // 5. Capture 截图（用户 2026-11-06 要求，见 DECISIONS §50、§52）：只在你点按钮时，把这一帧按视频的真实尺寸
 //    画到不放进页面的画布上，在本机编成 PNG，由侧边栏取走后交给浏览器保存（这里不保存：从这个页面连续下载，
 //    第二次起会被 Chrome 拦下）。不录声音、不带字幕和播放器控件，广告时不截。
@@ -37,6 +39,7 @@ import {
   formatTimecode,
   feedPostTitle,
   igProfileName,
+  isDouyinPage,
   isIgHomeUrl,
   isIgPage,
   isKubbAd,
@@ -47,6 +50,7 @@ import {
   loopedToStart,
   mp4TrackKinds,
   outputSize,
+  parseDouyinUrl,
   parseIgPostUrl,
   parseKubbPlayUrl,
   parseXStatusUrl,
@@ -75,8 +79,18 @@ type ClipSettings = typeof DEFAULT_SETTINGS.clips;
 
 const FONT = '"YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", sans-serif';
 
-/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）、Instagram 网页版或 YouTube */
-const SITE: ClipSite = xhsPath(location.href) ? 'xhs' : isXPage(location.href) ? 'x' : isKubbPage(location.href) ? 'kubb' : isIgPage(location.href) ? 'ig' : 'youtube';
+/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版或 YouTube */
+const SITE: ClipSite = xhsPath(location.href)
+  ? 'xhs'
+  : isXPage(location.href)
+    ? 'x'
+    : isKubbPage(location.href)
+      ? 'kubb'
+      : isIgPage(location.href)
+        ? 'ig'
+        : isDouyinPage(location.href)
+          ? 'douyin'
+          : 'youtube';
 /** X 和 Instagram：一页有好几个视频，录的是哪个、属于哪条帖子要从页面上认（见 feedSiteNow） */
 const FEED_SITE = SITE === 'x' || SITE === 'ig';
 
@@ -204,14 +218,14 @@ interface FeedSiteNow {
 /** 首页信息流里锁定的视频和它所在的帖子（判断见 pickFeedVideo）；离开首页就清掉 */
 let feedLock: { video: HTMLVideoElement; post?: FeedPost } | undefined;
 
-/** 帖子上的一段文字：表情是图片时取它的替代文字，换行照算；t.co 短链（X 把媒体和外链都写成这种）不要 */
+/** 帖子上的一段文字：表情是图片时取它的替代文字，换行照算；t.co 短链（X 把媒体和外链都写成这种）和按钮（抖音描述后面的"展开"）不要 */
 function postText(el: Element | null | undefined): string {
   let out = '';
   const walk = (n: Node): void => {
     if (n.nodeType === Node.TEXT_NODE) out += n.nodeValue ?? '';
     else if (n instanceof HTMLImageElement) out += n.alt;
     else if (n instanceof HTMLBRElement) out += '\n';
-    else if (!(n instanceof HTMLAnchorElement && /^https?:\/\/t\.co\//.test(n.href))) n.childNodes.forEach(walk);
+    else if (!(n instanceof HTMLButtonElement) && !(n instanceof HTMLAnchorElement && /^https?:\/\/t\.co\//.test(n.href))) n.childNodes.forEach(walk);
   };
   if (el) walk(el);
   return out;
@@ -332,6 +346,30 @@ function feedRecordingId(r: Recording): string | null {
 }
 
 /**
+ * 抖音精选页里打开的这条视频在页面上的那一块（2026-11-10 实测）：网址带 ?modal_id=<视频ID>；页面上"当前这一条"是
+ * [data-e2e="feed-active-video"]，它的 data-e2e-vid 就是这个 ID，里面的 <video> 是正在放的那个。
+ * 旁边预先加载着上一条、下一条的 <video>（划走以后也还留在页面上），页面角落另有一个空的，都不在"当前这一条"里。
+ * 划到下一条的一瞬间网址和页面可能对不上：对不上时当作还没准备好。不是这种网址时不找。
+ */
+function douyinItem(): Element | null {
+  const page = parseDouyinUrl(location.href);
+  const item = page ? document.querySelector('[data-e2e="feed-active-video"]') : null;
+  const vid = item?.getAttribute('data-e2e-vid');
+  return item && (!vid || vid === page!.id) ? item : null;
+}
+
+/**
+ * 抖音这条视频的标题：作者昵称（去掉开头的 @）和描述拼成"作者 - 描述"。页面标题不能用：划到下一条时它不更新（2026-11-10 实测）。
+ * 只读当前这一条的昵称和描述，别的视频不读；只用来显示和起文件名。
+ */
+function douyinTitle(): string | undefined {
+  const item = douyinItem();
+  if (!item) return undefined;
+  const author = postText(item.querySelector('[data-e2e="feed-video-nickname"]')).trim().replace(/^@/, '');
+  return feedPostTitle(author, postText(item.querySelector('[data-e2e="video-desc"]'))) || undefined;
+}
+
+/**
  * 酷播播放页上播放器的视频（2026-11-10 实测：<vg-player> 的直接子元素，换片、换集都用同一个）。
  * 页面上另有两个不相干的 <video>：投屏按钮里一个空的、页面角落一个 1×1 的，都不是 <vg-player> 的直接子元素。
  * 不是播放页时不找。
@@ -345,6 +383,7 @@ function videoEl(): HTMLVideoElement | null {
   const now = feedSiteNow();
   if (now) return now.video;
   if (SITE === 'kubb') return kubbVideoEl();
+  if (SITE === 'douyin') return douyinItem()?.querySelector('video') ?? null;
   let all = document.querySelectorAll<HTMLVideoElement>(XHS_PLAYER_VIDEO);
   if (!all.length) all = document.querySelectorAll<HTMLVideoElement>(XHS_ANY_VIDEO);
   if (all.length <= 1) return all[0] ?? null;
@@ -373,13 +412,15 @@ function adShowing(): boolean {
 
 /**
  * YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时；首页信息流上是锁定的视频所在的帖子）；
- * 酷播的影片 ID（网址是播放页时，剧集带分集 ID）；Instagram 的帖子短码（首页信息流上锁定的视频所在的帖子）
+ * 酷播的影片 ID（网址是播放页时，剧集带分集 ID）；Instagram 的帖子短码（首页信息流上锁定的视频所在的帖子）；
+ * 抖音的视频 ID（网址里的 modal_id）
  */
 function currentIds(): { videoId: string | null; shorts: boolean } {
   if (SITE === 'youtube') return videoIdFromUrl(location.href);
   const now = feedSiteNow();
   if (now) return { videoId: now.videoId, shorts: false };
   if (SITE === 'kubb') return { videoId: parseKubbPlayUrl(location.href)?.id ?? null, shorts: false };
+  if (SITE === 'douyin') return { videoId: parseDouyinUrl(location.href)?.id ?? null, shorts: false };
   const link = parseXhsUrl(location.href);
   return { videoId: link?.kind === 'note' ? link.noteId : null, shorts: false };
 }
@@ -388,6 +429,7 @@ function pageTitle(): string | undefined {
   // 首页信息流（X、Instagram）：页面标题只是"主页 / X""Instagram"，标题来自锁定的视频所在的帖子
   const now = feedSiteNow();
   if (now?.feed) return now.title;
+  if (SITE === 'douyin') return douyinTitle();
   const t = titleFromDocumentTitle(document.title || '', SITE);
   return t && !/^(?:YouTube|小红书|rednote|酷播)$/i.test(t) ? t : undefined;
 }

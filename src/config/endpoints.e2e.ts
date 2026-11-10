@@ -41,3 +41,6 @@ export const KUBB_PAGES: readonly string[] = ['https://www.kubb.tv/', `${MOCK}/k
 
 /** e2e：本机 mock 的 /igpage/ 下是仿 Instagram 网页版的页面（首页信息流就是 /igpage/ 本身） */
 export const IG_PAGES: readonly string[] = ['https://www.instagram.com/', `${MOCK}/igpage/`];
+
+/** e2e：本机 mock 的 /douyin/ 下是仿抖音网页版的页面（精选页是 /douyin/jingxuan） */
+export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/', `${MOCK}/douyin/`];

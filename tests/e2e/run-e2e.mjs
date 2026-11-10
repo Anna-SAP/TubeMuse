@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockServer, PORT, E2E_CLIENT_SECRET } from './mock-server.mjs';
+import { DOUYIN_NEXT, DOUYIN_VIDEO } from './douyin-pages.mjs';
 import { IG_FEED_POST, IG_PLAIN_POST } from './ig-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from './kubb-pages.mjs';
 import { X_FEED_POST, X_GIF_POST, X_POST, X_TEXT_POST } from './x-pages.mjs';
@@ -2465,6 +2466,96 @@ try {
     `Instagram 页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${igPageReqs.length ? `：${igPageReqs.map((r) => r.path).join(', ')}` : ''}`,
   );
   await ig.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── 抖音：片段录制 ─────────────────────────
+  console.log('\n[抖音：精选页里点开一条视频后录"当前这一条"（不认旁边预先加载的下一条）；标题来自这条视频上的作者和描述，不用不更新的页面标题；划到下一条时自动结束]');
+  const douyinReqStart = requests.length;
+  const [douyin] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/douyin/jingxuan/travel`)]);
+  douyin.on('pageerror', (e) => consoleErrors.push(`douyin pageerror: ${e.message}`));
+  await douyin.waitForLoadState('domcontentloaded');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '片段', exact: true }).click();
+  // 把侧边栏拿到前台时，当前标签页变成了侧边栏自己：切回抖音那个标签页（就像你点回它）
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/douyin/'));
+    await c.tabs.update(t.id, { active: true });
+  });
+  await clipStatus.filter({ hasText: '不是抖音精选里打开的视频' }).waitFor({ timeout: 10000 });
+  check(true, '精选页上还没点开视频：说明要点开一条再录');
+  const douyinAppHtml = () => douyin.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  const douyinTitle = async () => (await panel.getByTestId('clip-title').textContent()) ?? '';
+  const douyinActive = '[data-e2e="feed-active-video"] video';
+  await douyin.evaluate(() => /** @type {any} */ (window).__openVideo());
+  await douyin.waitForFunction((s) => (/** @type {HTMLVideoElement | null} */ (document.querySelector(s))?.readyState ?? 0) >= 2, douyinActive, { timeout: 30000 });
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  // 时长要等视频元数据到了、下一轮推送才进侧边栏：选成预先加载的下一条时这里是 0:30，会超时
+  await panel.getByTestId('clip-position').filter({ hasText: / 0:(19|20)$/ }).waitFor({ timeout: 5000 });
+  check(
+    (await douyinTitle()) === DOUYIN_VIDEO.title,
+    `站内点开视频后不用刷新就能录：选中"当前这一条"（20 秒），标题是作者 - 描述（去掉 @ 和"展开"，不混进弹幕）：${await douyinTitle()}`,
+  );
+  check(
+    ((await panel.getByTestId('clip-no-burn').textContent()) ?? '').includes('弹幕') && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-capture').count()) === 1,
+    '界面写明弹幕不会录进去、划到下一条时自动结束；不提供字幕烧录，有 Capture',
+  );
+  const douyinHtmlBefore = await douyinAppHtml();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await douyin.waitForTimeout(2500);
+  const [douyinDl] = await Promise.all([douyin.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const douyinName = douyinDl.suggestedFilename();
+  check(douyinName.startsWith(`${DOUYIN_VIDEO.title}_00m0`) && /_00m\d\ds-00m\d\ds\.(mp4|webm)$/.test(douyinName), `停止后保存，文件名用作者、描述与起止时间：${douyinName}`);
+  const douyinClip = await analyzeClip(douyin, /** @type {string} */ (await douyinDl.path()));
+  check(container(douyinClip.head) === douyinName.split('.').pop() && douyinClip.duration > 2 && douyinClip.rms > 0.02, `视频静音播放（浏览器的限制）也录到了声音（${douyinClip.duration.toFixed(1)} 秒，响度 ${douyinClip.rms.toFixed(3)}）`);
+  await panel.getByTestId('clip-log').filter({ hasText: douyinName }).waitFor({ timeout: 5000 });
+  const douyinLog = (await clipLog())[0];
+  check(
+    douyinLog?.site === 'douyin' && douyinLog.videoId === DOUYIN_VIDEO.id && douyinLog.title === DOUYIN_VIDEO.title && douyinLog.url === `${MOCK}/douyin/jingxuan/travel?modal_id=${DOUYIN_VIDEO.id}` && douyinLog.fileName === douyinName,
+    '"最近录过的片段"记下这是抖音的视频，链接只留类目路径和 modal_id（别的参数去掉）',
+  );
+  check(((await panel.getByTestId('clip-log').textContent()) ?? '').includes('抖音 · '), '侧边栏的片段清单标出抖音');
+  check((await douyinAppHtml()) === douyinHtmlBefore && (await douyin.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '录制没有往抖音页面里加任何元素，没有点到抖音自己的任何东西（包括"展开"）');
+
+  // 再录一段，录制中划到下一条：这一段自动结束并保存；侧边栏跟上新的一条（页面标题还是上一条的）
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await douyin.waitForTimeout(1500);
+  const [douyinNextDl] = await Promise.all([douyin.waitForEvent('download', { timeout: 10000 }), douyin.evaluate(() => /** @type {any} */ (window).__nextVideo())]);
+  check(douyinNextDl.suggestedFilename().startsWith(`${DOUYIN_VIDEO.title}_00m0`), `划到下一条时这一段自动结束并保存，文件名是录的那一条的：${douyinNextDl.suggestedFilename()}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '切到了别的视频' }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('clip-log').filter({ hasText: douyinNextDl.suggestedFilename() }).waitFor({ timeout: 5000 });
+  check((await clipLog())[0]?.videoId === DOUYIN_VIDEO.id && (await clipLog())[0]?.title === DOUYIN_VIDEO.title, '这一段记在录的那一条名下');
+  await panel.getByTestId('clip-title').filter({ hasText: DOUYIN_NEXT.title }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('clip-position').filter({ hasText: / 0:(29|30)$/ }).waitFor({ timeout: 5000 });
+  const douyinStale = await douyin.evaluate(() => document.title);
+  check(
+    (await douyinTitle()) === DOUYIN_NEXT.title && douyinStale === DOUYIN_VIDEO.docTitle,
+    `侧边栏跟上新的一条（30 秒）：标题来自这条视频本身，没有用还停在上一条的页面标题（"${douyinStale}"）`,
+  );
+  await panel.getByRole('button', { name: '释放内存' }).click();
+
+  // 换成有画面的视频（静音、暂停着交回来），暂停着截
+  await useFramedVideo(douyin, douyinActive);
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 5000 });
+  const douyinSeqBefore = await captureSeq();
+  const douyinShot = await capture();
+  const douyinShotName = douyinShot.suggestedFilename();
+  const douyinPng = await readPng(/** @type {string} */ (await douyinShot.path()), douyin);
+  check(
+    douyinShotName.startsWith(`${DOUYIN_NEXT.title}_00-00-0`) && douyinShotName.endsWith(`_original_${String(douyinSeqBefore + 1).padStart(5, '0')}.png`) && douyinPng.width === 720 && douyinPng.height === 1280 && douyinPng.left[0] > 150 && douyinPng.right[2] > 150,
+    `Capture：截的是当前这一条，文件名用它的作者和描述，按视频的真实尺寸存，不带弹幕：${douyinShotName}（${douyinPng.width}×${douyinPng.height}）`,
+  );
+  await douyin.evaluate(() => /** @type {any} */ (window).__closeVideo());
+  await clipStatus.filter({ hasText: '不是抖音精选里打开的视频' }).waitFor({ timeout: 5000 });
+  check(true, '关掉这条视频回到精选页：说明要点开一条再录');
+  const douyinPageReqs = requests.slice(douyinReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/douyin/`));
+  check(
+    douyinPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/douyin/') || r.path === '/favicon.ico')),
+    `抖音页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${douyinPageReqs.length ? `：${douyinPageReqs.map((r) => r.path).join(', ')}` : ''}`,
+  );
+  await douyin.close();
   await panel.bringToFront();
 
   // ───────────────────────── 酷播：片段录制 ─────────────────────────

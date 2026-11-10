@@ -3,7 +3,7 @@
 // 录制本身（画布、MediaRecorder、保存）在 content/clipper.ts；侧边栏"片段"页只经消息控制它。
 
 import { CLIPS } from '../config/defaults';
-import { IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } from '../config/endpoints';
+import { DOUYIN_PAGES, IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } from '../config/endpoints';
 import { canonicalXhsUrl, isXhsId } from './xhs';
 
 export type ClipMode = 'free' | 'range';
@@ -11,9 +11,9 @@ export type ClipMode = 'free' | 'range';
 /**
  * 录的是哪个站的视频：YouTube 播放页、小红书网页版的视频笔记（2026-11-04 新增，见 DECISIONS §43）、
  * X 网页版的帖子（2026-11-06 新增，见 DECISIONS §52）、酷播（kubb.tv）的播放页（2026-11-10 新增，见 DECISIONS §54）、
- * Instagram 网页版的首页信息流（2026-11-10 新增，见 DECISIONS §56）
+ * Instagram 网页版的首页信息流（2026-11-10 新增，见 DECISIONS §56）、抖音网页版精选页里打开的视频（2026-11-10 新增，见 DECISIONS §57）
  */
-export type ClipSite = 'youtube' | 'xhs' | 'x' | 'kubb' | 'ig';
+export type ClipSite = 'youtube' | 'xhs' | 'x' | 'kubb' | 'ig' | 'douyin';
 
 /** 侧边栏 → 内容脚本、内容脚本 → 侧边栏 / 后台 的消息类型 */
 export const CLIP_MSG = {
@@ -125,10 +125,11 @@ function kubbTitle(title: string): string {
 /**
  * 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"；X 见 xPostTitle；酷播见 kubbTitle）。
  * Instagram 首页的页面标题只是"Instagram"，说明不了是哪条帖子：不用（标题来自帖子本身，见 feedPostTitle）。
+ * 抖音的页面标题在划到下一条视频时不更新（2026-11-10 实测），会张冠李戴：也不用，标题来自当前这条视频上的作者和描述。
  */
 export function titleFromDocumentTitle(docTitle: string, site: ClipSite = 'youtube'): string {
   const title = docTitle.replace(/^\(\d+\+?\)\s*/, '');
-  if (site === 'ig') return '';
+  if (site === 'ig' || site === 'douyin') return '';
   if (site === 'x') return xPostTitle(title);
   if (site === 'kubb') return kubbTitle(title);
   return title.replace(site === 'xhs' ? /\s*[-–—]\s*(?:小红书|rednote)\s*$/i : /\s*[-–—]\s*YouTube\s*$/i, '').trim();
@@ -411,6 +412,38 @@ export function loopedToStart(previousTime: number, currentTime: number, duratio
   return atVideoEnd(previousTime, duration) && currentTime < CLIPS.endSlackSec && currentTime < previousTime;
 }
 
+// ── 抖音的精选页 ──
+
+/** 精选页的路径：jingxuan，或 jingxuan/<类目>（如 travel、beauty） */
+const DOUYIN_FEED_PATH = /^jingxuan(?:\/[A-Za-z0-9_-]{1,40})?$/;
+/** 视频 ID：一串数字（2026-11-10 实测 19 位） */
+const DOUYIN_VIDEO_ID = /^\d{6,25}$/;
+
+/** 这个网址是不是抖音网页版（录制脚本靠它判断自己在哪个站） */
+export function isDouyinPage(url: string): boolean {
+  return DOUYIN_PAGES.some((p) => url.startsWith(p));
+}
+
+/**
+ * 抖音精选页里打开了一条视频时的网址 → 视频 ID 与规范链接（2026-11-10 实测）：/jingxuan?modal_id=<视频ID>，
+ * 带类目时是 /jingxuan/<类目>?modal_id=<视频ID>。划到下一条视频时 modal_id 跟着变，所以换一条就算换了视频。
+ * 链接只留路径和 modal_id，别的查询参数去掉。没打开视频的精选页、/video/<ID>、推荐、搜索、个人主页等别的页面返回 undefined。
+ */
+export function parseDouyinUrl(url: string): { id: string; url: string } | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const full = u.origin + u.pathname;
+  const prefix = DOUYIN_PAGES.find((p) => full.startsWith(p));
+  if (!prefix) return undefined;
+  const path = full.slice(prefix.length).replace(/\/$/, '');
+  const id = u.searchParams.get('modal_id');
+  return DOUYIN_FEED_PATH.test(path) && id && DOUYIN_VIDEO_ID.test(id) ? { id, url: `${prefix}${path}?modal_id=${id}` } : undefined;
+}
+
 // ── 酷播的播放页 ──
 
 const KUBB_ID = /^[A-Za-z0-9_-]{6,24}$/;
@@ -494,6 +527,7 @@ const CLIP_UNAVAILABLE_TEXT: Record<ClipSite, { noPage: string; noVideo: string 
   kubb: { noPage: '这个页面不是播放页：点开一部影片再录', noVideo: '没找到播放器里的视频，等画面出来后再试' },
   // Instagram 只在首页信息流上录，"没有视频"的说法在 FEED_TEXT 里；这里的 noVideo 用不到，留着是为了每个站都有一句
   ig: { noPage: '这个页面不是 Instagram 的首页信息流：回到首页（www.instagram.com）再录', noVideo: '没找到正在播放的视频，等画面出来后再试' },
+  douyin: { noPage: '这个页面不是抖音精选里打开的视频：在精选页（www.douyin.com/jingxuan）点开一条视频再录', noVideo: '没找到这条视频的画面，等它开始播放后再试' },
 };
 
 /** 首页信息流（X、Instagram）上不能录的原因：没有锁定的视频；锁定了视频但认不出它属于哪条帖子（广告没有帖子链接） */
@@ -802,14 +836,14 @@ export interface ClipTabState {
 
 export interface ClipRecord {
   id: string;
-  /** 小红书的记录带 'xhs'，X 的带 'x'，酷播的带 'kubb'，Instagram 的带 'ig'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
+  /** 小红书的记录带 'xhs'，X 的带 'x'，酷播的带 'kubb'，Instagram 的带 'ig'，抖音的带 'douyin'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
   site?: ClipSite;
   /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID（剧集是"影片ID.分集ID"），或 Instagram 的帖子短码 */
   videoId: string;
   /**
    * 小红书：笔记链接（只留站点、路径与 xsec_token / xsec_source，从外面打开笔记要带 xsec_token）；
    * X：帖子链接（parseXStatusUrl 的规范链接）；酷播：播放页链接（parseKubbPlayUrl 的规范链接）；
-   * Instagram：帖子链接（parseIgPostUrl 的规范链接）
+   * Instagram：帖子链接（parseIgPostUrl 的规范链接）；抖音：精选页里这条视频的链接（parseDouyinUrl 的规范链接）
    */
   url?: string;
   title?: string;
@@ -830,8 +864,8 @@ const VIDEO_ID = /^[A-Za-z0-9_-]{6,20}$/;
 function clipSourceUrl(site: ClipSite, raw: unknown, id: string | null): string | null | undefined {
   if (site === 'youtube') return undefined;
   if (typeof raw !== 'string') return null;
-  if (site === 'x' || site === 'kubb' || site === 'ig') {
-    const page = site === 'x' ? parseXStatusUrl(raw) : site === 'ig' ? parseIgPostUrl(raw) : parseKubbPlayUrl(raw);
+  if (site !== 'xhs') {
+    const page = { x: parseXStatusUrl, kubb: parseKubbPlayUrl, ig: parseIgPostUrl, douyin: parseDouyinUrl }[site](raw);
     return page?.id === id ? page.url : null;
   }
   const note = canonicalXhsUrl(raw);
@@ -848,8 +882,8 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
   const str = (v: unknown, max: number) => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null);
   const id = str(r.id, 64);
-  // X 的帖子 ID、酷播的影片 ID、Instagram 的帖子短码由下面的链接核对（只能是从链接里解析出来的那个）
-  const idFromUrl = site === 'x' || site === 'kubb' || site === 'ig';
+  // X 的帖子 ID、酷播的影片 ID、Instagram 的帖子短码、抖音的视频 ID 由下面的链接核对（只能是从链接里解析出来的那个）
+  const idFromUrl = site !== 'youtube' && site !== 'xhs';
   const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : idFromUrl || VIDEO_ID.test(r.videoId)) ? r.videoId : null;
   const sourceUrl = clipSourceUrl(site, r.url, videoId);
   if (sourceUrl === null) return null;
@@ -876,6 +910,7 @@ export function clipWatchUrl(r: Pick<ClipRecord, 'videoId' | 'start' | 'site' | 
   if (r.site === 'xhs') return r.url ?? `${XHS_PAGES[0]}explore/${encodeURIComponent(r.videoId)}`;
   if (r.site === 'x') return r.url ?? `${X_PAGES[0]}i/status/${encodeURIComponent(r.videoId)}`;
   if (r.site === 'ig') return r.url ?? `${IG_PAGES[0]}p/${encodeURIComponent(r.videoId)}/`;
+  if (r.site === 'douyin') return r.url ?? `${DOUYIN_PAGES[0]}jingxuan?modal_id=${encodeURIComponent(r.videoId)}`;
   if (r.site === 'kubb') {
     const [show = '', episode] = r.videoId.split('.');
     return r.url ?? `${KUBB_PAGES[0]}play/${encodeURIComponent(show)}${episode ? `?id=${encodeURIComponent(episode)}` : ''}`;
