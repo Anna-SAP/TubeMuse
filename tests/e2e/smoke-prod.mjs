@@ -45,7 +45,7 @@ try {
       JSON.stringify([
         { js: 'content-tracker.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
         { js: 'content-subtitles.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
-        { js: 'content-clipper.js', matches: 'https://www.youtube.com/*,https://www.xiaohongshu.com/*,https://www.rednote.com/*,https://x.com/*,https://www.kubb.tv/*', world: 'ISOLATED' },
+        { js: 'content-clipper.js', matches: 'https://www.youtube.com/*,https://www.xiaohongshu.com/*,https://www.rednote.com/*,https://x.com/*,https://www.kubb.tv/*,https://www.instagram.com/*', world: 'ISOLATED' },
         { js: 'content-multicc-bridge.js', matches: 'https://www.youtube.com/*', world: 'MAIN' },
         { js: 'content-multicc.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
         { js: 'content-xhs-bridge.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'MAIN' },

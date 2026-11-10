@@ -2,17 +2,19 @@
 // 2026-11-04 起也注入小红书网页版，录笔记详情里的视频（用户要求，见 DECISIONS §43）；
 // 2026-11-06 起也注入 X 网页版，录帖子里的视频（用户要求，见 DECISIONS §52）；2026-11-10 起首页信息流（x.com/home）上
 // 也能录正在播放、开着声音的那个视频，为此只读它所在那一条帖子的链接、作者名和正文（用户批准的红线变更，见 DECISIONS §55）；
-// 2026-11-10 起也注入酷播（www.kubb.tv），录播放页 /play/<ID> 里的视频（用户要求，见 DECISIONS §54）：
+// 2026-11-10 起也注入酷播（www.kubb.tv），录播放页 /play/<ID> 里的视频（用户要求，见 DECISIONS §54）；
+// 2026-11-10 起也注入 Instagram 网页版，只录首页信息流里正在播放、开着声音的那个视频，逻辑与 X 首页信息流相同（用户要求，见 DECISIONS §56）：
 // 1. 只在你从侧边栏"片段"页或快捷键开始录制后工作：把正在播放的这个视频逐帧画到一块不放进页面的画布上
 //    （开启字幕烧录时再叠加播放器里当时显示的字幕，只限 YouTube），声音经 video.captureStream() 取这个视频的音轨，
 //    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载这些网站的音视频流。
-// 2. 广告（YouTube 认得出；酷播只认得出"不是正片的流、又很短"的片头广告；X 认不出）、暂停、缓冲、标签页在后台时自动暂停录制；
-//    切到别的视频（小红书：关掉这篇笔记；X：离开这条帖子；酷播：换一部或换一集）时这一段自动结束。
+// 2. 广告（YouTube 认得出；酷播只认得出"不是正片的流、又很短"的片头广告；X 认不出；Instagram 的广告帖子没有帖子链接，不让录）、
+//    暂停、缓冲、标签页在后台时自动暂停录制；切到别的视频（小红书：关掉这篇笔记；X：离开这条帖子；酷播：换一部或换一集；
+//    Instagram：离开首页）时这一段自动结束。
 // 3. 录好的片段只在这个页面的内存里；你点"保存"（或开着"停止后直接保存"）时由浏览器存进下载文件夹，
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
 //    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
 // 4. 读取的页面信息只有：播放器状态、页面标题（只用来显示和起文件名）、开启字幕烧录时播放器里当时显示的字幕文字；
-//    X 首页信息流上另读锁定的视频所在那一条帖子的链接、作者名和正文（显示、起文件名、记下回到帖子的链接），别的帖子不读。
+//    X、Instagram 首页信息流上另读锁定的视频所在那一条帖子的链接、作者名和正文（显示、起文件名、记下回到帖子的链接），别的帖子不读。
 // 5. Capture 截图（用户 2026-11-06 要求，见 DECISIONS §50、§52）：只在你点按钮时，把这一帧按视频的真实尺寸
 //    画到不放进页面的画布上，在本机编成 PNG，由侧边栏取走后交给浏览器保存（这里不保存：从这个页面连续下载，
 //    第二次起会被 Chrome 拦下）。不录声音、不带字幕和播放器控件，广告时不截。
@@ -33,22 +35,27 @@ import {
   clipUnavailable,
   decideClip,
   formatTimecode,
+  feedPostTitle,
+  igProfileName,
+  isIgHomeUrl,
+  isIgPage,
   isKubbAd,
   isKubbPage,
   isXHomeUrl,
   isXPage,
   layoutBurnIn,
+  loopedToStart,
   mp4TrackKinds,
   outputSize,
+  parseIgPostUrl,
   parseKubbPlayUrl,
   parseXStatusUrl,
   pickClipFormat,
-  pickXFeedVideo,
+  pickFeedVideo,
   pickXVideo,
   titleFromDocumentTitle,
   videoBitrate,
   visibleArea,
-  xFeedTitle,
   type BurnBox,
   type BurnLine,
   type ClipCaptureReply,
@@ -68,8 +75,10 @@ type ClipSettings = typeof DEFAULT_SETTINGS.clips;
 
 const FONT = '"YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", sans-serif';
 
-/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）或 YouTube */
-const SITE: ClipSite = xhsPath(location.href) ? 'xhs' : isXPage(location.href) ? 'x' : isKubbPage(location.href) ? 'kubb' : 'youtube';
+/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）、Instagram 网页版或 YouTube */
+const SITE: ClipSite = xhsPath(location.href) ? 'xhs' : isXPage(location.href) ? 'x' : isKubbPage(location.href) ? 'kubb' : isIgPage(location.href) ? 'ig' : 'youtube';
+/** X 和 Instagram：一页有好几个视频，录的是哪个、属于哪条帖子要从页面上认（见 feedSiteNow） */
+const FEED_SITE = SITE === 'x' || SITE === 'ig';
 
 let settings: ClipSettings = { ...DEFAULT_SETTINGS.clips };
 let fontScale = DEFAULT_SETTINGS.subtitles.fontScale;
@@ -78,9 +87,9 @@ interface Recording {
   id: string;
   mode: ClipMode;
   videoId: string;
-  /** 开始录制时的网址（小红书、X、酷播：记下原处的链接，离开之后再保存也对得上）；X 首页信息流上是这条帖子的链接 */
+  /** 开始录制时的网址（小红书、X、酷播：记下原处的链接，离开之后再保存也对得上）；X、Instagram 首页信息流上是这条帖子的链接 */
   pageUrl: string;
-  /** 在 X 的首页信息流里开录的：网址里没有帖子 ID，换没换视频只看这个元素还在不在、人还在不在首页（见 xRecordingId） */
+  /** 在首页信息流（X、Instagram）里开录的：网址里没有帖子 ID，换没换视频只看这个元素还在不在、人还在不在首页（见 feedRecordingId） */
   feed: boolean;
   title?: string;
   start?: number;
@@ -176,22 +185,32 @@ function xStatusVideoEl(): HTMLVideoElement | null {
   return all[pick] ?? null;
 }
 
-/** X 首页信息流里一条帖子的链接、ID 和"作者 - 正文" */
-interface XFeedPost {
+/** 首页信息流（X、Instagram）里一条帖子的链接、ID 和"作者 - 正文" */
+interface FeedPost {
   id: string;
   url: string;
   title?: string;
 }
 
-/** 首页信息流里锁定的视频和它所在的帖子（判断见 pickXFeedVideo）；离开首页就清掉 */
-let xFeed: { video: HTMLVideoElement; post?: XFeedPost } | undefined;
+/** 这个页面上现在该录的视频、帖子 ID、帖子链接和标题（X、Instagram）；feed：现在是不是在首页信息流上 */
+interface FeedSiteNow {
+  feed: boolean;
+  video: HTMLVideoElement | null;
+  videoId: string | null;
+  url?: string;
+  title?: string;
+}
 
-/** 帖子上的一段文字：表情是图片，取它的替代文字；t.co 短链（X 把媒体和外链都写成这种）不要 */
-function xText(el: Element | null | undefined): string {
+/** 首页信息流里锁定的视频和它所在的帖子（判断见 pickFeedVideo）；离开首页就清掉 */
+let feedLock: { video: HTMLVideoElement; post?: FeedPost } | undefined;
+
+/** 帖子上的一段文字：表情是图片时取它的替代文字，换行照算；t.co 短链（X 把媒体和外链都写成这种）不要 */
+function postText(el: Element | null | undefined): string {
   let out = '';
   const walk = (n: Node): void => {
     if (n.nodeType === Node.TEXT_NODE) out += n.nodeValue ?? '';
     else if (n instanceof HTMLImageElement) out += n.alt;
+    else if (n instanceof HTMLBRElement) out += '\n';
     else if (!(n instanceof HTMLAnchorElement && /^https?:\/\/t\.co\//.test(n.href))) n.childNodes.forEach(walk);
   };
   if (el) walk(el);
@@ -204,29 +223,55 @@ function xText(el: Element | null | undefined): string {
  * 所以取到的总是外层这条——视频在被引用的帖子里时，记的也是你在信息流里看到的这一条。广告没有带时间的链接，认不出来。
  * 只读这一条帖子的链接、作者名和正文，别的帖子不读；只用来显示、起文件名、记下回到帖子的链接。
  */
-function readXFeedPost(video: HTMLVideoElement): XFeedPost | undefined {
+function readXFeedPost(video: HTMLVideoElement): FeedPost | undefined {
   const article = video.closest('article');
   const link = article?.querySelector('a[href*="/status/"] time')?.closest('a');
   const page = link ? parseXStatusUrl(link.href) : undefined;
   if (!article || !page) return undefined;
   // 作者名：第一个 User-Name 里的第一个链接（后面是 @用户名 和时间；引用的帖子另有一个 User-Name，排在后面）
-  const author = xText(article.querySelector('[data-testid="User-Name"] a'));
+  const author = postText(article.querySelector('[data-testid="User-Name"] a'));
   // 正文：不在引用块里的那一段（外层帖子没有文字时，不拿被引用帖子的文字顶替）
   const body = [...article.querySelectorAll('[data-testid="tweetText"]')].find((t) => {
     const quote = t.closest('[role="link"]');
     return !quote || !article.contains(quote);
   });
-  const title = xFeedTitle(author, xText(body));
+  const title = feedPostTitle(author, postText(body));
   return { ...page, ...(title ? { title } : {}) };
 }
 
-/** X 首页信息流上现在该录的视频和它的帖子；没有"在播且有声音"的视频（也没有还算数的上一个）时返回 undefined */
-function xFeedTarget(): { video: HTMLVideoElement; post?: XFeedPost } | undefined {
+/**
+ * Instagram 首页信息流里这个视频属于哪条帖子（2026-11-10 实测 www.instagram.com）：每条帖子是一个 <article>；帖子自己的链接是
+ * 包着发布时间 <time> 的那个 <a href="/p/短码/">，广告没有 <time>，认不出来。作者取帖子里第一个指向个人主页的链接（/用户名/）里的用户名。
+ * 正文在视频下面：一个 span[dir="auto"] 里套着的 span[dir="auto"]，同一个块里有这位作者的链接（所以别人的评论不算）；
+ * 折叠起来的部分（"... 更多"）在另一个元素里，不去点它，只取露出来的这一段。
+ * 只读这一条帖子的链接、作者用户名和正文，别的帖子不读；只用来显示、起文件名、记下回到帖子的链接。
+ */
+function readIgFeedPost(video: HTMLVideoElement): FeedPost | undefined {
+  const article = video.closest('article');
+  const link = article?.querySelector('a[href] time')?.closest('a');
+  const page = link ? parseIgPostUrl(link.href) : undefined;
+  if (!article || !page) return undefined;
+  const profileOf = (box: Element) => [...box.querySelectorAll<HTMLAnchorElement>('a[href]')].map((a) => igProfileName(a.href)).filter(Boolean);
+  const author = profileOf(article)[0] ?? '';
+  const body = [...article.querySelectorAll('span[dir="auto"] span[dir="auto"]')].find((s) => {
+    if (!(video.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+    // 链接里的（话题、@提及）和按钮里的（"更多"）不是正文本身
+    const wrapper = s.closest('a, [role="button"]');
+    if (wrapper && article.contains(wrapper)) return false;
+    const box = s.parentElement?.closest('span[dir="auto"]')?.parentElement;
+    return !!author && !!box && article.contains(box) && profileOf(box).includes(author);
+  });
+  const title = feedPostTitle(author, postText(body));
+  return { ...page, ...(title ? { title } : {}) };
+}
+
+/** 首页信息流上现在该录的视频和它的帖子；没有"在播且有声音"的视频（也没有还算数的上一个）时返回 undefined */
+function feedTarget(readPost: (video: HTMLVideoElement) => FeedPost | undefined): { video: HTMLVideoElement; post?: FeedPost } | undefined {
   const all = [...document.querySelectorAll('video')];
-  const held = xFeed ? all.indexOf(xFeed.video) : -1;
+  const held = feedLock ? all.indexOf(feedLock.video) : -1;
   const video =
     all[
-      pickXFeedVideo(
+      pickFeedVideo(
         all.map((v, i) => {
           const playing = !v.paused && !v.ended;
           const muted = v.muted || v.volume === 0;
@@ -237,32 +282,50 @@ function xFeedTarget(): { video: HTMLVideoElement; post?: XFeedPost } | undefine
       )
     ];
   if (!video) {
-    xFeed = undefined;
+    feedLock = undefined;
     return undefined;
   }
-  if (xFeed?.video !== video) xFeed = { video };
+  if (feedLock?.video !== video) feedLock = { video };
   // 帖子只在锁定时读一次；没读出来（例如帖子还没渲染完）下一轮再读
-  if (!xFeed.post) {
-    const post = readXFeedPost(video);
-    if (post) xFeed.post = post;
+  if (!feedLock.post) {
+    const post = readPost(video);
+    if (post) feedLock.post = post;
   }
-  return xFeed;
+  return feedLock;
 }
 
-/** X 页面上现在该录的视频、帖子 ID、帖子链接和标题：帖子页看网址和页面标题，首页信息流看锁定的视频所在的帖子，别的页面不找 */
-function xNow(): { feed: boolean; video: HTMLVideoElement | null; videoId: string | null; url?: string; title?: string } {
-  const page = parseXStatusUrl(location.href);
-  if (page || !isXHomeUrl(location.href)) {
-    xFeed = undefined;
-    return { feed: false, video: page ? xStatusVideoEl() : null, videoId: page?.id ?? null };
-  }
-  const t = xFeedTarget();
+/** 首页信息流上：锁定的视频和它所在的帖子 */
+function feedNow(readPost: (video: HTMLVideoElement) => FeedPost | undefined): FeedSiteNow {
+  const t = feedTarget(readPost);
   return { feed: true, video: t?.video ?? null, videoId: t?.post?.id ?? null, ...(t?.post ? { url: t.post.url } : {}), ...(t?.post?.title ? { title: t.post.title } : {}) };
 }
 
-/** X 录制中：录的这个视频还在页面上、页面还是这条帖子（在信息流里开录的：还在首页）时，是它的帖子 ID；否则 null，这一段结束 */
-function xRecordingId(r: Recording): string | null {
+/**
+ * X、Instagram 页面上现在该录什么。X：帖子页看网址和页面标题，首页信息流看锁定的视频所在的帖子，别的页面不找；
+ * Instagram：只有首页信息流，别的页面不找。别的站返回 undefined。
+ */
+function feedSiteNow(): FeedSiteNow | undefined {
+  if (SITE === 'x') {
+    const page = parseXStatusUrl(location.href);
+    if (!page && isXHomeUrl(location.href)) return feedNow(readXFeedPost);
+    feedLock = undefined;
+    return { feed: false, video: page ? xStatusVideoEl() : null, videoId: page?.id ?? null };
+  }
+  if (SITE === 'ig') {
+    if (isIgHomeUrl(location.href)) return feedNow(readIgFeedPost);
+    feedLock = undefined;
+    return { feed: false, video: null, videoId: null };
+  }
+  return undefined;
+}
+
+/**
+ * X、Instagram 录制中：录的这个视频还在页面上、页面还是这条帖子（在信息流里开录的：还在首页）时，是它的帖子 ID；
+ * 否则 null，这一段结束
+ */
+function feedRecordingId(r: Recording): string | null {
   if (!r.video.isConnected) return null;
+  if (SITE === 'ig') return isIgHomeUrl(location.href) ? r.videoId : null;
   const page = parseXStatusUrl(location.href);
   if (page) return page.id;
   return r.feed && isXHomeUrl(location.href) ? r.videoId : null;
@@ -279,7 +342,8 @@ function kubbVideoEl(): HTMLVideoElement | null {
 
 function videoEl(): HTMLVideoElement | null {
   if (SITE === 'youtube') return playerEl()?.querySelector('video') ?? null;
-  if (SITE === 'x') return xNow().video;
+  const now = feedSiteNow();
+  if (now) return now.video;
   if (SITE === 'kubb') return kubbVideoEl();
   let all = document.querySelectorAll<HTMLVideoElement>(XHS_PLAYER_VIDEO);
   if (!all.length) all = document.querySelectorAll<HTMLVideoElement>(XHS_ANY_VIDEO);
@@ -309,32 +373,33 @@ function adShowing(): boolean {
 
 /**
  * YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时；首页信息流上是锁定的视频所在的帖子）；
- * 酷播的影片 ID（网址是播放页时，剧集带分集 ID）
+ * 酷播的影片 ID（网址是播放页时，剧集带分集 ID）；Instagram 的帖子短码（首页信息流上锁定的视频所在的帖子）
  */
 function currentIds(): { videoId: string | null; shorts: boolean } {
   if (SITE === 'youtube') return videoIdFromUrl(location.href);
-  if (SITE === 'x') return { videoId: xNow().videoId, shorts: false };
+  const now = feedSiteNow();
+  if (now) return { videoId: now.videoId, shorts: false };
   if (SITE === 'kubb') return { videoId: parseKubbPlayUrl(location.href)?.id ?? null, shorts: false };
   const link = parseXhsUrl(location.href);
   return { videoId: link?.kind === 'note' ? link.noteId : null, shorts: false };
 }
 
 function pageTitle(): string | undefined {
-  // X 首页信息流：页面标题是"主页 / X"，标题来自锁定的视频所在的帖子
-  const feed = SITE === 'x' ? xNow() : undefined;
-  if (feed?.feed) return feed.title;
+  // 首页信息流（X、Instagram）：页面标题只是"主页 / X""Instagram"，标题来自锁定的视频所在的帖子
+  const now = feedSiteNow();
+  if (now?.feed) return now.title;
   const t = titleFromDocumentTitle(document.title || '', SITE);
   return t && !/^(?:YouTube|小红书|rednote|酷播)$/i.test(t) ? t : undefined;
 }
 
-/** 回到原处的链接：X 首页信息流上是这条帖子的链接（网址只是 /home），别处就是网址 */
+/** 回到原处的链接：首页信息流（X、Instagram）上是这条帖子的链接（网址只是首页），别处就是网址 */
 function sourceUrl(): string {
-  return (SITE === 'x' ? xNow().url : undefined) ?? location.href;
+  return feedSiteNow()?.url ?? location.href;
 }
 
-/** 现在是不是在 X 的首页信息流上（不能录时的说法不同，见 clipUnavailable） */
-function onXFeed(): boolean {
-  return SITE === 'x' && isXHomeUrl(location.href);
+/** 现在是不是在 X 或 Instagram 的首页信息流上（不能录时的说法不同，见 clipUnavailable） */
+function onFeed(): boolean {
+  return (SITE === 'x' && isXHomeUrl(location.href)) || (SITE === 'ig' && isIgHomeUrl(location.href));
 }
 
 /** 受版权保护的视频：录制和截图都不做，不绕过 */
@@ -507,7 +572,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
   const problem = checkClipStart(req, {
     site: SITE,
-    feed: onXFeed(),
+    feed: onFeed(),
     enabled: settings.enabled,
     videoId,
     shorts,
@@ -515,8 +580,9 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     busy: !!rec,
     duration: video?.duration ?? 0,
     currentTime: video?.currentTime ?? 0,
-    // 停在最后一帧也算播完（小红书的播放器不报"播完"）；循环播放的不算：X 的动图只有一两秒，一多半时间都离结尾很近
-    ended: !!video && !video.loop && (video.ended || atVideoEnd(video.currentTime, video.duration)),
+    // 停在最后一帧也算播完（小红书的播放器不报"播完"）；循环播放的不算：X 的动图只有一两秒，一多半时间都离结尾很近；
+    // Instagram 的视频放到结尾自己跳回开头接着放（没有 loop 属性），也不算
+    ended: !!video && !video.loop && SITE !== 'ig' && (video.ended || atVideoEnd(video.currentTime, video.duration)),
     maxSec,
   });
   if (problem || !video || !videoId) return fail(problem ?? '没找到播放器里的视频');
@@ -589,7 +655,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     mode: req.mode,
     videoId,
     pageUrl: sourceUrl(),
-    feed: onXFeed(),
+    feed: onFeed(),
     ...(title ? { title } : {}),
     ...(req.mode === 'range' ? { start: req.start!, end: req.end! } : {}),
     video,
@@ -798,7 +864,7 @@ async function captureFrame(): Promise<ClipCaptureReply> {
   const { videoId, shorts } = currentIds();
   const problem = checkCapture({
     site: SITE,
-    feed: onXFeed(),
+    feed: onFeed(),
     enabled: settings.enabled,
     videoId,
     shorts,
@@ -848,6 +914,8 @@ function tick(): void {
     r.lastTick = now;
     const v = r.video;
     const { videoId } = currentIds();
+    // Instagram：进度从结尾跳回了开头，算放完了一遍（要在记下这一轮的进度之前比）
+    const looped = SITE === 'ig' && loopedToStart(r.seenTime, v.currentTime, v.duration);
     if (v.currentTime !== r.seenTime || v.paused || v.seeking) {
       r.seenTime = v.currentTime;
       r.seenAt = now;
@@ -856,11 +924,11 @@ function tick(): void {
       { mode: r.mode, videoId: r.videoId, ...(r.mode === 'range' ? { start: r.start!, end: r.end! } : {}), recordedSec: r.recordedSec, bytes: r.bytes, maxSec: r.maxSec, maxBytes: CLIPS.maxBytes, userPaused: r.userPaused },
       {
         // 播放器里换了一个视频元素也算换了视频。X 一页有好几个视频，滚动时"最该录的"会变，只看录的这个还在不在页面上：
-        // 滚开时 X 自己会暂停它，录制跟着暂停，滚回来接着录（信息流里滚远了，X 把这条帖子从页面上撤掉，这一段就结束）
-        videoId: SITE === 'x' ? xRecordingId(r) : videoEl() === v ? videoId : null,
+        // 滚开时 X 自己会暂停它，录制跟着暂停，滚回来接着录（信息流里滚远了，X 把这条帖子从页面上撤掉，这一段就结束）。Instagram 同理
+        videoId: FEED_SITE ? feedRecordingId(r) : videoEl() === v ? videoId : null,
         currentTime: v.currentTime,
         paused: v.paused,
-        ended: v.ended,
+        ended: v.ended || looped,
         seeking: v.seeking,
         ready: v.readyState >= 2,
         ad: adShowing(),
@@ -894,11 +962,11 @@ function tabState(precise = false): ClipTabState {
   const r = rec;
   const { shorts } = now;
   // 录制中报告的是录的这个视频和它的帖子（X 上滚动时"最该录的"会变；信息流里它暂停着滚出屏幕时，已经不算"锁定的"了）
-  const videoId = (r && SITE === 'x' ? xRecordingId(r) : null) ?? now.videoId;
+  const videoId = (r && FEED_SITE ? feedRecordingId(r) : null) ?? now.videoId;
   const video = r?.video ?? videoEl();
   const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
   // YouTube 播放页上视频元素几乎立刻就有，沿用原来的判断（不因"还没有视频"挡住）；小红书的图文笔记、X 的文字帖子没有视频
-  const unavailable = clipUnavailable(SITE, { feed: onXFeed(), enabled: settings.enabled, videoId, shorts, hasVideo: SITE === 'youtube' || !!video });
+  const unavailable = clipUnavailable(SITE, { feed: onFeed(), enabled: settings.enabled, videoId, shorts, hasVideo: SITE === 'youtube' || !!video });
   const t = video?.currentTime ?? 0;
   let status: string;
   if (r?.stopping) status = '正在收尾…';

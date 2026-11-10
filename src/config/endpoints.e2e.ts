@@ -38,3 +38,6 @@ export const X_PAGES: readonly string[] = ['https://x.com/', `${MOCK}/xpage/`];
 
 /** e2e：本机 mock 的 /kubb/ 下是仿酷播网页版的页面 */
 export const KUBB_PAGES: readonly string[] = ['https://www.kubb.tv/', `${MOCK}/kubb/`];
+
+/** e2e：本机 mock 的 /igpage/ 下是仿 Instagram 网页版的页面（首页信息流就是 /igpage/ 本身） */
+export const IG_PAGES: readonly string[] = ['https://www.instagram.com/', `${MOCK}/igpage/`];
