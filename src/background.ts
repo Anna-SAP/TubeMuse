@@ -15,7 +15,7 @@ import { CLIP_MSG, type ClipTabState } from './core/clips';
 import { recordSavedClip } from './services/clip-service';
 import { MULTICC_MSG } from './core/multi-captions';
 import { multiCcVideoLanguage } from './services/multi-captions-service';
-import { XHS_PAGES, X_PAGES } from './config/endpoints';
+import { KUBB_PAGES, XHS_PAGES, X_PAGES } from './config/endpoints';
 import { XHS_MSG } from './core/xhs';
 import { applyXhsFromPage, type XhsReply } from './services/xhs-service';
 
@@ -95,6 +95,11 @@ function fromXPage(sender: chrome.runtime.MessageSender): boolean {
   return sender.id === chrome.runtime.id && !!sender.tab && !!sender.url && X_PAGES.some((p) => sender.url!.startsWith(p));
 }
 
+/** 注入酷播网页版的录制脚本（只认 manifest 里注入它的那些网址） */
+function fromKubbPage(sender: chrome.runtime.MessageSender): boolean {
+  return sender.id === chrome.runtime.id && !!sender.tab && !!sender.url && KUBB_PAGES.some((p) => sender.url!.startsWith(p));
+}
+
 /** 本扩展自己的页面（设置页、侧边栏），不是注入网页的脚本 */
 function fromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
   return sender.id === chrome.runtime.id && !!sender.url && sender.url.startsWith(chrome.runtime.getURL(''));
@@ -132,9 +137,9 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
     return true;
   }
   // 片段录制：录制脚本存好了一个片段，记一笔（只有元数据；视频文件由浏览器存进下载文件夹，不经过这里）。
-  // 是哪个站的片段按发消息的页面定（YouTube 播放页、小红书网页版或 X 网页版），不信记录里自己写的
+  // 是哪个站的片段按发消息的页面定（YouTube 播放页、小红书网页版、X 网页版或酷播），不信记录里自己写的
   if (m?.type === CLIP_MSG.saved) {
-    const site = fromXhsPage(sender) ? 'xhs' : fromXPage(sender) ? 'x' : fromTrackedSite(sender) ? 'youtube' : undefined;
+    const site = fromXhsPage(sender) ? 'xhs' : fromXPage(sender) ? 'x' : fromKubbPage(sender) ? 'kubb' : fromTrackedSite(sender) ? 'youtube' : undefined;
     if (!site) return false;
     void recordSavedClip(ctx, (m as { record?: unknown }).record, site).catch(() => undefined);
     return false;
@@ -147,7 +152,7 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
   }
   // 片段录制状态：在工具栏图标上标出正在录（用快捷键录制时不打开侧边栏也看得见）
   if (m?.type === CLIP_MSG.state) {
-    if (!(fromTrackedSite(sender) || fromXhsPage(sender) || fromXPage(sender)) || sender.tab?.id === undefined) return false;
+    if (!(fromTrackedSite(sender) || fromXhsPage(sender) || fromXPage(sender) || fromKubbPage(sender)) || sender.tab?.id === undefined) return false;
     showClipBadge(sender.tab.id, (m as { state?: ClipTabState }).state);
     return false;
   }

@@ -1,11 +1,12 @@
 // 注入 YouTube 播放页的视频片段录制脚本（用户 2026-11-01 批准的红线变更，见 DECISIONS §36）；
 // 2026-11-04 起也注入小红书网页版，录笔记详情里的视频（用户要求，见 DECISIONS §43）；
-// 2026-11-06 起也注入 X 网页版，录帖子里的视频（用户要求，见 DECISIONS §52）：
+// 2026-11-06 起也注入 X 网页版，录帖子里的视频（用户要求，见 DECISIONS §52）；
+// 2026-11-10 起也注入酷播（www.kubb.tv），录播放页 /play/<ID> 里的视频（用户要求，见 DECISIONS §54）：
 // 1. 只在你从侧边栏"片段"页或快捷键开始录制后工作：把正在播放的这个视频逐帧画到一块不放进页面的画布上
 //    （开启字幕烧录时再叠加播放器里当时显示的字幕，只限 YouTube），声音经 video.captureStream() 取这个视频的音轨，
 //    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载这些网站的音视频流。
-// 2. 广告（只有 YouTube 认得出）、暂停、缓冲、标签页在后台时自动暂停录制；
-//    切到别的视频（小红书：关掉这篇笔记；X：离开这条帖子）时这一段自动结束。
+// 2. 广告（YouTube 认得出；酷播只认得出"不是正片的流、又很短"的片头广告；X 认不出）、暂停、缓冲、标签页在后台时自动暂停录制；
+//    切到别的视频（小红书：关掉这篇笔记；X：离开这条帖子；酷播：换一部或换一集）时这一段自动结束。
 // 3. 录好的片段只在这个页面的内存里；你点"保存"（或开着"停止后直接保存"）时由浏览器存进下载文件夹，
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
 //    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
@@ -30,10 +31,13 @@ import {
   clipUnavailable,
   decideClip,
   formatTimecode,
+  isKubbAd,
+  isKubbPage,
   isXPage,
   layoutBurnIn,
   mp4TrackKinds,
   outputSize,
+  parseKubbPlayUrl,
   parseXStatusUrl,
   pickClipFormat,
   pickXVideo,
@@ -59,8 +63,8 @@ type ClipSettings = typeof DEFAULT_SETTINGS.clips;
 
 const FONT = '"YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", sans-serif';
 
-/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版或 YouTube */
-const SITE: ClipSite = xhsPath(location.href) ? 'xhs' : isXPage(location.href) ? 'x' : 'youtube';
+/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）或 YouTube */
+const SITE: ClipSite = xhsPath(location.href) ? 'xhs' : isXPage(location.href) ? 'x' : isKubbPage(location.href) ? 'kubb' : 'youtube';
 
 let settings: ClipSettings = { ...DEFAULT_SETTINGS.clips };
 let fontScale = DEFAULT_SETTINGS.subtitles.fontScale;
@@ -69,7 +73,7 @@ interface Recording {
   id: string;
   mode: ClipMode;
   videoId: string;
-  /** 开始录制时的网址（小红书、X：记下原处的链接，离开之后再保存也对得上） */
+  /** 开始录制时的网址（小红书、X、酷播：记下原处的链接，离开之后再保存也对得上） */
   pageUrl: string;
   title?: string;
   start?: number;
@@ -166,9 +170,19 @@ function xVideoEl(): HTMLVideoElement | null {
   return all[pick] ?? null;
 }
 
+/**
+ * 酷播播放页上播放器的视频（2026-11-10 实测：<vg-player> 的直接子元素，换片、换集都用同一个）。
+ * 页面上另有两个不相干的 <video>：投屏按钮里一个空的、页面角落一个 1×1 的，都不是 <vg-player> 的直接子元素。
+ * 不是播放页时不找。
+ */
+function kubbVideoEl(): HTMLVideoElement | null {
+  return parseKubbPlayUrl(location.href) ? document.querySelector<HTMLVideoElement>('vg-player > video') : null;
+}
+
 function videoEl(): HTMLVideoElement | null {
   if (SITE === 'youtube') return playerEl()?.querySelector('video') ?? null;
   if (SITE === 'x') return xVideoEl();
+  if (SITE === 'kubb') return kubbVideoEl();
   let all = document.querySelectorAll<HTMLVideoElement>(XHS_PLAYER_VIDEO);
   if (!all.length) all = document.querySelectorAll<HTMLVideoElement>(XHS_ANY_VIDEO);
   if (all.length <= 1) return all[0] ?? null;
@@ -186,21 +200,27 @@ function videoEl(): HTMLVideoElement | null {
 }
 
 function adShowing(): boolean {
+  if (SITE === 'kubb') {
+    // 广告和正片用同一个 <video> 放，看它现在放的是什么（判断见 isKubbAd）
+    const v = rec?.video ?? kubbVideoEl();
+    return !!v && isKubbAd(v.currentSrc, v.duration);
+  }
   const p = playerEl();
   return !!p && (p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting'));
 }
 
-/** YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时） */
+/** YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时）；酷播的影片 ID（网址是播放页时，剧集带分集 ID） */
 function currentIds(): { videoId: string | null; shorts: boolean } {
   if (SITE === 'youtube') return videoIdFromUrl(location.href);
   if (SITE === 'x') return { videoId: parseXStatusUrl(location.href)?.id ?? null, shorts: false };
+  if (SITE === 'kubb') return { videoId: parseKubbPlayUrl(location.href)?.id ?? null, shorts: false };
   const link = parseXhsUrl(location.href);
   return { videoId: link?.kind === 'note' ? link.noteId : null, shorts: false };
 }
 
 function pageTitle(): string | undefined {
   const t = titleFromDocumentTitle(document.title || '', SITE);
-  return t && !/^(?:YouTube|小红书|rednote)$/i.test(t) ? t : undefined;
+  return t && !/^(?:YouTube|小红书|rednote|酷播)$/i.test(t) ? t : undefined;
 }
 
 /** 受版权保护的视频：录制和截图都不做，不绕过 */
@@ -210,7 +230,7 @@ function drmProtected(v: HTMLVideoElement): boolean {
 
 /**
  * 画面读得到吗：来自别的网站、又没有放行的视频，画到画布上会被浏览器标为"不可读"，录不了。
- * YouTube、小红书、X 的视频现在都是同源的 blob: 流；X 的动图（GIF）例外，直接从 video.twimg.com 加载。
+ * YouTube、小红书、X、酷播的视频现在都是同源的 blob: 流；X 的动图（GIF）例外，直接从 video.twimg.com 加载。
  */
 function framesReadable(v: HTMLVideoElement): boolean {
   try {
@@ -461,7 +481,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     g,
     width: size.width,
     height: size.height,
-    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）；X 播放器里的字幕不读
+    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）；X、酷播播放器里的字幕不读
     burn: SITE === 'youtube' && settings.burnSubtitles,
     format,
     maxSec,
@@ -627,7 +647,7 @@ function saveReady(): void {
   c.savedAt = Date.now();
   const record: ClipRecord = {
     id: c.id,
-    // 小红书、X：带上原处的链接，"最近录过的片段"里点标题能回去（后台核对链接与 ID）
+    // 小红书、X、酷播：带上原处的链接，"最近录过的片段"里点标题能回去（后台核对链接与 ID）
     ...(SITE !== 'youtube' ? { site: SITE, url: c.pageUrl } : {}),
     videoId: c.videoId,
     ...(c.title ? { title: c.title } : {}),

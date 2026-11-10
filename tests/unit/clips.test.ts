@@ -20,10 +20,13 @@ import {
   formatBytes,
   formatTimecode,
   frameTimestamp,
+  isKubbAd,
+  isKubbPage,
   isXPage,
   layoutBurnIn,
   mp4TrackKinds,
   outputSize,
+  parseKubbPlayUrl,
   parseTimecode,
   parseXStatusUrl,
   pickClipFormat,
@@ -365,6 +368,12 @@ describe('录 / 等 / 停', () => {
     // 暂停中也会因为切视频而结束
     expect(decideClip(control({ userPaused: true }), sample({ videoId: 'other000000' }))).toEqual({ kind: 'stop', reason: 'video-changed' });
   });
+  it('广告放完不算视频播完：接着等正片（酷播的片头广告和正片用同一个播放器放）', () => {
+    expect(decideClip(control({ recordedSec: 0 }), sample({ ad: true, ended: true, paused: true }))).toEqual({ kind: 'wait', why: 'ad' });
+    expect(decideClip(control({ recordedSec: 0 }), sample({ ad: true, stalled: true, currentTime: 19.9, duration: 20 }))).toEqual({ kind: 'wait', why: 'ad' });
+    const range = control({ mode: 'range', start: 10, end: 60, recordedSec: 3 });
+    expect(decideClip(range, sample({ ad: true, ended: true, currentTime: 20 }))).toEqual({ kind: 'wait', why: 'ad' });
+  });
   it('时间段：等到起点才录，到终点结束；拖出范围暂停', () => {
     const range = (over: Partial<ClipControl> = {}) => control({ mode: 'range', start: 60, end: 70, recordedSec: 0, ...over });
     // 刚跳到起点：拖动中 → 等
@@ -652,6 +661,141 @@ describe('X 帖子页', () => {
     const saved = await recordSavedClip(ctx, { ...record, url: `https://x.com/ayoships/status/${POST}` }, 'x');
     expect(saved).toMatchObject({ site: 'x', videoId: POST, url: `https://x.com/ayoships/status/${POST}` });
     expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_x']);
+  });
+});
+
+describe('酷播播放页', () => {
+  const MOVIE = '8aZsQlwuJ1E';
+  const SHOW = 'e2rCXFzJUz2';
+  const EPISODE = 'lIM07A3d3g8';
+  const record = {
+    id: 'clip_kubb',
+    videoId: `${SHOW}.${EPISODE}`,
+    title: '玉簟秋-02',
+    mode: 'free',
+    start: 107,
+    end: 127,
+    durationSec: 20,
+    bytes: 2_400_000,
+    format: 'MP4（H.264 + AAC）',
+    fileName: '玉簟秋-02_01m47s-02m07s.mp4',
+    burned: false,
+    savedAt: 1_700_000_000_000,
+  };
+
+  it('页面标题（2026-11-10 真实页面的写法）→ 片名；剧集带集数', () => {
+    expect(titleFromDocumentTitle('八仙！-免费在线观看-酷播', 'kubb')).toBe('八仙！');
+    expect(titleFromDocumentTitle('玉簟秋-24-免费在线观看-酷播', 'kubb')).toBe('玉簟秋-24');
+    expect(titleFromDocumentTitle('(2) 玉簟秋-02-免费在线观看-酷播', 'kubb')).toBe('玉簟秋-02');
+    // 片名里自己带连字符
+    expect(titleFromDocumentTitle('X-Men-免费在线观看-酷播', 'kubb')).toBe('X-Men');
+  });
+  it('首页的标题不当片名；认不出的写法原样用', () => {
+    expect(titleFromDocumentTitle('酷播-海量高清视频免费在线观看', 'kubb')).toBe('');
+    expect(titleFromDocumentTitle('酷播', 'kubb')).toBe('');
+    expect(titleFromDocumentTitle('八仙！ | 酷播', 'kubb')).toBe('八仙！ | 酷播');
+  });
+  it('文件名：片名_起点-终点；没有标题时用 kubb-影片ID', () => {
+    expect(clipFileName('八仙！', MOVIE, 5.2, 15.7, 'mp4', 'kubb')).toBe('八仙！_00m05s-00m15s.mp4');
+    expect(clipFileName('玉簟秋-02', `${SHOW}.${EPISODE}`, 107, 3725, 'mp4', 'kubb')).toBe('玉簟秋-02_01m47s-1h02m05s.mp4');
+    expect(clipFileName(undefined, `${SHOW}.${EPISODE}`, 5, 15, 'webm', 'kubb')).toBe(`kubb-${SHOW}.${EPISODE}_00m05s-00m15s.webm`);
+    expect(captureFileName('八仙！', MOVIE, 30.804, 12, 'kubb')).toBe('八仙！_00-00-30-804_original_00012.png');
+  });
+
+  it('网址：/play/影片ID；换集带 ?id=分集ID，算另一个视频；别的参数去掉', () => {
+    expect(parseKubbPlayUrl(`https://www.kubb.tv/play/${MOVIE}`)).toEqual({ id: MOVIE, url: `https://www.kubb.tv/play/${MOVIE}` });
+    expect(parseKubbPlayUrl(`https://www.kubb.tv/play/${SHOW}?id=${EPISODE}`)).toEqual({ id: `${SHOW}.${EPISODE}`, url: `https://www.kubb.tv/play/${SHOW}?id=${EPISODE}` });
+    expect(parseKubbPlayUrl(`https://www.kubb.tv/play/${SHOW}?from=share&id=${EPISODE}&u=someone#t=30`)?.url).toBe(`https://www.kubb.tv/play/${SHOW}?id=${EPISODE}`);
+    expect(parseKubbPlayUrl(`https://www.kubb.tv/play/${MOVIE}/`)?.id).toBe(MOVIE);
+    // 分集 ID 写得不像 ID：当没有，不带进链接
+    expect(parseKubbPlayUrl(`https://www.kubb.tv/play/${SHOW}?id=../../x`)).toEqual({ id: SHOW, url: `https://www.kubb.tv/play/${SHOW}` });
+    // 12 位的 ID 也有（当天首页上 11 位、12 位都见到了）
+    expect(parseKubbPlayUrl('https://www.kubb.tv/play/abcDEF123456')?.id).toBe('abcDEF123456');
+  });
+  it('网址：首页、榜单、短视频页、伪造域名都不算播放页', () => {
+    for (const url of [
+      'https://www.kubb.tv/',
+      'https://www.kubb.tv/list/drama',
+      'https://www.kubb.tv/play/',
+      `https://www.kubb.tv/play/${MOVIE}/extra`,
+      `https://www.kubb.tv/watch?v=${MOVIE}`,
+      `https://www.kubb.tv/space/${MOVIE}`,
+      `https://kubb.tv/play/${MOVIE}`,
+      `https://www.kubb.tv.evil.example/play/${MOVIE}`,
+      `https://www.kubb.tv@evil.example/play/${MOVIE}`,
+      `http://www.kubb.tv/play/${MOVIE}`,
+      `https://www.youtube.com/play/${MOVIE}`,
+      'not a url',
+    ]) {
+      expect(parseKubbPlayUrl(url)).toBeUndefined();
+    }
+  });
+  it('判断站点：只认 www.kubb.tv 本身', () => {
+    expect(isKubbPage('https://www.kubb.tv/')).toBe(true);
+    expect(isKubbPage(`https://www.kubb.tv/play/${MOVIE}`)).toBe(true);
+    expect(isKubbPage('https://www.kubb.tv.evil.example/')).toBe(false);
+    expect(isKubbPage('https://x.com/home')).toBe(false);
+    expect(isXPage(`https://www.kubb.tv/play/${MOVIE}`)).toBe(false);
+  });
+
+  it('片头广告（实测）：播放器里放的不是 blob: 流、又很短；正片、时长未知、长视频都不算', () => {
+    // 2026-11-10 实测：20 秒的 VIP 宣传片，从别的域名直接给地址
+    expect(isKubbAd('https://s1-a1.global-cdn.me/vod/70E1952268-10161.mp4', 20.02)).toBe(true);
+    expect(isKubbAd('https://s1-a1.global-cdn.me/vod/x.mp4', CLIPS.kubbAdMaxSec)).toBe(true);
+    // 正片：同源的 blob: 流（电影 8596 秒、剧集 2871 秒）
+    expect(isKubbAd('blob:https://www.kubb.tv/4bd02587-f0a0-4180-8c3d-794a29649e3a', 8596.48)).toBe(false);
+    expect(isKubbAd('blob:https://www.kubb.tv/f8daa22a-f47d-488d-a63e-63f5cc1119bd', 20)).toBe(false);
+    // 宁可漏判：时长还不知道、直接给地址的长视频、还没有片源
+    expect(isKubbAd('https://s1-a1.global-cdn.me/vod/x.mp4', NaN)).toBe(false);
+    expect(isKubbAd('https://s1-a1.global-cdn.me/vod/x.mp4', Infinity)).toBe(false);
+    expect(isKubbAd('https://s1-a1.global-cdn.me/vod/long.mp4', CLIPS.kubbAdMaxSec + 1)).toBe(false);
+    expect(isKubbAd('', 20)).toBe(false);
+  });
+
+  it('不能录的原因用人话说：不是播放页 / 没找到视频', () => {
+    expect(clipUnavailable('kubb', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是播放页');
+    expect(clipUnavailable('kubb', { enabled: true, videoId: MOVIE, shorts: false, hasVideo: false })).toContain('没找到播放器里的视频');
+    expect(clipUnavailable('kubb', { enabled: true, videoId: MOVIE, shorts: false, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('kubb', { enabled: false, videoId: MOVIE, shorts: false, hasVideo: true })).toContain('已在设置中关闭');
+  });
+  it('Capture：播放页能截；广告、受保护、画面没准备好、不是播放页时说明原因', () => {
+    const ctx: ClipCaptureContext = { site: 'kubb', enabled: true, videoId: MOVIE, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    expect(checkCapture(ctx)).toBeUndefined();
+    expect(checkCapture({ ...ctx, ad: true })).toContain('广告');
+    expect(checkCapture({ ...ctx, drm: true })).toContain('DRM');
+    expect(checkCapture({ ...ctx, ready: false })).toContain('画面还没准备好');
+    expect(checkCapture({ ...ctx, videoId: null })).toContain('不是播放页');
+  });
+
+  it('录制记录：ID 与链接对得上才收，链接规范化；站点由后台定，不信记录自己写的', () => {
+    const url = `https://www.kubb.tv/play/${SHOW}?id=${EPISODE}`;
+    const raw = { ...record, url: `${url}&from=share`, site: 'youtube' };
+    expect(sanitizeClipRecord(raw, 'kubb')).toEqual({ ...record, site: 'kubb', url });
+    // 电影：没有分集
+    expect(sanitizeClipRecord({ ...raw, videoId: MOVIE, url: `https://www.kubb.tv/play/${MOVIE}` }, 'kubb')).toMatchObject({ site: 'kubb', videoId: MOVIE, url: `https://www.kubb.tv/play/${MOVIE}` });
+    // 对不上：别的影片、少了分集、别的域名、不是播放页、没有链接、ID 不是字符串
+    expect(sanitizeClipRecord({ ...raw, url: `https://www.kubb.tv/play/${MOVIE}?id=${EPISODE}` }, 'kubb')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: `https://www.kubb.tv/play/${SHOW}` }, 'kubb')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: `https://evil.example/play/${SHOW}?id=${EPISODE}` }, 'kubb')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: 'https://www.kubb.tv/' }, 'kubb')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: undefined }, 'kubb')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: 12345 }, 'kubb')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: '../../etc' }, 'kubb')).toBeNull();
+    // 同样的记录从 X 页面、YouTube 页面送来：都不收成酷播的
+    expect(sanitizeClipRecord(raw, 'x')).toBeNull();
+    expect(sanitizeClipRecord(raw)).toBeNull();
+  });
+  it('回到这部影片（这一集）：有链接用链接，没有时按 ID 拼', () => {
+    expect(clipWatchUrl({ site: 'kubb', videoId: MOVIE, url: `https://www.kubb.tv/play/${MOVIE}`, start: 5 })).toBe(`https://www.kubb.tv/play/${MOVIE}`);
+    expect(clipWatchUrl({ site: 'kubb', videoId: MOVIE, start: 5 })).toBe(`https://www.kubb.tv/play/${MOVIE}`);
+    expect(clipWatchUrl({ site: 'kubb', videoId: `${SHOW}.${EPISODE}`, start: 5 })).toBe(`https://www.kubb.tv/play/${SHOW}?id=${EPISODE}`);
+  });
+  it('后台：酷播的片段存进本地，带上站点和播放页链接', async () => {
+    const ctx = { kv: memoryKV(), locker: memoryLocker() } as unknown as AppContext;
+    const url = `https://www.kubb.tv/play/${SHOW}?id=${EPISODE}`;
+    const saved = await recordSavedClip(ctx, { ...record, url }, 'kubb');
+    expect(saved).toMatchObject({ site: 'kubb', videoId: `${SHOW}.${EPISODE}`, url });
+    expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_kubb']);
   });
 });
 

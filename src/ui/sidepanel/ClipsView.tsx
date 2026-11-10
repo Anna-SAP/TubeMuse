@@ -1,5 +1,5 @@
 // 片段录制：当前标签页这个视频的录制控制（自由录制 / 按时间段截取）、Capture 截图、录好的片段（保存 / 丢弃）、最近录过的片段。
-// 录制在 YouTube 播放页、小红书笔记详情或 X 帖子页里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
+// 录制在 YouTube 播放页、小红书笔记详情、X 帖子页或酷播播放页里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
 // Capture 的 PNG 由录制脚本截好传回，在这里交给浏览器保存：下载要算在你刚点过的这个页面上，Chrome 才不会拦（见 DECISIONS §50）。
 
 import { useEffect, useState } from 'preact/hooks';
@@ -35,6 +35,13 @@ const SITE_TEXT: Record<ClipSite, { item: string; noBurn?: string; capture: stri
   youtube: { item: '视频', capture: `${CAPTURE_HINT}（要最高清，先在播放器里把清晰度调到最高）。`, logTag: '', open: '在当前标签页打开视频的这一段' },
   xhs: { item: '笔记', noBurn: '小红书的视频没有单独的字幕层：字幕如果有，是做在画面里的，会原样录下。', capture: `${CAPTURE_HINT}。`, logTag: '小红书 · ', open: '在当前标签页打开这篇小红书笔记' },
   x: { item: '帖子', noBurn: 'X 播放器里的字幕（CC）不会录进去，做在画面里的字幕会原样录下。片头广告认不出来：等广告放完再开始录。', capture: `${CAPTURE_HINT}。`, logTag: 'X · ', open: '在当前标签页打开这条 X 帖子' },
+  kubb: {
+    item: '影片',
+    noBurn: '酷播的弹幕和播放器另外显示的字幕不会录进去，做在画面里的字幕会原样录下。片头广告只认得出一种：播放器里放的不是正片、又不到 2 分钟的短片，这时自动暂停不录；别的广告认不出来，等它放完再开始录。',
+    capture: `${CAPTURE_HINT}（要更清晰，先在播放器里把清晰度调高）。`,
+    logTag: '酷播 · ',
+    open: '在当前标签页打开酷播的这部影片（这一集）',
+  },
 };
 
 export function ClipsView() {
@@ -309,7 +316,7 @@ export function ClipsView() {
             )}
           </>
         ) : (
-          <p class="muted small">当前标签页不是 YouTube 视频页、小红书网页版或 X 网页版。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。</p>
+          <p class="muted small">当前标签页不是 YouTube 视频页、小红书网页版、X 网页版或酷播（www.kubb.tv）。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。</p>
         )}
         <p class="muted small">快捷键 Alt+Shift+R 开始 / 停止（可在 chrome://extensions/shortcuts 修改）；录制中工具栏图标上显示 REC。</p>
       </section>
@@ -343,7 +350,7 @@ export function ClipsView() {
 
       <section class="panel">
         <p class="muted small">
-          可以录 YouTube 播放页、小红书笔记详情和 X 帖子里的视频。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告（X 的片头广告除外）、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
+          可以录 YouTube 播放页、小红书笔记详情、X 帖子和酷播（www.kubb.tv）播放页里的视频。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告（X 的片头广告、酷播上认不出来的广告除外）、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
         </p>
       </section>
     </div>

@@ -51,3 +51,10 @@ export const EMAIL_PAGES: readonly string[] = ['https://mail.google.com/'];
  * 官方 API 是另一个域名 api.x.com（ENDPOINTS.x）。
  */
 export const X_PAGES: readonly string[] = ['https://x.com/'];
+
+/**
+ * 酷播网页版（2026-11-10 新增，见 DECISIONS §54）：片段录制脚本注入的页面，只录播放页 /play/<ID>。
+ * 酷播是单页应用，从首页点进播放页不重新加载（当天实测），所以注入范围是整个站，脚本自己只认播放页。
+ * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
+ */
+export const KUBB_PAGES: readonly string[] = ['https://www.kubb.tv/'];

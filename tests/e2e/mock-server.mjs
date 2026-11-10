@@ -1,9 +1,10 @@
 // @ts-check
-// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI（含语音转写）、X、豆瓣评论 RSS，以及 YouTube 播放页、小红书网页版（/xhs/）与 Gmail（/gmail/）。
+// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI（含语音转写）、X、豆瓣评论 RSS，以及 YouTube 播放页、小红书网页版（/xhs/）、X 网页版（/xpage/）、酷播（/kubb/）与 Gmail（/gmail/）。
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { kubbMediaSeconds, kubbPage } from './kubb-pages.mjs';
 import { xMediaSeconds, xPage } from './x-pages.mjs';
 import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
 import { gmailPage } from './email-pages.mjs';
@@ -547,8 +548,8 @@ export function startMockServer() {
         return res.end();
       }
       const p = url.pathname;
-      // 仿小红书、X 网页版的视频：一段有声音的 WAV（同源，与真实页面的 blob: 流一样读得到）
-      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p);
+      // 仿小红书、X 网页版、酷播的视频：一段有声音的 WAV（同源，与真实页面的 blob: 流一样读得到）
+      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p) ?? kubbMediaSeconds(p);
       if (mediaSeconds !== undefined) {
         const wav = speechWav(mediaSeconds);
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
@@ -564,6 +565,13 @@ export function startMockServer() {
       // 仿 X 网页版（/x/ 是 X 官方 API 的 mock）
       if (p.startsWith('/xpage/')) {
         const html = xPage(p);
+        if (!html) return send(404, {});
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+      // 仿酷播（www.kubb.tv）
+      if (p.startsWith('/kubb/')) {
+        const html = kubbPage(p);
         if (!html) return send(404, {});
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);

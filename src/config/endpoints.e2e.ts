@@ -35,3 +35,6 @@ export const EMAIL_PAGES: readonly string[] = ['https://mail.google.com/', `${MO
 
 /** e2e：本机 mock 的 /xpage/ 下是仿 X 网页版的页面（mock 的 /x/ 是 X 官方 API，不要混用） */
 export const X_PAGES: readonly string[] = ['https://x.com/', `${MOCK}/xpage/`];
+
+/** e2e：本机 mock 的 /kubb/ 下是仿酷播网页版的页面 */
+export const KUBB_PAGES: readonly string[] = ['https://www.kubb.tv/', `${MOCK}/kubb/`];
