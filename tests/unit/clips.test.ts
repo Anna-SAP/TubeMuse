@@ -21,6 +21,7 @@ import {
   formatTimecode,
   frameTimestamp,
   igProfileName,
+  isDouyinPage,
   isIgHomeUrl,
   isIgPage,
   isKubbAd,
@@ -31,6 +32,7 @@ import {
   loopedToStart,
   mp4TrackKinds,
   outputSize,
+  parseDouyinUrl,
   parseIgPostUrl,
   parseKubbPlayUrl,
   parseTimecode,
@@ -920,6 +922,122 @@ describe('Instagram 首页信息流', () => {
     const saved = await recordSavedClip(ctx, { ...record, url: `https://www.instagram.com/p/${CODE}/` }, 'ig');
     expect(saved).toMatchObject({ site: 'ig', videoId: CODE, url: `https://www.instagram.com/p/${CODE}/` });
     expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_ig']);
+  });
+});
+
+describe('抖音精选页', () => {
+  const ID = '7704250528896716072';
+  const record = {
+    id: 'clip_douyin',
+    videoId: ID,
+    title: '云汉AI创投 - 第13集：为什么要“搞死”黄仁勋？#AI创业 #黄仁勋',
+    mode: 'free',
+    start: 13,
+    end: 43,
+    durationSec: 30,
+    bytes: 6_400_000,
+    format: 'MP4（H.264 + AAC）',
+    fileName: '云汉AI创投 - 第13集：为什么要“搞死”黄仁勋？#AI创业 #黄仁勋_00m13s-00m43s.mp4',
+    burned: false,
+    savedAt: 1_700_000_000_000,
+  };
+
+  it('判断站点：只认 www.douyin.com 本身', () => {
+    expect(isDouyinPage('https://www.douyin.com/jingxuan')).toBe(true);
+    expect(isDouyinPage('https://www.douyin.com.evil.example/jingxuan')).toBe(false);
+    expect(isDouyinPage('https://douyin.com/jingxuan')).toBe(false);
+    expect(isDouyinPage('https://www.tiktok.com/')).toBe(false);
+  });
+  it('网址（用户给的两种写法）：精选页和精选的类目页里打开的视频，ID 是 modal_id', () => {
+    expect(parseDouyinUrl('https://www.douyin.com/jingxuan?modal_id=7704250528896716072')).toEqual({ id: ID, url: `https://www.douyin.com/jingxuan?modal_id=${ID}` });
+    expect(parseDouyinUrl('https://www.douyin.com/jingxuan/travel?modal_id=7674075270181096710')).toEqual({
+      id: '7674075270181096710',
+      url: 'https://www.douyin.com/jingxuan/travel?modal_id=7674075270181096710',
+    });
+    expect(parseDouyinUrl('https://www.douyin.com/jingxuan/beauty?modal_id=7705721509050287842')?.id).toBe('7705721509050287842');
+  });
+  it('网址：规范链接只留路径和 modal_id，别的参数、结尾的斜杠去掉', () => {
+    const canonical = { id: ID, url: `https://www.douyin.com/jingxuan/travel?modal_id=${ID}` };
+    expect(parseDouyinUrl(`https://www.douyin.com/jingxuan/travel?foo=1&modal_id=${ID}&share_token=abc#x`)).toEqual(canonical);
+    expect(parseDouyinUrl(`https://www.douyin.com/jingxuan/travel/?modal_id=${ID}`)).toEqual(canonical);
+  });
+  it('网址：没打开视频的精选页、/video/、推荐、搜索、个人主页、伪造域名都不算', () => {
+    for (const url of [
+      'https://www.douyin.com/jingxuan',
+      'https://www.douyin.com/jingxuan/travel',
+      'https://www.douyin.com/jingxuan?modal_id=',
+      'https://www.douyin.com/jingxuan?modal_id=abc123',
+      'https://www.douyin.com/jingxuan?modal_id=123',
+      `https://www.douyin.com/jingxuan/travel/more?modal_id=${ID}`,
+      `https://www.douyin.com/jingxuanx?modal_id=${ID}`,
+      `https://www.douyin.com/video/${ID}`,
+      `https://www.douyin.com/?recommend=1&modal_id=${ID}`,
+      `https://www.douyin.com/discover?modal_id=${ID}`,
+      `https://www.douyin.com/search/AI?modal_id=${ID}`,
+      `https://www.douyin.com/user/MS4wLjABAAAA?modal_id=${ID}`,
+      `https://www.douyin.com.evil.example/jingxuan?modal_id=${ID}`,
+      `https://www.douyin.com@evil.example/jingxuan?modal_id=${ID}`,
+      `http://www.douyin.com/jingxuan?modal_id=${ID}`,
+      `https://x.com/jingxuan?modal_id=${ID}`,
+      'not a url',
+    ]) {
+      expect(parseDouyinUrl(url)).toBeUndefined();
+    }
+  });
+
+  it('标题：作者 - 描述（话题保留）；页面标题不用——划到下一条时它不更新', () => {
+    expect(feedPostTitle('云汉AI创投', '第13集：为什么要“搞死”黄仁勋？#AI创业 #黄仁勋')).toBe(record.title);
+    expect(feedPostTitle('云汉AI创投', '')).toBe('云汉AI创投');
+    expect(titleFromDocumentTitle('为什么要“搞死”黄仁勋？#AI创业 #黄仁勋 #AI #人工智能 #融资 - 抖音', 'douyin')).toBe('');
+  });
+  it('文件名：作者 - 描述_起点-终点；没有标题时用 douyin-视频ID', () => {
+    expect(clipFileName(record.title, ID, 13.2, 43.7, 'mp4', 'douyin')).toBe(record.fileName);
+    expect(clipFileName(undefined, ID, 13, 43, 'webm', 'douyin')).toBe(`douyin-${ID}_00m13s-00m43s.webm`);
+    expect(captureFileName(undefined, ID, 1, 2, 'douyin')).toBe(`douyin-${ID}_00-00-01-000_original_00002.png`);
+  });
+
+  it('不能录的原因：没在精选页里打开视频 / 这条视频的画面还没出来', () => {
+    expect(clipUnavailable('douyin', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是抖音精选里打开的视频');
+    expect(clipUnavailable('douyin', { enabled: true, videoId: ID, shorts: false, hasVideo: false })).toContain('没找到这条视频的画面');
+    expect(clipUnavailable('douyin', { enabled: true, videoId: ID, shorts: false, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('douyin', { enabled: false, videoId: ID, shorts: false, hasVideo: true })).toContain('已在设置中关闭');
+    const shot: ClipCaptureContext = { site: 'douyin', enabled: true, videoId: ID, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    expect(checkCapture(shot)).toBeUndefined();
+    expect(checkCapture({ ...shot, videoId: null })).toContain('不是抖音精选里打开的视频');
+    expect(checkCapture({ ...shot, ready: false })).toContain('画面还没准备好');
+  });
+  it('划到下一条（网址里的 modal_id 变了）：这一段结束；放到结尾报"播完"：这一段结束', () => {
+    const control: ClipControl = { mode: 'free', videoId: ID, recordedSec: 6, bytes: 1000, maxSec: 600, maxBytes: 1e9, userPaused: false };
+    const sample: ClipSample = { videoId: ID, currentTime: 20, paused: false, ended: false, seeking: false, ready: true, ad: false, visible: true };
+    expect(decideClip(control, sample)).toEqual({ kind: 'record' });
+    expect(decideClip(control, { ...sample, videoId: '7706025941717672121' })).toEqual({ kind: 'stop', reason: 'video-changed' });
+    expect(decideClip(control, { ...sample, videoId: null })).toEqual({ kind: 'stop', reason: 'video-changed' });
+    expect(decideClip(control, { ...sample, currentTime: 254.77, paused: true, ended: true })).toEqual({ kind: 'stop', reason: 'ended' });
+  });
+
+  it('录制记录：视频 ID 与链接对得上才收，链接规范化；站点由后台定，不信记录自己写的', () => {
+    const raw = { ...record, url: `https://www.douyin.com/jingxuan/travel?modal_id=${ID}&share_token=abc`, site: 'youtube' };
+    expect(sanitizeClipRecord(raw, 'douyin')).toEqual({ ...record, site: 'douyin', url: `https://www.douyin.com/jingxuan/travel?modal_id=${ID}` });
+    expect(sanitizeClipRecord({ ...raw, url: 'https://www.douyin.com/jingxuan?modal_id=7706025941717672121' }, 'douyin')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: `https://evil.example/jingxuan?modal_id=${ID}` }, 'douyin')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: 'https://www.douyin.com/jingxuan' }, 'douyin')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: `https://www.douyin.com/video/${ID}` }, 'douyin')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: undefined }, 'douyin')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: '../../etc' }, 'douyin')).toBeNull();
+    // 同样的记录从 Instagram 页面、YouTube 页面送来：不收，或不带站点和链接
+    expect(sanitizeClipRecord(raw, 'ig')).toBeNull();
+    expect(sanitizeClipRecord(raw)?.site).toBeUndefined();
+    expect(sanitizeClipRecord(raw)?.url).toBeUndefined();
+  });
+  it('回到这条视频：有链接用链接，没有时拼精选页的 ?modal_id=', () => {
+    expect(clipWatchUrl({ site: 'douyin', videoId: ID, url: `https://www.douyin.com/jingxuan/travel?modal_id=${ID}`, start: 5 })).toBe(`https://www.douyin.com/jingxuan/travel?modal_id=${ID}`);
+    expect(clipWatchUrl({ site: 'douyin', videoId: ID, start: 5 })).toBe(`https://www.douyin.com/jingxuan?modal_id=${ID}`);
+  });
+  it('后台：抖音的片段存进本地，带上站点和视频链接', async () => {
+    const ctx = { kv: memoryKV(), locker: memoryLocker() } as unknown as AppContext;
+    const saved = await recordSavedClip(ctx, { ...record, url: `https://www.douyin.com/jingxuan?modal_id=${ID}` }, 'douyin');
+    expect(saved).toMatchObject({ site: 'douyin', videoId: ID, url: `https://www.douyin.com/jingxuan?modal_id=${ID}` });
+    expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_douyin']);
   });
 });
 
