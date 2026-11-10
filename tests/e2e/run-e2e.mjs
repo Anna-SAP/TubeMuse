@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockServer, PORT, E2E_CLIENT_SECRET } from './mock-server.mjs';
 import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from './kubb-pages.mjs';
-import { X_GIF_POST, X_POST, X_TEXT_POST } from './x-pages.mjs';
+import { X_FEED_POST, X_GIF_POST, X_POST, X_TEXT_POST } from './x-pages.mjs';
 import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID, XHS_V1 } from './xhs-pages.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -2133,7 +2133,7 @@ try {
   await panel.bringToFront();
 
   // ───────────────────────── X：片段录制 ─────────────────────────
-  console.log('\n[X：时间线上说明要点开帖子；站内跳进帖子后录主帖的视频（静音自动播放），不录更大的回复视频；滚开时暂停，滚回来接着录]');
+  console.log('\n[X：首页信息流里录正在播放、开着声音的那个视频（静音自动播放的、没播过的、广告不算），帖子信息来自视频所在的那条帖子；暂停后仍锁定，滚出屏幕放开]');
   const xReqStart = requests.length;
   const [xPage] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/xpage/home`)]);
   xPage.on('pageerror', (e) => consoleErrors.push(`x pageerror: ${e.message}`));
@@ -2146,8 +2146,93 @@ try {
     const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/xpage/'));
     await c.tabs.update(t.id, { active: true });
   });
-  await clipStatus.filter({ hasText: '不是帖子详情' }).waitFor({ timeout: 10000 });
-  check(true, '时间线上：说明要点开帖子才能录');
+  const xAppHtml = () => xPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  const xTitle = async () => (await panel.getByTestId('clip-title').textContent()) ?? '';
+  /** 在首页信息流里对广告的视频（ad）和那条帖子的视频（v）做点什么（模拟你播放、开关声音，或 X 自己滚动时的行为） */
+  const onXFeed = (/** @type {string} */ code) => xPage.evaluate(`(() => { const ad = document.querySelector('#feed-ad video'); const v = document.querySelector('#feed-post video'); ${code} })()`);
+  await xPage.waitForFunction(() => [...document.querySelectorAll('video')].every((v) => v.readyState >= 2), null, { timeout: 30000 });
+  await onXFeed('ad.muted = true; return ad.play();');
+  await clipStatus.filter({ hasText: '没有正在播放、开着声音的视频' }).waitFor({ timeout: 10000 });
+  const feedIdle = /** @type {{ adAutoplay: boolean, idle: boolean }} */ (await onXFeed('return { adAutoplay: !ad.paused && ad.muted, idle: v.paused && !v.muted };'));
+  check(
+    feedIdle.adAutoplay && feedIdle.idle && (await xTitle()) === '—' && (await panel.getByTestId('clip-start').count()) === 0,
+    '首页信息流：静音自动播放的视频、没播过的视频（没静音但暂停着）都不算，说明要把想录的那个的声音打开',
+  );
+  await onXFeed('ad.currentTime = 0; ad.muted = false; return ad.play();');
+  await clipStatus.filter({ hasText: '认不出这个视频属于哪条帖子' }).waitFor({ timeout: 5000 });
+  check((await panel.getByTestId('clip-start').count()) === 0, '广告带着声音播放：它没有帖子链接，认不出属于哪条帖子，不让录');
+  await onXFeed('ad.pause(); ad.muted = true;');
+
+  await onXFeed('return v.play();');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-position').filter({ hasText: / 0:(11|12)$/ }).waitFor({ timeout: 5000 });
+  check(
+    (await xTitle()) === X_FEED_POST.title,
+    `锁定正在播放、开着声音的那个视频；"帖子"来自它所在的那条帖子（作者 - 正文：表情保留，t.co 外链去掉，不拿被引用帖子的文字）：${await xTitle()}`,
+  );
+  check(((await panel.getByTestId('clip-no-burn').textContent()) ?? '').includes('首页信息流'), '界面写明信息流里录的是哪个视频');
+  await onXFeed('v.pause();');
+  await xPage.waitForTimeout(600);
+  check(((await clipStatus.textContent()) ?? '').includes('可以开始录制') && (await xTitle()) === X_FEED_POST.title, '把它暂停：仍然锁定着（可以暂停下来截图）');
+  await xPage.evaluate(() => window.scrollTo(0, 2000));
+  await clipStatus.filter({ hasText: '没有正在播放、开着声音的视频' }).waitFor({ timeout: 5000 });
+  await xPage.evaluate(() => window.scrollTo(0, 0));
+  await xPage.waitForTimeout(600);
+  check(((await clipStatus.textContent()) ?? '').includes('没有正在播放、开着声音的视频'), '暂停着滚出屏幕：放开；滚回来也不会自己又锁上，要再播放');
+
+  await onXFeed('v.currentTime = 0; return v.play();');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  const feedHtmlBefore = await xAppHtml();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await xPage.waitForTimeout(2000);
+  // X 自己的行为：滚出屏幕时暂停这个视频。这时别的视频带着声音播起来，正在录的这一段也不换目标
+  await onXFeed('v.pause(); window.scrollTo(0, 2000); ad.currentTime = 0; ad.muted = false; return ad.play();');
+  await clipStatus.filter({ hasText: '视频已暂停' }).waitFor({ timeout: 5000 });
+  const feedAtScroll = await recordedSec();
+  await xPage.waitForTimeout(1200);
+  check(
+    (await recordedSec()) === feedAtScroll && (await panel.getByTestId('clip-live').count()) === 1 && (await xTitle()) === X_FEED_POST.title,
+    `录制中滚开：这一段不结束、不跳到别的视频，暂停录制（停在 ${feedAtScroll} 秒）`,
+  );
+  await onXFeed('ad.pause(); ad.muted = true; window.scrollTo(0, 0); return v.play();');
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 5000 });
+  await xPage.waitForTimeout(1500);
+  check((await xAppHtml()) === feedHtmlBefore && (await xPage.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '信息流里录制没有往 X 页面里加任何元素，没有点到 X 自己的任何东西');
+  const [feedDl] = await Promise.all([xPage.waitForEvent('download', { timeout: 10000 }), xPage.evaluate(() => history.pushState(null, '', '/xpage/explore'))]);
+  const feedName = feedDl.suggestedFilename();
+  check(feedName.startsWith('Feed 作者 - Fable made this entire movie 🎬 in pure code.') && /_00m\d\ds-00m\d\ds\.(mp4|webm)$/.test(feedName), `离开首页时这一段自动结束并保存，文件名用帖子的作者、正文与起止时间：${feedName}`);
+  const feedClip = await analyzeClip(xPage, /** @type {string} */ (await feedDl.path()));
+  check(container(feedClip.head) === feedName.split('.').pop() && feedClip.duration > 2.5 && feedClip.rms > 0.02, `信息流里录到了画面轨和声音（${feedClip.duration.toFixed(1)} 秒，响度 ${feedClip.rms.toFixed(3)}）`);
+  await panel.getByTestId('clip-log').filter({ hasText: feedName }).waitFor({ timeout: 5000 });
+  const feedLog = (await clipLog())[0];
+  check(
+    feedLog?.site === 'x' && feedLog.videoId === X_FEED_POST.id && feedLog.title === X_FEED_POST.title && feedLog.url === `${MOCK}/xpage/${X_FEED_POST.user}/status/${X_FEED_POST.id}` && feedLog.fileName === feedName,
+    '"最近录过的片段"记下的是这条帖子自己的链接（不是 /home），点标题能回到帖子',
+  );
+  await clipStatus.filter({ hasText: '也不是首页信息流' }).waitFor({ timeout: 5000 });
+  check(true, '别的 X 页面（个人主页、搜索等）：说明只有帖子页和首页信息流能录');
+  await panel.getByRole('button', { name: '释放内存' }).click();
+  await xPage.evaluate(() => history.pushState(null, '', '/xpage/home'));
+
+  // 换成有画面的视频（静音、暂停着交回来）：带声音放一下再暂停，暂停着截
+  await useFramedVideo(xPage, '#feed-post video');
+  await onXFeed('v.muted = false; return v.play().then(() => new Promise((r) => setTimeout(r, 400))).then(() => v.pause());');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 5000 });
+  const feedSeqBefore = await captureSeq();
+  const feedShot = await capture();
+  const feedShotName = feedShot.suggestedFilename();
+  const feedPng = await readPng(/** @type {string} */ (await feedShot.path()), xPage);
+  check(
+    feedShotName.startsWith('Feed 作者 - Fable made this entire movie 🎬 in pure code.') && feedShotName.endsWith(`_original_${String(feedSeqBefore + 1).padStart(5, '0')}.png`) && feedPng.width === 720 && feedPng.height === 1280 && feedPng.left[0] > 150 && feedPng.right[2] > 150,
+    `信息流里暂停着 Capture：文件名用帖子的作者和正文，按视频的真实尺寸存：${feedShotName}（${feedPng.width}×${feedPng.height}）`,
+  );
+  // X 自己的行为：滚远了，这条帖子被从页面上撤掉
+  await xPage.evaluate(() => document.getElementById('feed-post')?.remove());
+  await clipStatus.filter({ hasText: '没有正在播放、开着声音的视频' }).waitFor({ timeout: 5000 });
+  check(true, '这条帖子被 X 从页面上撤掉后放开，不留着已经不在的视频');
+
+  console.log('\n[X：站内跳进帖子后录主帖的视频（静音自动播放），不录更大的回复视频；滚开时暂停，滚回来接着录]');
   await xPage.evaluate(() => /** @type {any} */ (window).__openPost());
   await xPage.waitForFunction(() => (document.querySelector('#main video') instanceof HTMLVideoElement ? /** @type {HTMLVideoElement} */ (document.querySelector('#main video')).readyState : 0) >= 2, null, { timeout: 30000 });
   /** 在 X 页面里对主帖和回复的视频做点什么（模拟你播放，或 X 自己滚动时的行为） */
@@ -2164,7 +2249,6 @@ try {
   const xShowsMainVideo = () => panel.getByTestId('clip-position').filter({ hasText: / 0:(19|20)$/ }).waitFor({ timeout: 5000 });
   await xShowsMainVideo();
   check(true, `选中主帖的视频（20 秒），不是回复里更大的那个（30 秒）：${await xPosition()}`);
-  const xAppHtml = () => xPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
   const xAppBefore = await xAppHtml();
   await panel.getByTestId('clip-start').click();
   await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
