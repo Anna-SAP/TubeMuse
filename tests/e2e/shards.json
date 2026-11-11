@@ -1,0 +1,5 @@
+{
+  "core": ["core", "emails", "settings"],
+  "subtitles": ["subtitles"],
+  "clips": ["clips"]
+}

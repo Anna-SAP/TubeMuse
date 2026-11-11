@@ -1,6 +1,7 @@
 # main 的分支保护把 verify 设成必过项：改 job 名要同时改分支保护，否则所有 PR 都合不进去。
 # 不加路径过滤：被过滤掉的 PR 不会产生 verify，会一直等下去。
-# 分支的 push 不跑：每个改动都走 PR，PR 会检查与 main 合并后的结果；再跑一遍 push 只是同一份检查多等 10 分钟（DECISIONS §48）。
+# 分支的 push 不跑：每个改动都走 PR，PR 会检查与 main 合并后的结果；再跑一遍 push 只是同一份检查多等一遍（DECISIONS §48）。
+# 检查拆成几个 job 并行跑，verify 只汇总它们的结果；合并后 main 上的那一次，文件树和 PR 里验过的一模一样时不重跑（DECISIONS §60）。
 name: CI
 
 on:
@@ -9,9 +10,16 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      force:
+        description: 这棵文件树已经验证过也重新跑一遍
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  # gate 要列出 artifact，查这棵文件树验过没有
+  actions: read
 
 # 同一分支只需要最新一次的结果。
 concurrency:
@@ -19,17 +27,74 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
-    runs-on: windows-2022
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: pwsh
+  # 合并后 push 到 main（或手动运行）时：这棵文件树若已经完整验证过，后面的检查不重跑。PR 不经过这一步。
+  # 这一步自己出错时按"没验过"处理，照常全跑。
+  gate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    continue-on-error: true
+    outputs:
+      verified: ${{ steps.lookup.outputs.verified }}
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Look up whether this tree is already verified
+        id: lookup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+          ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          verified=false
+          tree=$(git rev-parse 'HEAD^{tree}')
+          if [ "$FORCE" = "true" ]; then
+            note="手动要求重新跑一遍：不查这棵文件树（$tree）验过没有，照常全跑。"
+          elif [ "$ATTEMPT" != "1" ]; then
+            note="这是重新运行（第 $ATTEMPT 次）：照常全跑。"
+          else
+            # 标记只在所有检查都通过后由 verify 上传；只认本仓库自己的运行留下的（fork 的 PR 也能上传同名 artifact）
+            run_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=verified-tree-$tree&per_page=100" \
+              --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_repository_id == .workflow_run.repository_id)][0].workflow_run.id // empty') || run_id="error"
+            if [[ "$run_id" =~ ^[0-9]+$ ]]; then
+              verified=true
+              note="这棵文件树（$tree）已经在 [运行 $run_id]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id) 里通过了全部检查，内容一模一样，这次不重跑。"
+            elif [ "$run_id" = "error" ]; then
+              note="没能查到这棵文件树（$tree）验过没有（查询出错）：照常全跑。"
+            else
+              note="这棵文件树（$tree）还没有验证过：照常全跑。"
+            fi
+          fi
+          echo "$note"
+          echo "$note" >> "$GITHUB_STEP_SUMMARY"
+          echo "verified=$verified" >> "$GITHUB_OUTPUT"
+
+  # 类型检查、单元测试、正式版构建与冒烟
+  checks:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.verified != 'true' }}
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      tree: ${{ steps.tree.outputs.tree }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # PR 上检出的是与 main 合并后的结果；合并进 main 的提交只要文件树相同，就是同一份内容
+      - name: Record the tree being verified
+        id: tree
+        run: |
+          "tree=$(git rev-parse 'HEAD^{tree}')" >> $env:GITHUB_OUTPUT
 
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -50,17 +115,105 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Install Chromium for the smoke test
+        run: npm run e2e:install
+
+      - name: Production build and smoke test
+        run: npm run smoke
+
+  # e2e 分成几组并行，每组一台 runner、一个全新的浏览器。名单要和 tests/e2e/shards.json 一致（单测守着）。
+  e2e:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.verified != 'true' }}
+    runs-on: windows-2022
+    timeout-minutes: 20
+    strategy:
+      # 一组红了，别的组照样跑完：一次看全有哪些问题
+      fail-fast: false
+      matrix:
+        shard: [core, subtitles, clips]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate throwaway extension key
+        run: npm run setup
+
       - name: Install Chromium for e2e
         run: npm run e2e:install
 
-      - name: End-to-end and production smoke tests
-        run: npm run e2e
+      - name: Build the e2e extension
+        run: npm run build:e2e
+
+      - name: End-to-end tests (${{ matrix.shard }})
+        run: node tests/e2e/run-e2e.mjs --shard=${{ matrix.shard }}
 
       - name: Upload diagnostic results
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-results-${{ github.run_number }}-${{ github.run_attempt }}
+          name: test-results-${{ matrix.shard }}-${{ github.run_number }}-${{ github.run_attempt }}
           path: test-results/
           if-no-files-found: warn
           retention-days: 7
+
+  # 必过项。always()：前面的 job 失败或被取消时这一步也要跑出一个"失败"，
+  # 否则它会被跳过，而被跳过的必过项在分支保护里算通过。
+  verify:
+    needs: [gate, checks, e2e]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Summarize results
+        shell: bash
+        env:
+          VERIFIED: ${{ needs.gate.outputs.verified }}
+          CHECKS: ${{ needs.checks.result }}
+          E2E: ${{ needs.e2e.result }}
+        run: |
+          if [ "$VERIFIED" = "true" ]; then
+            echo "这棵文件树已经完整验证过（见 gate 的说明），这次没有重跑。"
+            exit 0
+          fi
+          echo "checks（类型检查、单元测试、正式版冒烟）：$CHECKS"
+          echo "e2e（各组）：$E2E"
+          if [ "$CHECKS" = "success" ] && [ "$E2E" = "success" ]; then
+            exit 0
+          fi
+          echo "::error::没有全部通过：checks=$CHECKS，e2e=$E2E"
+          exit 1
+
+      # 全部通过后留一个以文件树命名的标记：之后同一棵文件树（典型情况：这个 PR 合并进 main）不用再跑一遍
+      - name: Write the verified-tree marker
+        if: ${{ needs.checks.result == 'success' && needs.e2e.result == 'success' && needs.checks.outputs.tree != '' }}
+        shell: bash
+        env:
+          TREE: ${{ needs.checks.outputs.tree }}
+        run: |
+          printf 'tree=%s\nrun=%s\nattempt=%s\nevent=%s\nsha=%s\n' "$TREE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME" "$GITHUB_SHA" > verified-tree.txt
+
+      - name: Upload the verified-tree marker
+        if: ${{ needs.checks.result == 'success' && needs.e2e.result == 'success' && needs.checks.outputs.tree != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-tree-${{ needs.checks.outputs.tree }}
+          path: verified-tree.txt
+          if-no-files-found: error
+          # 重新运行（Re-run）时同名的标记已经在了：换成新的，不报冲突
+          overwrite: true
+          retention-days: 30
