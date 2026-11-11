@@ -219,6 +219,14 @@ export const DEFAULT_SETTINGS = {
   email: {
     enabled: true,
   },
+  /** 「问 muse」（DECISIONS §60、§63） */
+  muse: {
+    /**
+     * 在 YouTube 上点「问 muse」时，自动取这个视频自带的字幕 / 转写（位置前后 30 秒）。
+     * 原生字幕关着时要让播放器短暂打开一次字幕才取得到（会闪一下）；关掉这一项就只用已经读到的字幕。
+     */
+    fetchCaptions: true,
+  },
   /** 侧边栏界面偏好 */
   ui: {
     /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
@@ -598,6 +606,10 @@ export const MUSE = {
   windowSec: 30,
   /** 上下文最多多少个字：超过就截断，并在咨询包里注明 */
   contextMaxChars: 2000,
+  /** 简介（YouTube 视频作者写的说明）最多放多少个字：超过就截断，并在咨询包里注明 */
+  descriptionMaxChars: 1500,
+  /** 章节标题最多多少个字 */
+  chapterTitleMaxChars: 120,
   /** 标题、作者最多多少个字（页面上读来的，防止异常长） */
   titleMaxChars: 300,
   authorMaxChars: 100,
@@ -605,10 +617,14 @@ export const MUSE = {
   bodyReadMaxChars: 20_000,
   /** 一次最多交回多少句字幕（前后 30 秒通常只有十几句；防止异常数据） */
   maxCues: 400,
-  /** YouTube 的作者本机没有缓存时，向官方接口查（videos.list，1 unit）最多等多久；超时就写「无」并说明，查到的结果留给下一次 */
-  authorLookupMs: 5000,
-  /** 咨询包末尾给 Muse 的回答要求（用户 2026-11-11 给定的原话） */
-  answerRule: '请用中文回答，引用位置或原文；上下文里没有就直说没有，不要编造。',
+  /** YouTube 的作者、简介（章节写在简介里）本机没有时，向官方接口查（videos.list，1 unit）最多等多久；超时就写「无」并说明，查到的结果留给下一次 */
+  infoLookupMs: 5000,
+  /** 本机记住最近多少个视频的作者和简介：问过的视频再问不用再查 */
+  videoCacheMax: 30,
+  /** 点「问 muse」时取 YouTube 自带的字幕最多等多久（读字幕轨、等播放器给出带令牌的字幕请求、取回字幕）；超时就写「无字幕」并说明 */
+  captionFetchMs: 8000,
+  /** 咨询包末尾给 Muse 的回答要求（用户 2026-11-11 手测后改定的原话，见 DECISIONS §63） */
+  answerRule: '视频里的说法必须引用位置或原文；通用概念问题可用通用知识回答，但必须标明「这是通用知识，不是视频原话」。',
 } as const;
 
 /** 观看追踪的内部参数 */

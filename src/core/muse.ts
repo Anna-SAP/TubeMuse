@@ -174,12 +174,16 @@ export interface MuseCaptions {
   cues: MuseCue[];
 }
 
-/** 多语字幕脚本对 MUSE_MSG.captions 的回复 */
+/**
+ * 多语字幕脚本对 MUSE_MSG.captions 的回复：位置前后的那几句（已经读到的，或这一次为提问取来的 YouTube 字幕）。
+ * 一句都没有时 cues 是空的，problem 说明为什么没取到。
+ */
 export interface MuseCaptionReply {
   videoId: string;
-  label: string;
-  autoTranslated: boolean;
+  label?: string;
+  autoTranslated?: boolean;
   cues: MuseCue[];
+  problem?: string;
 }
 
 /** 位置 t 前后 windowSec 秒内的句子（和这段时间有交叠就算），按开始时间排 */
@@ -209,10 +213,110 @@ export function sanitizeMuseCaptionReply(raw: unknown, videoId: string): MuseCap
   return { source: 'youtube-cc', ...(label ? { label } : {}), cues };
 }
 
+/** 多语字幕脚本没交回字幕时，它说的原因（是这个视频的回复才算）；没有说时 undefined */
+export function museCaptionProblem(raw: unknown, videoId: string): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  return r.videoId === videoId ? oneLine(r.problem, 200) : undefined;
+}
+
 /** 本机存的自动字幕（语音识别的转写）里，位置 t 前后的那几句；一句都没有时 undefined */
 export function autoTranscriptAround(cues: readonly { start: number; end: number; text: string }[] | undefined, t: number): MuseCaptions | undefined {
   const near = sanitizeCues(cuesAround(cues ?? [], t));
   return near.length ? { source: 'auto', cues: near } : undefined;
+}
+
+// ── YouTube：简介与章节（官方 videos.list 给的简介；章节列表写在简介里） ──
+
+/** 最近问过的 YouTube 视频：官方接口给的标题、频道名和简介（存在本机，同一个视频再问不用再查） */
+export interface MuseVideoInfo {
+  title: string;
+  channelTitle: string;
+  description: string;
+  fetchedAt: number;
+  /** 官方接口查不到这个视频（已删除 / 私享） */
+  missing?: boolean;
+}
+
+/** 新查到的一条放进去；只留最近 max 个（按查到的时间） */
+export function rememberMuseVideo(all: Record<string, MuseVideoInfo>, videoId: string, info: MuseVideoInfo, max: number = MUSE.videoCacheMax): Record<string, MuseVideoInfo> {
+  const kept = Object.entries({ ...all, [videoId]: info })
+    .sort((a, b) => b[1].fetchedAt - a[1].fetchedAt)
+    .slice(0, max);
+  return Object.fromEntries(kept);
+}
+
+/** 一章：开始时间（视频秒）和标题 */
+export interface MuseChapter {
+  start: number;
+  title: string;
+}
+
+/** 一行里的时间：12:03、1:02:03（前后不能紧挨着别的数字或冒号） */
+const CHAPTER_STAMP = /(?<![\d:])(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?![\d:])/;
+/** 有字母、数字或汉字：算"有内容" */
+const HAS_WORD = /[\p{L}\p{N}]/u;
+
+/** 行首的序号："1."、"2)"、"3、" */
+const LIST_MARKER = /^\s*\d{1,3}\s*[.)、．]\s*/;
+
+/**
+ * 从简介里认章节列表：一行一个"时间 + 标题"。时间要在一行的开头或结尾（前后只能是符号、序号），正文中间顺带提到的时间不算；
+ * 取时间连续递增的最长一段，至少三行才算。
+ * 比 YouTube 自己的规则（要从 0:00 开始）宽：实际的简介常常不从 0:00 写起，还带序号和方括号，例如
+ * "1. [01:13] 第一个话题"（2026-11-11 在用户手测的那个视频上看到的），这种列表正是要放进咨询包的。
+ */
+export function parseChapters(description: string): MuseChapter[] {
+  const found: MuseChapter[] = [];
+  for (const line of description.split(/\r?\n/)) {
+    const m = CHAPTER_STAMP.exec(line);
+    if (!m) continue;
+    const before = line.slice(0, m.index);
+    const after = line.slice(m.index + m[0].length);
+    const atStart = !HAS_WORD.test(before.replace(LIST_MARKER, ''));
+    const atEnd = !HAS_WORD.test(after);
+    if (!atStart && !atEnd) continue;
+    if (Number(m[3]) >= 60 || (m[1] !== undefined && Number(m[2]) >= 60)) continue;
+    const rest = atStart ? after : before.replace(LIST_MARKER, '');
+    const title = oneLine(rest.replace(/^[\s\-–—:：|·•)\]）】>]+|[\s\-–—:：|·•(\[（【<]+$/g, ''), MUSE.chapterTitleMaxChars);
+    if (!title) continue;
+    found.push({ start: Number(m[1] ?? 0) * 3600 + Number(m[2]) * 60 + Number(m[3]), title });
+  }
+  let best: MuseChapter[] = [];
+  let run: MuseChapter[] = [];
+  for (const c of found) {
+    if (run.length && c.start <= run[run.length - 1]!.start) run = [];
+    run.push(c);
+    if (run.length > best.length) best = run;
+  }
+  return best.length >= 3 ? best : [];
+}
+
+/** 位置所在的那一章，和它前后各一章；位置在第一章开始之前时没有"当前"，只有下一章 */
+export function chaptersAround(chapters: readonly MuseChapter[], position: number): { prev?: MuseChapter; current?: MuseChapter; next?: MuseChapter } {
+  let i = -1;
+  chapters.forEach((c, n) => {
+    if (c.start <= position) i = n;
+  });
+  const prev = chapters[i - 1];
+  const current = chapters[i];
+  const next = chapters[i + 1];
+  return { ...(prev ? { prev } : {}), ...(current ? { current } : {}), ...(next ? { next } : {}) };
+}
+
+/**
+ * 咨询包里"章节"一项：只放当前位置所在的那一章和前后各一章。简介里没有章节列表写「无」；
+ * 有章节但播放位置没读到（不知道在哪一章）写「未知」并说明。
+ */
+export function museChapterText(description: string | undefined, position: number | undefined): string {
+  const chapters = description ? parseChapters(description) : [];
+  if (!chapters.length) return MUSE_NONE;
+  if (position === undefined) return `${MUSE_UNKNOWN}（播放位置没读到；这个视频分了 ${chapters.length} 章）`;
+  const near = chaptersAround(chapters, position);
+  const one = (label: string, c: MuseChapter) => `${label} [${museClock(c.start)}] ${c.title}`;
+  // 简介里的列表不一定从 0:00 写起：还没播到第一章时没有"当前"
+  if (!near.current) return `${near.next ? one('下一章', near.next) : MUSE_NONE}（当前位置在第一章之前）`;
+  return [...(near.prev ? [one('上一章', near.prev)] : []), one('当前', near.current), ...(near.next ? [one('下一章', near.next)] : [])].join('；');
 }
 
 // ── 咨询包 ──
@@ -242,8 +346,11 @@ export function museLink(s: Pick<MuseSnapshot, 'site' | 'videoId' | 'url' | 'sho
   return `https://www.youtube.com/watch?v=${encodeURIComponent(s.videoId)}${s.position !== undefined ? `&t=${Math.floor(s.position)}s` : ''}`;
 }
 
-/** 上下文用的是哪一种：字幕 / 转写、正文 / 描述、只有标题，或什么都没有 */
-export type MuseContextKind = 'captions' | 'body' | 'title' | 'none';
+/** 上下文用的是哪一种：字幕 / 转写、正文 / 描述、只有标题、（YouTube）没取到字幕，或什么都没有 */
+export type MuseContextKind = 'captions' | 'body' | 'title' | 'no-captions' | 'none';
+
+/** YouTube 没取到字幕时"上下文"一项写的字 */
+export const MUSE_NO_CAPTIONS = '无字幕';
 
 const BODY_NAMES: Record<ClipSite, string> = {
   youtube: '这个视频的描述',
@@ -300,12 +407,24 @@ function bodyContext(s: MuseSnapshot, max: number): MuseContext {
   return { kind: 'body', label, text: `${text}…`, cut: `已截断：原文约 ${total} 字，这里是开头的 ${chars(text)} 字` };
 }
 
-/** 上下文按优先级只取一种：冻结位置前后的字幕 / 转写 → 这条帖子 / 笔记的正文或描述 → 只有标题 → 无 */
+/**
+ * 上下文按优先级只取一种：冻结位置前后的字幕 / 转写 → 这条帖子 / 笔记的正文或描述 → 只有标题 → 无。
+ * YouTube 的简介单独有一项（见 descriptionLines），所以 YouTube 没取到字幕时这里写「无字幕」。
+ */
 function pickContext(s: MuseSnapshot, captions: MuseCaptions | undefined, max: number): MuseContext {
   if (captions?.cues.length && s.position !== undefined) return captionContext(captions, s.position, max);
+  if (s.site === 'youtube') return { kind: 'no-captions' };
   if (s.body) return bodyContext(s, max);
-  if (s.title) return { kind: 'title', label: '只有标题：没有字幕 / 转写，也没有正文 / 描述', text: s.title };
-  return { kind: 'none' };
+  return { kind: s.title ? 'title' : 'none' };
+}
+
+/** "简介"一项：YouTube 视频作者写的说明（官方接口给的）。太长时留开头并注明；没有写「无」 */
+function descriptionLines(description: string | undefined, max: number): { lines: string[]; cut: boolean } {
+  const text = block(description, MUSE.bodyReadMaxChars);
+  if (!text) return { lines: [`简介：${MUSE_NONE}`], cut: false };
+  if (chars(text) <= max) return { lines: ['简介：', text], cut: false };
+  const kept = head(text, max).trimEnd();
+  return { lines: ['简介：', `${kept}…`, `（已截断：原文约 ${chars(text)} 字，这里是开头的 ${chars(kept)} 字）`], cut: true };
 }
 
 /**
@@ -340,8 +459,10 @@ export function redactMuse(text: string, secrets: readonly (string | undefined)[
 export interface MusePackageInput {
   /** 校验过的快照（sanitizeMuseSnapshot 的结果，且不是 unavailable） */
   snapshot: MuseSnapshot;
-  /** 冻结位置前后的字幕 / 转写（已有的才给） */
+  /** 冻结位置前后的字幕 / 转写（取到了才给） */
   captions?: MuseCaptions;
+  /** YouTube：官方接口给的简介（章节从它里面认） */
+  description?: string;
   /** 你的问题，原话 */
   question: string;
   /** 你存在本机的 Key / 令牌：万一原样出现在文字里，换掉 */
@@ -353,8 +474,18 @@ export interface MusePackage {
   context: MuseContextKind;
   /** 上下文被截断了（咨询包里已注明） */
   truncated: boolean;
+  /** 简介被截断了（咨询包里已注明） */
+  descriptionTruncated: boolean;
   /** 有内容看起来像 Key / 令牌，被换成了"[已隐藏]" */
   redacted: boolean;
+}
+
+/** "上下文"一项。只有标题时不把标题再抄一遍（上面已经有"标题"一行），只说明情况 */
+function contextLines(ctx: MuseContext): string[] {
+  if (ctx.kind === 'none') return [`上下文：${MUSE_NONE}`];
+  if (ctx.kind === 'no-captions') return [`上下文：${MUSE_NO_CAPTIONS}`];
+  if (ctx.kind === 'title') return ['上下文：只有上面的标题（没有字幕 / 转写，也没有正文 / 描述）'];
+  return [`上下文（${ctx.label}）：`, ctx.text!, ...(ctx.cut ? [`（${ctx.cut}）`] : [])];
 }
 
 /**
@@ -364,23 +495,20 @@ export interface MusePackage {
 export function buildMusePackage(input: MusePackageInput): MusePackage {
   const s = input.snapshot;
   const ctx = pickContext(s, input.captions, MUSE.contextMaxChars);
-  const context =
-    ctx.kind === 'none'
-      ? [`上下文：${MUSE_NONE}`]
-      : ctx.kind === 'title'
-        ? [`上下文（${ctx.label}）：${ctx.text}`]
-        : [`上下文（${ctx.label}）：`, ctx.text!, ...(ctx.cut ? [`（${ctx.cut}）`] : [])];
+  const description = descriptionLines(input.description, MUSE.descriptionMaxChars);
   const lines = [
     `平台：${MUSE_SITE_LABELS[s.site]}`,
     `页面链接：${museLink(s) ?? MUSE_NONE}`,
     `标题：${s.title ?? MUSE_NONE}`,
     `作者：${s.author ?? MUSE_NONE}`,
     `播放位置：${musePosition(s.position, s.duration)}`,
-    ...context,
+    `章节：${museChapterText(input.description, s.position)}`,
+    ...description.lines,
+    ...contextLines(ctx),
     `我的问题：${input.question.replace(CONTROL, '').trim() || MUSE_NONE}`,
     '',
     MUSE.answerRule,
   ];
   const { text, changed } = redactMuse(lines.join('\n'), input.secrets);
-  return { text, context: ctx.kind, truncated: !!ctx.cut, redacted: changed };
+  return { text, context: ctx.kind, truncated: !!ctx.cut, descriptionTruncated: description.cut, redacted: changed };
 }

@@ -7,8 +7,10 @@
 // 3. 显示期间关掉 YouTube 原生字幕（避免两层），关闭多语字幕时恢复；你自己按 C 打开原生字幕时，多语字幕先让开。
 // 4. 在播放器里叠加一层只读字幕（Shadow DOM，只用 textContent 写字），不改动 YouTube 自己的元素；
 //    TubeMuse 自动字幕层也在时，叠在它上面。
-// 5. 「问 muse」（用户 2026-11-11 要求，见 DECISIONS §60）：你在侧边栏点「问 muse」时，把已经读到的字幕里、那一刻前后 30 秒的
-//    几句交给侧边栏（拼进你自己粘贴到 Muse 的那段文字）。只交已有的：不为此再取字幕、不动播放器。
+// 5. 「问 muse」（用户 2026-11-11 要求，见 DECISIONS §60、§63）：你在侧边栏点「问 muse」时，把这个视频的字幕里、那一刻前后 30 秒的
+//    几句交给侧边栏（拼进你自己粘贴到 Muse 的那段文字）。已经读到的直接用；还没读到时为这一次提问取一种语言
+//    （按你排的语言顺序，这个视频自带的第一种；不用自动翻译）——取法和第 2 点完全一样，原生字幕关着时同样要请播放器
+//    短暂打开一次字幕，拿到请求后立刻关回去。不显示字幕层；侧边栏里可以关掉这个自动取。
 // 本脚本唯一的网络请求是第 2 点（构建时检查只有一处 fetch；地址先经 trackUrl 校验：同源、/api/timedtext、当前视频）。
 
 import { DEFAULT_SETTINGS, MULTI_CC, MUSE } from '../config/defaults';
@@ -35,6 +37,7 @@ import {
   trackKey,
   trackUrl,
   type BridgeOp,
+  type CcCue,
   type CcFetchFailure,
   type CcLoad,
   type CcResolution,
@@ -756,33 +759,123 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.settings) applySettings(changes.settings.newValue);
 });
 
+// ── 「问 muse」──
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** 等到 done() 成立；到了 deadline 还没成立返回 false */
+async function waitUntil(done: () => boolean, deadline: number): Promise<boolean> {
+  while (!done()) {
+    if (Date.now() >= deadline) return false;
+    await wait(100);
+  }
+  return true;
+}
+
 /**
- * 「问 muse」：已经读到的字幕里，位置 t 前后的那几句。按你排的语言顺序取第一种读到了的（关掉多语字幕后，这个视频读过的仍然算）；
- * 一种都没读到时不回。只交已有的，不为此取字幕。
+ * 「问 muse」取哪一种字幕：按你排的语言顺序，这个视频自带的第一种（不用 YouTube 自动翻译：译文不是原话）；
+ * 你选的语言它都没有时，用它的第一条字幕轨（多半是自动生成的原声字幕）。
  */
-function museCaptions(t: unknown): MuseCaptionReply | undefined {
-  if (!videoId || typeof t !== 'number' || !Number.isFinite(t)) return undefined;
-  for (const s of resolution()?.sources ?? []) {
+function museSource(l: CcTrackList): CcSource | undefined {
+  const res = resolveSources(l, effectiveLangs(), { autoTranslate: false, maxLines: 1, ...(videoLang?.lang ? { videoLang: videoLang.lang } : {}) });
+  if (res.sources[0]) return res.sources[0];
+  const track = l.tracks.find((x) => !x.name) ?? l.tracks[0];
+  return track ? { key: trackKey(track), want: track.lang, pref: track.lang, label: track.label, track, autoTranslated: false } : undefined;
+}
+
+/** 这个视频已经读到的字幕里的第一种：先按多语字幕的显示顺序，再是「问 muse」自己取的那一种 */
+function museLoaded(): { source: CcSource; cues: CcCue[] } | undefined {
+  const mine = list && list.videoId === videoId ? museSource(list) : undefined;
+  for (const s of [...(resolution()?.sources ?? []), ...(mine ? [mine] : [])]) {
     const ld = loaded.get(s.key);
-    if (ld?.state !== 'ok') continue;
-    const cues = cuesAround(ld.cues, t)
-      .slice(0, MUSE.maxCues)
-      .map((c) => ({ start: c.start, text: joinCueLines(c.text) }));
-    return { videoId, label: s.label, autoTranslated: s.autoTranslated, cues };
+    if (ld?.state === 'ok') return { source: s, cues: ld.cues };
   }
   return undefined;
 }
 
+/**
+ * 「问 muse」：这个视频的字幕里，位置 t 前后的那几句。
+ * 已经读到的（多语字幕开着读到的，关掉后这个视频读过的仍然算）直接用；还没读到、又允许取（fetchAllowed）时，
+ * 为这一次提问取一种语言：读字幕轨列表 → 拿到播放器带令牌的字幕请求（原生字幕关着时请播放器选一条轨、拿到后立刻关回去）
+ * → 复用那一处请求取字幕。最多等 MUSE.captionFetchMs。没取到时 cues 是空的，problem 说明原因。
+ */
+async function museCaptions(t: unknown, fetchAllowed: boolean): Promise<MuseCaptionReply | undefined> {
+  const vid = videoId;
+  if (!vid || typeof t !== 'number' || !Number.isFinite(t)) return undefined;
+  const none = (problem: string): MuseCaptionReply => ({ videoId: vid, cues: [], problem });
+  const gone = () => vid !== videoId;
+  const answer = (): MuseCaptionReply | undefined => {
+    const have = museLoaded();
+    if (!have) return undefined;
+    const cues = cuesAround(have.cues, t)
+      .slice(0, MUSE.maxCues)
+      .map((c) => ({ start: c.start, text: joinCueLines(c.text) }));
+    return { videoId: vid, label: have.source.label, autoTranslated: have.source.autoTranslated, cues, ...(cues.length ? {} : { problem: `这个位置前后 ${MUSE.windowSec} 秒没有字幕（可能是音乐或没人说话）` }) };
+  };
+  const have = answer();
+  if (have) return have;
+  if (!fetchAllowed) return none('你关掉了"自动取 YouTube 字幕"，这个视频也没有已经读到的字幕');
+  if (adShowing()) return none('正在播广告，广告结束后才取得到字幕');
+  const deadline = Date.now() + MUSE.captionFetchMs;
+  // 1. 字幕轨列表
+  // 页面里没有播放器（或它还没准备好）时读不到：等一小会儿就算了，不把整个时限耗在这一步
+  const listDeadline = Math.min(deadline, Date.now() + 2500);
+  while (!(list && list.videoId === vid) && Date.now() < listDeadline && !gone()) {
+    await refreshList();
+    if (!(list && list.videoId === vid)) await wait(150);
+  }
+  if (gone()) return undefined;
+  const l = list;
+  if (!l || l.videoId !== vid) return none('没读到播放器的字幕列表（播放器还没准备好）');
+  const source = museSource(l);
+  if (!source) return none('这个视频没有 YouTube 字幕');
+  // 2. 播放器带令牌的字幕请求：还没有时请它取一次。多语字幕开着（或正在为它取）时不插手，等它
+  scanResources();
+  if (!template && !active && !primeOwnedSince) {
+    // 原生字幕开着却没看到请求：再选轨会换掉你正在看的字幕，不做
+    if (l.native) return none('没拿到播放器的字幕请求（它的字幕令牌可能已失效）：刷新这个页面后再试');
+    primeOwnedSince = Date.now();
+    await nativeOp('prime', { lang: source.track.lang, kind: source.track.kind });
+    await waitUntil(() => !!template || gone() || active, Math.min(deadline, Date.now() + MULTI_CC.primeTimeoutMs));
+    // 为了拿这个请求打开的原生字幕，立刻关回去（这期间你开了多语字幕的话，由它接手）
+    if (!active) {
+      primeOwnedSince = 0;
+      await nativeOp('hide-native', { save: false });
+    }
+  }
+  if (gone()) return undefined;
+  // 3. 取这一种语言（多语字幕开着时它自己在取：等它）
+  if (!active) {
+    if (!template) return none('YouTube 播放器没有给出字幕请求（它的字幕令牌可能已失效）：刷新这个页面后再试');
+    const ld = loaded.get(source.key);
+    if (!ld || ld.state === 'error' || ld.state === 'retry') await Promise.race([load(source, 1), wait(Math.max(0, deadline - Date.now()))]);
+  } else {
+    await waitUntil(() => !!museLoaded() || gone() || !!fatal, deadline);
+  }
+  if (gone()) return undefined;
+  const got = answer();
+  if (got) return got;
+  const ld = loaded.get(source.key);
+  if (ld?.state === 'error' || ld?.state === 'retry') return none(`没能读到 YouTube 的字幕：${ld.message}`);
+  if (fatal) return none(fatal.message);
+  return none(`${MUSE.captionFetchMs / 1000} 秒内没有取到 YouTube 的字幕`);
+}
+
+/** 上一次「问 muse」还在取字幕时又来一次：排在它后面（那时字幕多半已经读到，直接用） */
+let museQueue: Promise<unknown> = Promise.resolve();
+
 chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
-  const msg = raw as { type?: string; on?: unknown; langs?: unknown; t?: unknown } | undefined;
+  const msg = raw as { type?: string; on?: unknown; langs?: unknown; t?: unknown; fetch?: unknown } | undefined;
   if (msg?.type === MULTICC_MSG.getState) {
     sendResponse(tabState());
     return false;
   }
   if (msg?.type === MUSE_MSG.captions) {
-    sendResponse(museCaptions(msg.t));
-    return false;
+    const run = museQueue.then(() => museCaptions(msg.t, msg.fetch === true));
+    museQueue = run.catch(() => undefined);
+    run.then(sendResponse, () => sendResponse(undefined));
+    return true;
   }
   if (msg?.type === MULTICC_MSG.toggle && videoId) {
     const on = typeof msg.on === 'boolean' ? msg.on : !active;

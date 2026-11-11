@@ -8,6 +8,7 @@ import { EMPTY_LLM_LEDGER, type LlmLedger } from '../core/spend';
 import type { DiscoveryState, DoubanState, HotspotDraft, HotspotState, Intent, SubtitleIndex, SubtitleTrack } from '../core/types';
 import type { SubtitleLedger } from '../core/subtitles';
 import type { ClipRecord } from '../core/clips';
+import type { MuseVideoInfo } from '../core/muse';
 import { sanitizeCcLangs } from '../core/multi-captions';
 import { emptyXhsState, sanitizeXhsState, type XhsState } from '../core/xhs';
 import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState, type EmailVerdicts } from '../core/email';
@@ -113,6 +114,7 @@ export function mergeSettings(stored: unknown): Settings {
     clips: { ...d.clips, ...(s.clips as object) },
     xhs: { ...d.xhs, ...(s.xhs as object) },
     email: { ...d.email, ...(s.email as object) },
+    muse: { ...d.muse, ...(s.muse as object) },
     ui: { ...d.ui, ...(s.ui as object) },
   } as Settings;
 }
@@ -193,6 +195,8 @@ export const stores = {
   clipLog: new Store<ClipRecord[]>('clipLog', () => []),
   /** Capture 截图用过的最大序号（全局递增，写进文件名；截图文件在浏览器的下载文件夹，不在这里） */
   captureSeq: new Store<number>('captureSeq', () => 0, (v) => (Number.isSafeInteger(v) && (v as number) > 0 ? (v as number) : 0)),
+  /** 「问 muse」：最近问过的 YouTube 视频的标题、作者和简介（官方 videos.list 查来的；同一个视频再问不用再查，只留最近几十个） */
+  museVideos: new Store<Record<string, MuseVideoInfo>>('museVideos', () => ({})),
   /** 小红书：收进 TubeMuse 的笔记与博主，各自的标签（只存在本机，与小红书账号里的收藏、关注无关） */
   xhs: new Store<XhsState>('xhs', emptyXhsState, (v) => sanitizeXhsState(v, Date.now())),
   /** eMails：收藏的文章与各自的标签（只存在本机，与邮箱、Medium 账号无关） */
