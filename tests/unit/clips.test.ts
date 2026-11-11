@@ -961,7 +961,15 @@ describe('抖音精选页', () => {
     expect(parseDouyinUrl(`https://www.douyin.com/jingxuan/travel?foo=1&modal_id=${ID}&share_token=abc#x`)).toEqual(canonical);
     expect(parseDouyinUrl(`https://www.douyin.com/jingxuan/travel/?modal_id=${ID}`)).toEqual(canonical);
   });
-  it('网址：没打开视频的精选页、/video/、推荐、搜索、个人主页、伪造域名都不算', () => {
+  it('网址（2026-11-11 用户给的）：搜索结果页里打开的视频也认；规范链接是精选页的那种，搜索词和别的参数不进链接', () => {
+    // 实测：/search/<搜索词>?modal_id= 从外面直接打开时抖音会丢掉 modal_id，回不到这条视频；/jingxuan?modal_id= 打得开
+    const canonical = { id: '7697926023714737408', url: 'https://www.douyin.com/jingxuan?modal_id=7697926023714737408' };
+    expect(parseDouyinUrl('https://www.douyin.com/search/大麦哥?aid=247fbcc3-958b-4916-96b4-a55c8b908665&modal_id=7697926023714737408&type=general')).toEqual(canonical);
+    expect(parseDouyinUrl('https://www.douyin.com/search/%E5%A4%A7%E9%BA%A6%E5%93%A5?modal_id=7697926023714737408&type=video')).toEqual(canonical);
+    expect(parseDouyinUrl('https://www.douyin.com/search/AI%20agent/?modal_id=7697926023714737408')).toEqual(canonical);
+    expect(canonical.url).not.toContain('search');
+  });
+  it('网址：没打开视频的精选页和搜索页、/video/、推荐、个人主页、伪造域名都不算', () => {
     for (const url of [
       'https://www.douyin.com/jingxuan',
       'https://www.douyin.com/jingxuan/travel',
@@ -973,7 +981,14 @@ describe('抖音精选页', () => {
       `https://www.douyin.com/video/${ID}`,
       `https://www.douyin.com/?recommend=1&modal_id=${ID}`,
       `https://www.douyin.com/discover?modal_id=${ID}`,
-      `https://www.douyin.com/search/AI?modal_id=${ID}`,
+      'https://www.douyin.com/search/AI',
+      'https://www.douyin.com/search/AI?type=general',
+      'https://www.douyin.com/search/AI?modal_id=abc&type=general',
+      `https://www.douyin.com/search?modal_id=${ID}`,
+      `https://www.douyin.com/search/?modal_id=${ID}`,
+      `https://www.douyin.com/search/AI/more?modal_id=${ID}`,
+      `https://www.douyin.com/searchx/AI?modal_id=${ID}`,
+      `https://www.douyin.com.evil.example/search/AI?modal_id=${ID}`,
       `https://www.douyin.com/user/MS4wLjABAAAA?modal_id=${ID}`,
       `https://www.douyin.com.evil.example/jingxuan?modal_id=${ID}`,
       `https://www.douyin.com@evil.example/jingxuan?modal_id=${ID}`,
@@ -996,14 +1011,15 @@ describe('抖音精选页', () => {
     expect(captureFileName(undefined, ID, 1, 2, 'douyin')).toBe(`douyin-${ID}_00-00-01-000_original_00002.png`);
   });
 
-  it('不能录的原因：没在精选页里打开视频 / 这条视频的画面还没出来', () => {
-    expect(clipUnavailable('douyin', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是抖音精选里打开的视频');
+  it('不能录的原因：没在精选页或搜索结果里打开视频 / 这条视频的画面还没出来', () => {
+    expect(clipUnavailable('douyin', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('没有点开的抖音视频');
+    expect(clipUnavailable('douyin', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('搜索结果');
     expect(clipUnavailable('douyin', { enabled: true, videoId: ID, shorts: false, hasVideo: false })).toContain('没找到这条视频的画面');
     expect(clipUnavailable('douyin', { enabled: true, videoId: ID, shorts: false, hasVideo: true })).toBeUndefined();
     expect(clipUnavailable('douyin', { enabled: false, videoId: ID, shorts: false, hasVideo: true })).toContain('已在设置中关闭');
     const shot: ClipCaptureContext = { site: 'douyin', enabled: true, videoId: ID, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
     expect(checkCapture(shot)).toBeUndefined();
-    expect(checkCapture({ ...shot, videoId: null })).toContain('不是抖音精选里打开的视频');
+    expect(checkCapture({ ...shot, videoId: null })).toContain('没有点开的抖音视频');
     expect(checkCapture({ ...shot, ready: false })).toContain('画面还没准备好');
   });
   it('划到下一条（网址里的 modal_id 变了）：这一段结束；放到结尾报"播完"：这一段结束', () => {
@@ -1022,6 +1038,9 @@ describe('抖音精选页', () => {
     expect(sanitizeClipRecord({ ...raw, url: `https://evil.example/jingxuan?modal_id=${ID}` }, 'douyin')).toBeNull();
     expect(sanitizeClipRecord({ ...raw, url: 'https://www.douyin.com/jingxuan' }, 'douyin')).toBeNull();
     expect(sanitizeClipRecord({ ...raw, url: `https://www.douyin.com/video/${ID}` }, 'douyin')).toBeNull();
+    // 在搜索结果里录的：记成精选页的链接（搜索页的网址回不到这条视频），搜索词不留；ID 对不上照样不收
+    expect(sanitizeClipRecord({ ...raw, url: `https://www.douyin.com/search/%E5%A4%A7%E9%BA%A6%E5%93%A5?modal_id=${ID}&type=general` }, 'douyin')).toEqual({ ...record, site: 'douyin', url: `https://www.douyin.com/jingxuan?modal_id=${ID}` });
+    expect(sanitizeClipRecord({ ...raw, url: 'https://www.douyin.com/search/AI?modal_id=7706025941717672121&type=general' }, 'douyin')).toBeNull();
     expect(sanitizeClipRecord({ ...raw, url: undefined }, 'douyin')).toBeNull();
     expect(sanitizeClipRecord({ ...raw, videoId: '../../etc' }, 'douyin')).toBeNull();
     // 同样的记录从 Instagram 页面、YouTube 页面送来：不收，或不带站点和链接

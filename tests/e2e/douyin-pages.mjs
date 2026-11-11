@@ -1,6 +1,8 @@
 // @ts-check
-// e2e 用的仿抖音网页版页面（由 mock 服务在 /douyin/ 下提供；精选页是 /douyin/jingxuan，带类目是 /douyin/jingxuan/<类目>）。
-// 结构照 2026-11-10 实测的真实精选页：
+// e2e 用的仿抖音网页版页面（由 mock 服务在 /douyin/ 下提供；精选页是 /douyin/jingxuan，带类目是 /douyin/jingxuan/<类目>，
+// 搜索结果页是 /douyin/search/<搜索词>）。
+// 结构照 2026-11-10 实测的真实精选页（搜索结果页 2026-11-11 实测，点开视频以后的结构相同，只有两处不一样：
+// 页面标题一直是"发现更多精彩视频 - 抖音搜索"，点开视频也不变；网址除了 modal_id 还带着 type=general）：
 // - 单页应用：在精选页点开一条视频，网址加上 ?modal_id=<视频ID>，不重新加载；划到下一条时 modal_id 跟着换；
 // - "当前这一条"是 [data-e2e="feed-active-video"]，它的 data-e2e-vid 就是这个 ID，里面的 <video> 是正在放的那个；
 // - 下一条的 <video> 预先加载在旁边的 [data-e2e="feed-item"] 里；划走以后上一条的 <video> 还留在页面上；页面角落另有一个空的 <video>；
@@ -47,9 +49,9 @@ const SCRIPT =
   `window.__nativeClicks = 0; document.addEventListener('click', () => window.__nativeClicks++, true);` +
   // 在精选页点开一条视频：站内跳转，网址带上 modal_id（外加一个不相干的参数），页面标题写成这条视频的
   `window.__openVideo = () => {` +
-  ` document.title = ${JSON.stringify(DOUYIN_VIDEO.docTitle)};` +
+  ` if (!location.pathname.includes('/search/')) document.title = ${JSON.stringify(DOUYIN_VIDEO.docTitle)};` +
   ` document.getElementById('modal').innerHTML = ${JSON.stringify(modal())};` +
-  ` history.pushState(null, '', location.pathname + '?modal_id=${DOUYIN_VIDEO.id}&from=grid');` +
+  ` history.pushState(null, '', location.pathname + '?modal_id=${DOUYIN_VIDEO.id}&' + (location.pathname.includes('/search/') ? 'type=general' : 'from=grid'));` +
   ` const v = document.querySelector('#dy-first video'); v.muted = true; return v.play(); };` +
   // 划到下一条（或"连播"自动跳过去）：modal_id 换了，"当前这一条"换成下一个；页面标题不变，上一条的 <video> 暂停着留在页面上
   `window.__nextVideo = () => {` +
@@ -61,9 +63,13 @@ const SCRIPT =
   // 关掉这条视频：回到精选页的格子
   `window.__closeVideo = () => { document.getElementById('modal').innerHTML = ''; history.pushState(null, '', location.pathname); };`;
 
-function feedPage() {
+/** 搜索结果页没点开视频时的页面标题；点开以后也不变 */
+export const DOUYIN_SEARCH_TITLE = '发现更多精彩视频 - 抖音搜索';
+
+/** @param {string} title 页面标题：精选页和搜索结果页除此之外用同一个仿页面 */
+function feedPage(title = '抖音精选 - 抖音') {
   return (
-    `<!doctype html><html><head><meta charset="utf-8"><title>抖音精选 - 抖音</title><style>body { margin: 0; font-family: system-ui, sans-serif; }</style></head>` +
+    `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body { margin: 0; font-family: system-ui, sans-serif; }</style></head>` +
     `<body><div id="app"><div id="grid"><a href="/douyin/jingxuan?modal_id=${DOUYIN_VIDEO.id}" onclick="return false">一条视频的封面</a></div><div id="modal"></div>` +
     `<video crossorigin="anonymous" style="width: 0; height: 0"></video></div><script>${SCRIPT}</script></body></html>`
   );
@@ -77,5 +83,6 @@ export function douyinMediaSeconds(/** @type {string} */ path) {
 
 /** @param {string} path /douyin/ 开头的路径；认不出的返回 undefined（mock 回 404） */
 export function douyinPage(path) {
-  return /^\/douyin\/jingxuan(?:\/[a-z]+)?$/.test(path) ? feedPage() : undefined;
+  if (/^\/douyin\/jingxuan(?:\/[a-z]+)?$/.test(path)) return feedPage();
+  return /^\/douyin\/search\/[^/]+$/.test(path) ? feedPage(DOUYIN_SEARCH_TITLE) : undefined;
 }

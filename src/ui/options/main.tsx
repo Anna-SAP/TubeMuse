@@ -597,7 +597,7 @@ function App() {
 
       <Section title="14. 片段录制" id="clips">
         <p class="muted small">
-          在侧边栏"片段"页（或按 Alt+Shift+R）录下正在看的 YouTube 视频、小红书视频笔记、X 帖子里的视频、酷播（www.kubb.tv）播放页里的视频、Instagram 首页信息流里正在播放、开着声音的视频，或抖音精选页里打开的视频的一段：画面和声音都来自这个视频本身，在本机编码，由浏览器存进下载文件夹。不经过网络，TubeMuse 不保留视频副本，只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
+          在侧边栏"片段"页（或按 Alt+Shift+R）录下正在看的 YouTube 视频、小红书视频笔记、X 帖子里的视频、酷播（www.kubb.tv）播放页里的视频、Instagram 首页信息流里正在播放、开着声音的视频，或抖音精选页、搜索结果里点开的视频的一段：画面和声音都来自这个视频本身，在本机编码，由浏览器存进下载文件夹。不经过网络，TubeMuse 不保留视频副本，只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段仅供个人学习，请勿传播。
         </p>
         <label class="inline">
           <input type="checkbox" data-testid="clips-enabled" checked={settings.clips.enabled} onChange={(e) => updateSection('clips', { enabled: e.currentTarget.checked })} />
