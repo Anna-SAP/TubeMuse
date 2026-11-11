@@ -100,6 +100,14 @@ export async function muse(t) {
   await panel.bringToFront();
   await panel.getByRole('tab', { name: '找片', exact: true }).click();
   check((await panel.getByTestId('muse-ask').count()) === 1 && (await musePanel.count()) === 0, '侧边栏顶部有「问 muse」按钮，没点之前不占地方');
+  // 按钮是一张图（DECISIONS §65）：图要真的加载出来、按给定的大小显示；图上没有字，名字在 aria-label 里
+  const museBtn = await panel.getByTestId('muse-ask').evaluate((el) => {
+    const img = el.querySelector('img');
+    const r = img?.getBoundingClientRect();
+    return { loaded: !!img && img.complete && img.naturalWidth > 0, natural: `${img?.naturalWidth}×${img?.naturalHeight}`, shown: `${r?.width}×${r?.height}`, text: (el.textContent ?? '').trim(), src: img?.getAttribute('src') };
+  });
+  check(museBtn.loaded && museBtn.natural === '120×144' && museBtn.shown === '40×48' && museBtn.text === '', `「问 muse」按钮是一张图，加载出来了：${museBtn.src}，原图 ${museBtn.natural}，显示成 ${museBtn.shown}`);
+  check((await panel.getByRole('button', { name: '问 muse', exact: true }).count()) === 1, '图片按钮的名字还是「问 muse」（读屏和悬停提示用）');
   check(await askMuseFails('当前标签页没有响应'), '当前标签页不是支持的视频页：说明原因和怎么办，不生成咨询包');
 
   console.log('\n[问 muse：YouTube——不用先开字幕，点一下自己取视频自带的字幕；有章节和简介；冻结不暂停视频，链接带 &t=；生成 / 复制 / 打开 muse.ai]');

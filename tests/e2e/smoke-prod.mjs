@@ -82,6 +82,14 @@ try {
     if (page === 'sidepanel.html') check(text.includes('配置 Google OAuth 客户端') || text.includes('连接 YouTube'), '未配置时侧边栏提示下一步该做什么');
     if (page === 'sidepanel.html') {
       // 「问 muse」：当前标签页（就是这个扩展页面）不是视频页，点了只说明原因；不向 muse.ai 或任何地方发请求（下面统一检查）
+      // 按钮是一张图：正式版的产物里带着这张图，页面的 CSP 也放它过
+      check(
+        await p.getByTestId('muse-ask').evaluate((el) => {
+          const img = el.querySelector('img');
+          return !!img && img.complete && img.naturalWidth > 0;
+        }),
+        '「问 muse」按钮上的图加载出来了',
+      );
       await p.getByTestId('muse-ask').click();
       await p.getByTestId('muse-error').waitFor({ timeout: 5000 });
       check((await p.getByTestId('muse-package').count()) === 0, '侧边栏顶部有「问 muse」；当前标签页不是视频页时只说明原因，不生成咨询包');

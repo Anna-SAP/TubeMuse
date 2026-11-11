@@ -36,7 +36,10 @@ function contextSummary(f: MuseFreeze, p: MusePackage): string {
   return MUSE_NONE;
 }
 
-/** 顶部的「问 muse」按钮，和它展开的面板（没打开时是 null） */
+/** 顶部按钮上的图：static/icons/muse-avatar.png（120×144，透明底），按 1/3 大小显示，高分屏上也清楚 */
+const MUSE_AVATAR = { src: 'icons/muse-avatar.png', width: 40, height: 48 };
+
+/** 顶部的「问 muse」按钮（一张图），和它展开的面板（没打开时是 null） */
 export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null } {
   const settings = useStore(stores.settings);
   const [open, setOpen] = useState(false);
@@ -118,15 +121,17 @@ export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null }
 
   const setFetchCaptions = (on: boolean) => void stores.settings.update(appCtx().kv, appCtx().locker, (s) => ({ ...s, muse: { ...s.muse, fetchCaptions: on } }));
 
+  // 图片按钮（2026-11-11，用户要求，DECISIONS §65）：只换了外观，点了做的事没有变。图上没有字，名字写在 aria-label 和悬停提示里
   const button = (
     <button
-      class={`btn small muse-btn${open ? ' on' : ''}`}
+      class={`btn muse-btn${open ? ' on' : ''}`}
       data-testid="muse-ask"
       disabled={busy}
-      title="冻结当前视频此刻的播放位置（只是记下来，不暂停视频），生成一段可以粘贴到 Muse 聊天里的咨询包。再点一次重新冻结"
+      aria-label="问 muse"
+      title="问 muse：冻结当前视频此刻的播放位置（只是记下来，不暂停视频），生成一段可以粘贴到 Muse 聊天里的咨询包。再点一次重新冻结"
       onClick={() => void freezeNow()}
     >
-      问 muse
+      <img src={MUSE_AVATAR.src} alt="" width={MUSE_AVATAR.width} height={MUSE_AVATAR.height} draggable={false} />
     </button>
   );
   if (!open) return { button, panel: null };
