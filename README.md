@@ -964,12 +964,16 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 npm run typecheck   # tsc 严格模式（扩展代码 + 构建/测试脚本）
 npm test            # Vitest 单元 + 服务层测试，全部用 mock，不出网
 npm run e2e:install # 首次运行 e2e 前下载 Playwright 的 Chromium
-npm run e2e         # 构建 dist-e2e/ 并在真实 Chromium 中跑通主流程；再构建 dist/ 做冒烟测试
+npm run e2e         # 构建 dist-e2e/ 并在真实 Chromium 中分组跑通各功能；再构建 dist/ 做冒烟测试
 npm run verify      # 以上全部
+
+# 只跑 e2e 的一组（core / subtitles / clips，见 tests/e2e/shards.json）：
+npm run build:e2e
+node tests/e2e/run-e2e.mjs --shard=clips
 ```
 
 - **测试不出网**：单测把全局 `fetch` 换成直接报错的函数，所有外部服务都用注入的假实现；e2e 把所有外部服务指向本机 mock（127.0.0.1:47321），其他任何请求都会被拦截并判失败。
-- **CI**：每次 push 和指向 `main` 的 PR 都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上跑 `verify`：类型检查、单元测试、e2e、正式版冒烟。不需要任何 Secret，扩展密钥在 runner 上临时生成。`main` 有分支保护：`verify` 不通过不能合并，也不能直接 push，管理员不例外。提交前先在本地跑 `npm run verify`。失败时的截图在这次运行的 Artifacts 里，保留 14 天。
+- **CI**：指向 `main` 的 PR 和 `main` 上的 push 都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上跑和 `npm run verify` 同一套检查：类型检查、单元测试、e2e、正式版冒烟。为了快，CI 把它们拆成几个 job 同时跑（类型检查 + 单测 + 冒烟一个，e2e 每组一个），最后由 `verify` 汇总，全部通过才算过。合并进 `main` 后的那一次：文件树和 PR 里验过的一模一样时不重跑，运行摘要里写明是哪一次运行验过的；不一样（例如验完以后 `main` 又进了别的改动）就照常全跑。不需要任何 Secret，扩展密钥在 runner 上临时生成。`main` 有分支保护：`verify` 不通过不能合并，也不能直接 push，管理员不例外。提交前先在本地跑 `npm run verify`。失败时的截图在这次运行的 Artifacts 里（每组一份），保留 7 天。分组与取舍见 DECISIONS §61。
 - `dist-e2e/` 是测试专用构建（Google 授权页与所有接口都指向本机 mock），**不要**在日常浏览器里加载它。e2e 会真实调用 `launchWebAuthFlow`，走完"弹窗 → mock 授权页 → 回跳授权码 → mock 令牌端点换令牌（校验 Client Secret 与 PKCE）"的整条链路，并验证访问令牌过期 24 小时后、浏览器重启后都能用刷新令牌自动续期。正式构建 `dist/` 的构建脚本会自检：产物里出现疑似 Key、令牌或测试地址就构建失败。
 - 技术栈：TypeScript（strict）· esbuild · Preact · Vitest · Playwright；大模型用 Anthropic / OpenAI 官方 SDK。
 - 关键设计与取舍（为什么这样选、放弃了什么、以后怎么替换）见 [DECISIONS.md](DECISIONS.md)；产品规格见 [CLAUDE.md](CLAUDE.md)。

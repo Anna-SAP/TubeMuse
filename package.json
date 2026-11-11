@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e:install": "playwright install chromium",
+    "e2e:install": "playwright install chromium --no-shell",
+    "smoke": "node scripts/build.mjs && node tests/e2e/smoke-prod.mjs",
     "e2e": "node scripts/build.mjs --e2e && node tests/e2e/run-e2e.mjs && node scripts/build.mjs && node tests/e2e/smoke-prod.mjs",
     "verify": "npm run typecheck && npm run test && npm run e2e"
   },
