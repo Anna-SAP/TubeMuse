@@ -1,6 +1,7 @@
 // 片段录制：当前标签页这个视频的录制控制（自由录制 / 按时间段截取）、Capture 截图、录好的片段（保存 / 丢弃）、最近录过的片段。
 // 录制在 YouTube 播放页、小红书笔记详情、X 帖子页（或首页信息流）、酷播播放页、Instagram 首页信息流或抖音精选页、搜索结果页里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
 // Capture 的 PNG 由录制脚本截好传回，在这里交给浏览器保存：下载要算在你刚点过的这个页面上，Chrome 才不会拦（见 DECISIONS §50）。
+// 同一张图同时放进系统剪贴板，切到别的应用可以直接粘贴（见 DECISIONS §62）。
 
 import { useEffect, useState } from 'preact/hooks';
 import {
@@ -18,17 +19,19 @@ import {
   type ClipSite,
   type ClipTabState,
 } from '../../core/clips';
+import { CLIPS } from '../../config/defaults';
 import { formatClock, formatRelative } from '../../core/time';
 import { stores } from '../../services/repo';
 import { clearClipLog } from '../../services/clip-service';
 import { appCtx, useStore } from '../shared/app';
+import { copyPngToClipboard } from '../shared/clipboard';
 import { Notice } from '../shared/components';
 import { downloadBlob } from '../shared/download';
 import { useActiveTabState } from '../shared/tab-state';
 
 const NO_RESPONSE = '这个标签页没有响应：刷新一下那个页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）';
 
-const CAPTURE_HINT = 'Capture 把当前这一帧直接存成无损 PNG：不带字幕和播放器控件，分辨率是视频当前解码出的真实尺寸';
+const CAPTURE_HINT = 'Capture 把当前这一帧直接存成无损 PNG，同时放进剪贴板（切到别的应用可以直接粘贴）：不带字幕和播放器控件，分辨率是视频当前解码出的真实尺寸';
 
 /** 片段页上各站的说法。noBurn：这个站为什么没有"把字幕烧进画面"；capture：Capture 的说明；logTag："最近录过的片段"里标在前面的站名 */
 const SITE_TEXT: Record<ClipSite, { item: string; noBurn?: string; capture: string; logTag: string; open: string }> = {
@@ -75,7 +78,8 @@ export function ClipsView() {
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string>();
   const [capturing, setCapturing] = useState(false);
-  const [shot, setShot] = useState<{ fileName: string; width: number; height: number; bytes: number }>();
+  /** clipboardError：这张图没能放进剪贴板的原因（文件照常存下了）；放进去了就没有这一项 */
+  const [shot, setShot] = useState<{ fileName: string; width: number; height: number; bytes: number; clipboardError?: string }>();
   const videoId = state?.videoId;
   // 换了视频：时间段清空，免得拿上一个视频的时间去截
   useEffect(() => {
@@ -99,11 +103,21 @@ export function ClipsView() {
     }
   }
 
-  /** 让录制脚本截下这一帧，把 PNG 取回来，编号、起名，交给浏览器存进下载文件夹 */
+  /** 让录制脚本截下这一帧，把 PNG 取回来，编号、起名，交给浏览器存进下载文件夹，同时放进系统剪贴板 */
   const capture = async () => {
     setLocalError(undefined);
     setShot(undefined);
     setCapturing(true);
+    // 剪贴板要在点击的这一刻就向浏览器登记，图稍后再给：等图传回来再写的话，你已经切到别的窗口时会被浏览器拒绝
+    let give!: (png: Blob) => void;
+    let giveUp!: () => void;
+    const copied = copyPngToClipboard(
+      new Promise<Blob>((resolve, reject) => {
+        give = resolve;
+        giveUp = () => reject(new Error('截图没成'));
+      }),
+      CLIPS.captureClipboardTimeoutMs,
+    );
     try {
       const r = await send<ClipCaptureReply>({ type: CLIP_MSG.capture });
       if (!r) return setLocalError(NO_RESPONSE);
@@ -117,9 +131,14 @@ export function ClipsView() {
       // 截成了才取序号：广告、缓冲时点了不占号
       const seq = await stores.captureSeq.update(appCtx().kv, appCtx().locker, (n) => n + 1);
       const fileName = captureFileName(r.title, r.videoId, r.time, seq, state?.site);
-      downloadBlob(fileName, new Blob(parts, { type: 'image/png' }));
-      setShot({ fileName, width: r.width, height: r.height, bytes: r.bytes });
+      const png = new Blob(parts, { type: 'image/png' });
+      downloadBlob(fileName, png);
+      give(png);
+      const clip = await copied;
+      setShot({ fileName, width: r.width, height: r.height, bytes: r.bytes, ...(clip.ok ? {} : { clipboardError: clip.skipped ? '原因不明' : clip.message }) });
     } finally {
+      // 截图没成：告诉剪贴板这次不写了（图已经给出去时这一句不起作用）
+      giveUp();
       setCapturing(false);
     }
   };
@@ -169,7 +188,7 @@ export function ClipsView() {
   })();
   // 录制中也能截，不影响正在录的这一段
   const captureButton = (
-    <button class="btn" data-testid="clip-capture" disabled={busy || capturing || tabId === undefined} title="把当前这一帧存成无损 PNG" onClick={() => void capture()}>
+    <button class="btn" data-testid="clip-capture" disabled={busy || capturing || tabId === undefined} title="把当前这一帧存成无损 PNG，同时放进剪贴板" onClick={() => void capture()}>
       {capturing ? '截图中…' : 'Capture'}
     </button>
   );
@@ -305,9 +324,16 @@ export function ClipsView() {
             )}
 
             {shot && (
-              <p class="small clip-file" data-testid="clip-capture-saved">
-                截图已交给浏览器存进下载文件夹：{shot.fileName}（{shot.width}×{shot.height} · {formatBytes(shot.bytes)}）
-              </p>
+              <>
+                <p class="small clip-file" data-testid="clip-capture-saved">
+                  截图已交给浏览器存进下载文件夹{shot.clipboardError ? '' : '，也已放进剪贴板（到别的应用里直接粘贴）'}：{shot.fileName}（{shot.width}×{shot.height} · {formatBytes(shot.bytes)}）
+                </p>
+                {shot.clipboardError && (
+                  <p class="small warn-text" data-testid="clip-capture-clipboard-error">
+                    这张图没能放进剪贴板：{shot.clipboardError}。文件照常存下了；要粘贴的话保持侧边栏在最前面，再点一次 Capture。
+                  </p>
+                )}
+              </>
             )}
 
             {ready && (
