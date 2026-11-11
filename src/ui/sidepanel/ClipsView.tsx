@@ -1,5 +1,5 @@
 // 片段录制：当前标签页这个视频的录制控制（自由录制 / 按时间段截取）、Capture 截图、录好的片段（保存 / 丢弃）、最近录过的片段。
-// 录制在 YouTube 播放页、小红书笔记详情、X 帖子页（或首页信息流）、酷播播放页、Instagram 首页信息流、抖音精选页、搜索结果页或 B 站播放页里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
+// 录制在 YouTube 播放页（含 Shorts）、小红书笔记详情、X 帖子页（或首页信息流）、酷播播放页、Instagram 首页信息流、抖音精选页、搜索结果页或 B 站播放页里的录制脚本完成，这里只经消息控制它；录过的片段记录来自本机存储（只有元数据）。
 // Capture 的 PNG 由录制脚本截好传回，在这里交给浏览器保存：下载要算在你刚点过的这个页面上，Chrome 才不会拦（见 DECISIONS §50）。
 // 同一张图同时放进系统剪贴板，切到别的应用可以直接粘贴（见 DECISIONS §62）。
 
@@ -278,8 +278,15 @@ export function ClipsView() {
                 ) : (
                   <label class="inline">
                     <input type="checkbox" data-testid="clip-burn" checked={settings.clips.burnSubtitles} onChange={(e) => setBurn(e.currentTarget.checked)} />
-                    把字幕烧进画面（录的是播放器里当时显示的字幕：TubeMuse 自动字幕或 YouTube 原生字幕；更费电脑）
+                    {state.shorts
+                      ? '把字幕烧进画面（录的是 Shorts 播放器里当时显示的 YouTube 原生字幕，先在播放器里打开字幕；TubeMuse 自动字幕、多语字幕不在 Shorts 上显示；更费电脑）'
+                      : '把字幕烧进画面（录的是播放器里当时显示的字幕：TubeMuse 自动字幕或 YouTube 原生字幕；更费电脑）'}
                   </label>
+                )}
+                {state.shorts && (
+                  <p class="muted small" data-testid="clip-shorts-note">
+                    Shorts 放到结尾会自己从头再放：这一段录到结尾就自动结束，不把第二遍接着录进去；划到下一条 Short 时这一段也结束。
+                  </p>
                 )}
                 <div class="row">
                   <button class="btn primary" data-testid="clip-start" disabled={busy || tabId === undefined} onClick={() => void start()}>
@@ -371,7 +378,7 @@ export function ClipsView() {
           </>
         ) : (
           <p class="muted small" data-testid="clip-unsupported">
-            当前标签页不是 YouTube 视频页、小红书网页版、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版或 B 站网页版（www.bilibili.com）。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。
+            当前标签页不是 YouTube 视频页（含 Shorts）、小红书网页版、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版或 B 站网页版（www.bilibili.com）。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。
           </p>
         )}
         <p class="muted small">快捷键 Alt+Shift+R 开始 / 停止（可在 chrome://extensions/shortcuts 修改）；录制中工具栏图标上显示 REC。</p>
@@ -406,7 +413,7 @@ export function ClipsView() {
 
       <section class="panel">
         <p class="muted small">
-          可以录 YouTube 播放页、小红书笔记详情、X 帖子（帖子页，或首页信息流里正在播放、开着声音的那个）、酷播（www.kubb.tv）播放页、Instagram 首页信息流里正在播放、开着声音的视频，抖音精选页（www.douyin.com/jingxuan）、抖音搜索结果里点开的视频，以及 B 站（www.bilibili.com）播放器里的视频（普通视频、番剧影视、课程、播放列表、活动页）。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告（X 和 B 站的片头广告、酷播上认不出来的广告除外）、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
+          可以录 YouTube 播放页和 Shorts、小红书笔记详情、X 帖子（帖子页，或首页信息流里正在播放、开着声音的那个）、酷播（www.kubb.tv）播放页、Instagram 首页信息流里正在播放、开着声音的视频，抖音精选页（www.douyin.com/jingxuan）、抖音搜索结果里点开的视频，以及 B 站（www.bilibili.com）播放器里的视频（普通视频、番剧影视、课程、播放列表、活动页）。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告（X 和 B 站的片头广告、酷播上认不出来的广告除外）、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
         </p>
       </section>
     </div>

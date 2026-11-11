@@ -8,6 +8,7 @@ import { biliMediaSeconds, biliPage } from './bili-pages.mjs';
 import { douyinMediaSeconds, douyinPage } from './douyin-pages.mjs';
 import { igMediaSeconds, igPage } from './ig-pages.mjs';
 import { kubbMediaSeconds, kubbPage } from './kubb-pages.mjs';
+import { shortsMediaSeconds, shortsPage } from './shorts-pages.mjs';
 import { xMediaSeconds, xPage } from './x-pages.mjs';
 import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
 import { gmailPage } from './email-pages.mjs';
@@ -564,8 +565,8 @@ export function startMockServer() {
         return res.end();
       }
       const p = url.pathname;
-      // 仿小红书、X 网页版、酷播的视频：一段有声音的 WAV（同源，与真实页面的 blob: 流一样读得到）
-      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p) ?? kubbMediaSeconds(p) ?? igMediaSeconds(p) ?? douyinMediaSeconds(p) ?? biliMediaSeconds(p);
+      // 仿小红书、X 网页版、酷播、YouTube Shorts 等的视频：一段有声音的 WAV（同源，与真实页面的 blob: 流一样读得到）
+      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p) ?? kubbMediaSeconds(p) ?? igMediaSeconds(p) ?? douyinMediaSeconds(p) ?? biliMediaSeconds(p) ?? shortsMediaSeconds(p);
       if (mediaSeconds !== undefined) {
         const wav = speechWav(mediaSeconds);
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
@@ -621,6 +622,13 @@ export function startMockServer() {
       // 仿小红书网页版（小红书脚本只注入 /xhs/ 下的页面）
       if (p.startsWith('/xhs/')) {
         const html = xhsPage(p);
+        if (!html) return send(404, {});
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+      // 仿 YouTube Shorts（/shorts/<ID>，和 /watch 一样在"YouTube"这个站上）
+      if (p.startsWith('/shorts/')) {
+        const html = shortsPage(p);
         if (!html) return send(404, {});
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);

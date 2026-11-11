@@ -174,7 +174,7 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
   return false;
 });
 
-/** 正在录：红色 REC；自动暂停中：灰色 REC；录制失败（例如快捷键在 Shorts 上按下）：橙色 !；其余不显示 */
+/** 正在录：红色 REC；自动暂停中：灰色 REC；录制失败（例如快捷键在不是视频页的页面上按下）：橙色 !；其余不显示 */
 function showClipBadge(tabId: number, state: ClipTabState | undefined): void {
   const recording = state?.phase === 'recording';
   const text = recording ? 'REC' : state?.error && state.phase === 'idle' ? '!' : '';

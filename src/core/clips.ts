@@ -4,6 +4,7 @@
 
 import { CLIPS } from '../config/defaults';
 import { BILI_PAGES, DOUYIN_PAGES, IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } from '../config/endpoints';
+import { videoIdFromUrl } from './watch';
 import { canonicalXhsUrl, isXhsId } from './xhs';
 
 export type ClipMode = 'free' | 'range';
@@ -442,6 +443,7 @@ export function igProfileName(url: string): string | undefined {
 
 /**
  * Instagram 的视频放到结尾会自己跳回开头接着放（2026-11-10 实测：没有 loop 属性，也看不到"播完"，只看到进度从结尾跳回 0）。
+ * YouTube Shorts 也是放完从头再放（2026-11-11 起录 Shorts，见 DECISIONS §66）：不管播放器是靠 loop 属性还是自己跳回开头，看到的都是这样。
  * 上一轮还在结尾附近、这一轮回到了开头，就算放完了一遍：这一段在这里结束，不把第二遍接着录进去。
  */
 export function loopedToStart(previousTime: number, currentTime: number, duration: number): boolean {
@@ -592,6 +594,21 @@ export function isKubbAd(currentSrc: string, duration: number): boolean {
   return !!currentSrc && !currentSrc.startsWith('blob:') && Number.isFinite(duration) && duration > 0 && duration <= CLIPS.kubbAdMaxSec;
 }
 
+// ── YouTube：播放页与 Shorts ──
+
+/**
+ * YouTube 这个网址上正在看的视频装在哪个播放器里（播放器根元素的 ID）。2026-11-11 核实真实页面里的播放器配置：
+ * 播放页（/watch、直播 /live/…）是 #movie_player；Shorts（/shorts/<ID>）是 #shorts-player
+ * （WEB_PLAYER_CONTEXT_CONFIG_ID_KEVLAR_SHORTS 的 rootElementId）。
+ * Shorts 页面上还留着一个藏起来的 #movie_player（直接打开 Shorts 时也有；从播放页站内跳过来时里面还是上一个视频），
+ * 所以 Shorts 上只认 #shorts-player，找不到也不退回去找 #movie_player。不是视频页返回 undefined。
+ */
+export function youtubePlayerId(href: string): 'movie_player' | 'shorts-player' | undefined {
+  const { videoId, shorts } = videoIdFromUrl(href);
+  if (!videoId) return undefined;
+  return shorts ? 'shorts-player' : 'movie_player';
+}
+
 // ── 开录前检查 ──
 
 export interface ClipStartRequest {
@@ -607,7 +624,6 @@ export interface ClipStartContext {
   feed?: boolean;
   enabled: boolean;
   videoId: string | null;
-  shorts: boolean;
   hasVideo: boolean;
   /** 已经在录（同一时间只录一段） */
   busy: boolean;
@@ -648,9 +664,8 @@ const FEED_TEXT = {
 };
 
 /** 这个页面现在为什么录不了（侧边栏显示、开录前检查共用）；能录返回 undefined */
-export function clipUnavailable(site: ClipSite, c: Pick<ClipStartContext, 'enabled' | 'videoId' | 'shorts' | 'hasVideo' | 'feed'>): string | undefined {
+export function clipUnavailable(site: ClipSite, c: Pick<ClipStartContext, 'enabled' | 'videoId' | 'hasVideo' | 'feed'>): string | undefined {
   if (!c.enabled) return '片段录制已在设置中关闭';
-  if (c.shorts) return 'Shorts 暂不支持录制';
   if ((site === 'x' || site === 'ig') && c.feed) return !c.hasVideo ? FEED_TEXT.noVideo : !c.videoId ? FEED_TEXT.noPost[site] : undefined;
   if (!c.videoId) return CLIP_UNAVAILABLE_TEXT[site].noPage;
   if (!c.hasVideo) return CLIP_UNAVAILABLE_TEXT[site].noVideo;
@@ -678,7 +693,7 @@ export function checkClipStart(req: ClipStartRequest, c: ClipStartContext): stri
 
 // ── Capture 截图 ──
 
-export interface ClipCaptureContext extends Pick<ClipStartContext, 'site' | 'feed' | 'enabled' | 'videoId' | 'shorts' | 'hasVideo'> {
+export interface ClipCaptureContext extends Pick<ClipStartContext, 'site' | 'feed' | 'enabled' | 'videoId' | 'hasVideo'> {
   ad: boolean;
   /** 受版权保护：画上去是黑的，不绕过 */
   drm: boolean;
@@ -920,8 +935,10 @@ export interface ClipTabState {
   videoId: string | null;
   /** 视频标题（来自页面标题；X、Instagram 首页信息流上来自这条帖子的作者名和正文），只用来显示和起文件名 */
   title?: string;
-  /** 不能录的原因（不是视频页、Shorts、设置里关了、图文笔记、帖子里没有视频） */
+  /** 不能录的原因（不是视频页、设置里关了、图文笔记、帖子里没有视频） */
   unavailable?: string;
+  /** YouTube Shorts（/shorts/<ID>）：放到结尾会自己从头再放，这一段录到结尾就结束（侧边栏据此说明） */
+  shorts?: boolean;
   /** 当前播放位置与总时长（秒） */
   position: number;
   duration: number;

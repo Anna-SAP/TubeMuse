@@ -1,5 +1,5 @@
 // @ts-check
-// 片段录制与 Capture：YouTube，然后是小红书（含发布时间、收藏）、X、Instagram、抖音、酷播、B 站。
+// 片段录制与 Capture：YouTube，然后是小红书（含发布时间、收藏）、X、Instagram、抖音、酷播、B 站、YouTube Shorts。
 // 这几个站放在同一组里按顺序跑：Capture 的序号是跨站连着排的，后面各站的检查接着前面的序号。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { BILI_EPISODE, BILI_FESTIVAL, BILI_PREVIEW_SECONDS, BILI_SEASON, BILI_VI
 import { DOUYIN_NEXT, DOUYIN_SEARCH_TITLE, DOUYIN_VIDEO } from '../douyin-pages.mjs';
 import { IG_FEED_POST, IG_PLAIN_POST } from '../ig-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from '../kubb-pages.mjs';
+import { SHORT_A, SHORT_B, SHORTS_STALE_WATCH_SECONDS } from '../shorts-pages.mjs';
 import { X_FEED_POST, X_GIF_POST, X_POST, X_TEXT_POST } from '../x-pages.mjs';
 import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID, XHS_V1 } from '../xhs-pages.mjs';
 
@@ -1520,5 +1521,124 @@ export async function clips(t) {
     `B 站页面上 TubeMuse 没有发出任何请求（只有页面自己取的视频）${biliPageReqs.length ? `：${[...new Set(biliPageReqs.map((r) => r.path))].join(', ')}` : ''}`,
   );
   await bili.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── YouTube Shorts：片段录制 ─────────────────────────
+  // 放在最后：Capture 的序号接着前面各站往下排
+  console.log('\n[YouTube Shorts：录的是 Shorts 播放器里的视频（页面上藏着的播放页播放器不算）；放完一遍就结束，不把第二遍录进去]');
+  const shortsReqStart = requests.length;
+  const [shorts] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/shorts/${SHORT_A.id}`)]);
+  shorts.on('pageerror', (e) => consoleErrors.push(`shorts pageerror: ${e.message}`));
+  shorts.on('console', (m) => m.type() === 'error' && consoleErrors.push(`shorts: ${m.text()}`));
+  await shorts.waitForLoadState('domcontentloaded');
+  await shorts.evaluate(() => Promise.all([/** @type {any} */ (window).__staleReady, /** @type {any} */ (window).__shortReady]));
+  /** 对 Shorts 播放器里的视频（v）、藏着的播放页播放器里的视频（stale）做点什么 */
+  const onShort = (/** @type {string} */ code) =>
+    shorts.evaluate(`(() => { const v = document.querySelector('#shorts-player video'); const stale = document.querySelector('#movie_player video'); ${code} })()`);
+  await onShort('v.currentTime = 3; return v.play();');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  // 总时长是 Shorts 的 7 秒；选成藏着的播放页播放器的话是 20 秒、停在第 9 秒
+  await panel.getByTestId('clip-position').filter({ hasText: / 0:07$/ }).waitFor({ timeout: 5000 });
+  const staleState = /** @type {{ hidden: boolean, paused: boolean, at: number }} */ (await onShort('return { hidden: stale.getBoundingClientRect().width === 0, paused: stale.paused, at: stale.currentTime };'));
+  check(
+    staleState.hidden && staleState.paused && Math.round(staleState.at) === 9 && ((await panel.getByTestId('clip-position').textContent()) ?? '').endsWith(' 0:07'),
+    `Shorts 页面上不再说"Shorts 暂不支持录制"；选中的是 Shorts 播放器（7 秒），不是页面上藏着的播放页播放器（${SHORTS_STALE_WATCH_SECONDS} 秒、停在第 9 秒）`,
+  );
+  check(((await panel.getByTestId('clip-title').textContent()) ?? '') === SHORT_A.title, `标题来自页面标题（去掉通知数和" - YouTube"）：${(await panel.getByTestId('clip-title').textContent()) ?? ''}`);
+  check(
+    ((await panel.getByTestId('clip-shorts-note').textContent()) ?? '').includes('从头再放') &&
+      ((await panel.getByTestId('clip-burn').locator('xpath=..').textContent()) ?? '').includes('Shorts 播放器') &&
+      (await panel.getByTestId('clip-capture').count()) === 1,
+    '界面写明 Shorts 放完一遍就结束；字幕烧录读的是 Shorts 播放器里的原生字幕；有 Capture',
+  );
+  const shortsAppHtml = () => shorts.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  await onShort('v.currentTime = 3;');
+  const shortsHtmlBefore = await shortsAppHtml();
+  // 不点停止：Shorts 放到结尾自己跳回开头时，这一段自动结束并保存
+  const [loopDl] = await Promise.all([shorts.waitForEvent('download', { timeout: 20000 }), panel.getByTestId('clip-start').click()]);
+  const loopName = loopDl.suggestedFilename();
+  check(loopName.startsWith(`${SHORT_A.title}_00m0`) && /_00m0[3-4]s-00m0[6-7]s\.(mp4|webm)$/.test(loopName), `Shorts 放到结尾跳回开头时自动结束并保存，文件名用标题与起止时间：${loopName}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '视频播完了' }).waitFor({ timeout: 5000 });
+  const loopClip = await analyzeClip(shorts, /** @type {string} */ (await loopDl.path()));
+  check(
+    container(loopClip.head) === loopName.split('.').pop() && loopClip.duration > 2.5 && loopClip.duration < 5.2 && loopClip.rms > 0.02,
+    `只录了这一遍（${loopClip.duration.toFixed(1)} 秒，从 3 秒放到 7 秒），有声音（响度 ${loopClip.rms.toFixed(3)}）`,
+  );
+  await panel.getByTestId('clip-log').filter({ hasText: loopName }).waitFor({ timeout: 5000 });
+  const shortsLog = (await clipLog())[0];
+  check(
+    !shortsLog?.site && shortsLog?.videoId === SHORT_A.id && shortsLog.title === SHORT_A.title && shortsLog.fileName === loopName && shortsLog.mode === 'free',
+    '"最近录过的片段"记成 YouTube 的视频（Shorts 的 ID），点标题用 watch?v=…&t=… 回到这一段',
+  );
+  check((await shortsAppHtml()) === shortsHtmlBefore && (await shorts.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '录制没有往页面里加任何元素，没有点到 YouTube 自己的任何东西');
+  await panel.getByRole('button', { name: '释放内存' }).click();
+
+  console.log('\n[YouTube Shorts：按时间段截取，终点就在结尾 → 放完这一遍就停，不从头再录一遍]');
+  await panel.getByTestId('clip-mode-range').click();
+  await panel.getByTestId('clip-start-at').fill('0:05');
+  await panel.getByTestId('clip-end-at').fill('0:07');
+  const [shortsRangeDl] = await Promise.all([shorts.waitForEvent('download', { timeout: 20000 }), panel.getByTestId('clip-start').click()]);
+  const shortsRangeName = shortsRangeDl.suggestedFilename();
+  const shortsRange = await analyzeClip(shorts, /** @type {string} */ (await shortsRangeDl.path()));
+  await panel.getByTestId('clip-ready').filter({ hasText: '已录到终点' }).waitFor({ timeout: 5000 });
+  check(
+    /_00m05s-00m07s\.(mp4|webm)$/.test(shortsRangeName) && shortsRange.duration > 1.2 && shortsRange.duration < 3.2 && shortsRange.rms > 0.02,
+    `跳到起点录到结尾，跳回开头时就停：${shortsRangeName}（${shortsRange.duration.toFixed(1)} 秒）`,
+  );
+  await panel.getByRole('button', { name: '释放内存' }).click();
+  await panel.getByRole('radio', { name: '自由录制' }).click();
+
+  console.log('\n[YouTube Shorts：Shorts 播放器播广告时自动暂停（藏着的播放页播放器不算）；划到下一条时这一段结束并保存]');
+  await onShort('v.currentTime = 0.5; return v.play();');
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await shorts.waitForTimeout(800);
+  await shorts.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.add('ad-showing'));
+  await shorts.waitForTimeout(500);
+  check(((await clipStatus.textContent()) ?? '').includes('正在录制'), '藏着的播放页播放器带上"广告中"的标记：不是正在看的那个，照常录');
+  await shorts.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('shorts-player')).classList.add('ad-showing'));
+  await clipStatus.filter({ hasText: '广告中' }).waitFor({ timeout: 5000 });
+  check(true, 'Shorts 播放器播广告（带 ad-showing）时自动暂停');
+  await shorts.evaluate(() => {
+    /** @type {HTMLElement} */ (document.getElementById('shorts-player')).classList.remove('ad-showing');
+    /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ad-showing');
+  });
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 5000 });
+  const [swipeDl] = await Promise.all([
+    shorts.waitForEvent('download', { timeout: 10000 }),
+    shorts.evaluate((s) => /** @type {any} */ (window).__nextShort(s.id, s.docTitle, s.seconds), SHORT_B),
+  ]);
+  check(swipeDl.suggestedFilename().startsWith(`${SHORT_A.title}_00m0`), `划到下一条 Short（网址换了、播放器还是同一个）时自动结束这一段并保存：${swipeDl.suggestedFilename()}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '切到了别的视频' }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('clip-log').filter({ hasText: swipeDl.suggestedFilename() }).waitFor({ timeout: 5000 });
+  check((await clipLog())[0]?.videoId === SHORT_A.id, '这一段记在开录时的那条 Short 名下');
+  await panel.getByTestId('clip-title').filter({ hasText: SHORT_B.title }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-position').filter({ hasText: / 0:12$/ }).waitFor({ timeout: 5000 });
+  check(true, `侧边栏跟上下一条：${(await panel.getByTestId('clip-title').textContent()) ?? ''}`);
+  await panel.getByRole('button', { name: '释放内存' }).click();
+
+  console.log('\n[YouTube Shorts：Capture → 按视频的真实尺寸（竖屏）存 PNG]');
+  await useFramedVideo(shorts, '#shorts-player video');
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 5000 });
+  const shortsSeqBefore = await captureSeq();
+  const shortsShot = await capture();
+  const shortsShotName = shortsShot.suggestedFilename();
+  const shortsPng = await readPng(/** @type {string} */ (await shortsShot.path()), shorts);
+  check(
+    shortsShotName.startsWith(`${SHORT_B.title}_00-00-0`) &&
+      shortsShotName.endsWith(`_original_${String(shortsSeqBefore + 1).padStart(5, '0')}.png`) &&
+      shortsPng.width === 720 &&
+      shortsPng.height === 1280 &&
+      shortsPng.left[0] > 150 &&
+      shortsPng.right[2] > 150,
+    `Capture：截的是 Shorts 播放器这一帧，按视频的真实尺寸存：${shortsShotName}（${shortsPng.width}×${shortsPng.height}）`,
+  );
+  check((await shorts.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '全程没有点到 YouTube 自己的任何东西');
+  const shortsPageReqs = requests.slice(shortsReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/shorts/`));
+  check(
+    shortsPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/shorts-media/') || r.path === '/favicon.ico')),
+    `Shorts 页面上 TubeMuse 没有发出任何请求（只有页面自己取的视频）${shortsPageReqs.length ? `：${[...new Set(shortsPageReqs.map((r) => r.path))].join(', ')}` : ''}`,
+  );
+  await shorts.close();
   await panel.bringToFront();
 }

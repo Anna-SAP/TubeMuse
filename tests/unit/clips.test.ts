@@ -49,6 +49,7 @@ import {
   visibleArea,
   wrapText,
   feedPostTitle,
+  youtubePlayerId,
   type ClipCaptureContext,
   type ClipControl,
   type ClipRecord,
@@ -148,7 +149,6 @@ describe('Capture 截图', () => {
   const ctx = (over: Partial<ClipCaptureContext> = {}): ClipCaptureContext => ({
     enabled: true,
     videoId: 'abc123DEF45',
-    shorts: false,
     hasVideo: true,
     ad: false,
     drm: false,
@@ -159,12 +159,11 @@ describe('Capture 截图', () => {
     expect(checkCapture(ctx())).toBeUndefined();
     expect(checkCapture(ctx({ site: 'youtube' }))).toBeUndefined();
   });
-  it('截图前检查：广告、DRM、画面没准备好、设置关闭、Shorts、不是视频页都说清楚', () => {
+  it('截图前检查：广告、DRM、画面没准备好、设置关闭、不是视频页都说清楚', () => {
     expect(checkCapture(ctx({ ad: true }))).toContain('广告');
     expect(checkCapture(ctx({ drm: true }))).toContain('DRM');
     expect(checkCapture(ctx({ ready: false }))).toContain('画面还没准备好');
     expect(checkCapture(ctx({ enabled: false }))).toContain('设置中关闭');
-    expect(checkCapture(ctx({ shorts: true }))).toContain('Shorts');
     expect(checkCapture(ctx({ videoId: null }))).toContain('不是视频播放页');
     expect(checkCapture(ctx({ hasVideo: false }))).toContain('没找到');
   });
@@ -290,7 +289,6 @@ describe('开录前检查', () => {
   const ctx = (over: Partial<ClipStartContext> = {}): ClipStartContext => ({
     enabled: true,
     videoId: 'abc123DEF45',
-    shorts: false,
     hasVideo: true,
     busy: false,
     duration: 600,
@@ -299,10 +297,9 @@ describe('开录前检查', () => {
     maxSec: 600,
     ...over,
   });
-  it('自由录制：设置关闭、Shorts、不是视频页、没有播放器、已在录、已播完都说清楚', () => {
+  it('自由录制：设置关闭、不是视频页、没有播放器、已在录、已播完都说清楚', () => {
     expect(checkClipStart({ mode: 'free' }, ctx())).toBeUndefined();
     expect(checkClipStart({ mode: 'free' }, ctx({ enabled: false }))).toContain('设置中关闭');
-    expect(checkClipStart({ mode: 'free' }, ctx({ shorts: true }))).toContain('Shorts');
     expect(checkClipStart({ mode: 'free' }, ctx({ videoId: null }))).toContain('不是视频播放页');
     expect(checkClipStart({ mode: 'free' }, ctx({ hasVideo: false }))).toContain('没找到');
     expect(checkClipStart({ mode: 'free' }, ctx({ busy: true }))).toContain('已经在录');
@@ -314,7 +311,7 @@ describe('开录前检查', () => {
     expect(checkClipStart({ mode: 'free' }, xhs({ videoId: null }))).toContain('不是笔记详情');
     expect(checkClipStart({ mode: 'free' }, xhs({ hasVideo: false }))).toContain('图文笔记');
     expect(checkClipStart({ mode: 'free' }, xhs({ enabled: false }))).toContain('设置中关闭');
-    expect(clipUnavailable('youtube', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是视频播放页');
+    expect(clipUnavailable('youtube', { enabled: true, videoId: null, hasVideo: false })).toContain('不是视频播放页');
   });
   it('离结尾不到半秒算到了结尾；时长未知不算', () => {
     expect(atVideoEnd(23.61, 23.77)).toBe(true);
@@ -604,13 +601,13 @@ describe('X 帖子页', () => {
   });
 
   it('不能录的原因用人话说：不是帖子页 / 帖子里没有视频', () => {
-    expect(clipUnavailable('x', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是帖子详情');
-    expect(clipUnavailable('x', { enabled: true, videoId: POST, shorts: false, hasVideo: false })).toContain('这条帖子里没有视频');
-    expect(clipUnavailable('x', { enabled: true, videoId: POST, shorts: false, hasVideo: true })).toBeUndefined();
-    expect(clipUnavailable('x', { enabled: false, videoId: POST, shorts: false, hasVideo: true })).toContain('已在设置中关闭');
+    expect(clipUnavailable('x', { enabled: true, videoId: null, hasVideo: false })).toContain('不是帖子详情');
+    expect(clipUnavailable('x', { enabled: true, videoId: POST, hasVideo: false })).toContain('这条帖子里没有视频');
+    expect(clipUnavailable('x', { enabled: true, videoId: POST, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('x', { enabled: false, videoId: POST, hasVideo: true })).toContain('已在设置中关闭');
   });
   it('Capture：帖子页能截；不是帖子页、没有视频、受保护、画面没准备好时说明原因', () => {
-    const ctx: ClipCaptureContext = { site: 'x', enabled: true, videoId: POST, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    const ctx: ClipCaptureContext = { site: 'x', enabled: true, videoId: POST, hasVideo: true, ad: false, drm: false, ready: true };
     expect(checkCapture(ctx)).toBeUndefined();
     expect(checkCapture({ ...ctx, videoId: null })).toContain('不是帖子详情');
     expect(checkCapture({ ...ctx, hasVideo: false })).toContain('这条帖子里没有视频');
@@ -719,7 +716,7 @@ describe('X 帖子页', () => {
     });
 
     it('不能录的原因：没有在播且有声音的视频 / 认不出帖子（广告）；能录时不拦', () => {
-      const feed = { feed: true, enabled: true, shorts: false };
+      const feed = { feed: true, enabled: true };
       expect(clipUnavailable('x', { ...feed, videoId: null, hasVideo: false })).toContain('没有正在播放、开着声音的视频');
       expect(clipUnavailable('x', { ...feed, videoId: null, hasVideo: true })).toContain('认不出这个视频属于哪条帖子');
       expect(clipUnavailable('x', { ...feed, videoId: POST, hasVideo: true })).toBeUndefined();
@@ -728,15 +725,15 @@ describe('X 帖子页', () => {
       expect(clipUnavailable('youtube', { ...feed, videoId: null, hasVideo: false })).toContain('不是视频播放页');
     });
     it('开录和 Capture 用同一套说法', () => {
-      const start: ClipStartContext = { site: 'x', feed: true, enabled: true, videoId: null, shorts: false, hasVideo: false, busy: false, duration: 59, currentTime: 5, ended: false, maxSec: 600 };
+      const start: ClipStartContext = { site: 'x', feed: true, enabled: true, videoId: null, hasVideo: false, busy: false, duration: 59, currentTime: 5, ended: false, maxSec: 600 };
       expect(checkClipStart({ mode: 'free' }, start)).toContain('没有正在播放、开着声音的视频');
       expect(checkClipStart({ mode: 'free' }, { ...start, videoId: POST, hasVideo: true })).toBeUndefined();
-      const shot: ClipCaptureContext = { site: 'x', feed: true, enabled: true, videoId: null, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+      const shot: ClipCaptureContext = { site: 'x', feed: true, enabled: true, videoId: null, hasVideo: true, ad: false, drm: false, ready: true };
       expect(checkCapture(shot)).toContain('认不出这个视频属于哪条帖子');
       expect(checkCapture({ ...shot, videoId: POST })).toBeUndefined();
     });
     it('别的 X 页面（个人主页、搜索）：说明只有帖子页和首页信息流能录', () => {
-      expect(clipUnavailable('x', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('也不是首页信息流');
+      expect(clipUnavailable('x', { enabled: true, videoId: null, hasVideo: false })).toContain('也不是首页信息流');
     });
   });
 
@@ -890,14 +887,14 @@ describe('Instagram 首页信息流', () => {
   });
 
   it('不能录的原因：不是首页 / 没有在播且有声音的视频 / 认不出帖子（广告）', () => {
-    expect(clipUnavailable('ig', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是 Instagram 的首页信息流');
-    const feed = { feed: true, enabled: true, shorts: false };
+    expect(clipUnavailable('ig', { enabled: true, videoId: null, hasVideo: false })).toContain('不是 Instagram 的首页信息流');
+    const feed = { feed: true, enabled: true };
     expect(clipUnavailable('ig', { ...feed, videoId: null, hasVideo: false })).toContain('没有正在播放、开着声音的视频');
     expect(clipUnavailable('ig', { ...feed, videoId: null, hasVideo: true })).toContain('这个视频录不了');
     expect(clipUnavailable('ig', { ...feed, videoId: null, hasVideo: true })).not.toContain('点开帖子');
     expect(clipUnavailable('ig', { ...feed, videoId: CODE, hasVideo: true })).toBeUndefined();
     expect(clipUnavailable('ig', { ...feed, enabled: false, videoId: CODE, hasVideo: true })).toContain('已在设置中关闭');
-    const shot: ClipCaptureContext = { site: 'ig', feed: true, enabled: true, videoId: CODE, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    const shot: ClipCaptureContext = { site: 'ig', feed: true, enabled: true, videoId: CODE, hasVideo: true, ad: false, drm: false, ready: true };
     expect(checkCapture(shot)).toBeUndefined();
     expect(checkCapture({ ...shot, hasVideo: false, videoId: null })).toContain('没有正在播放、开着声音的视频');
   });
@@ -1030,12 +1027,12 @@ describe('抖音精选页', () => {
   });
 
   it('不能录的原因：没在精选页或搜索结果里打开视频 / 这条视频的画面还没出来', () => {
-    expect(clipUnavailable('douyin', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('没有点开的抖音视频');
-    expect(clipUnavailable('douyin', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('搜索结果');
-    expect(clipUnavailable('douyin', { enabled: true, videoId: ID, shorts: false, hasVideo: false })).toContain('没找到这条视频的画面');
-    expect(clipUnavailable('douyin', { enabled: true, videoId: ID, shorts: false, hasVideo: true })).toBeUndefined();
-    expect(clipUnavailable('douyin', { enabled: false, videoId: ID, shorts: false, hasVideo: true })).toContain('已在设置中关闭');
-    const shot: ClipCaptureContext = { site: 'douyin', enabled: true, videoId: ID, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    expect(clipUnavailable('douyin', { enabled: true, videoId: null, hasVideo: false })).toContain('没有点开的抖音视频');
+    expect(clipUnavailable('douyin', { enabled: true, videoId: null, hasVideo: false })).toContain('搜索结果');
+    expect(clipUnavailable('douyin', { enabled: true, videoId: ID, hasVideo: false })).toContain('没找到这条视频的画面');
+    expect(clipUnavailable('douyin', { enabled: true, videoId: ID, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('douyin', { enabled: false, videoId: ID, hasVideo: true })).toContain('已在设置中关闭');
+    const shot: ClipCaptureContext = { site: 'douyin', enabled: true, videoId: ID, hasVideo: true, ad: false, drm: false, ready: true };
     expect(checkCapture(shot)).toBeUndefined();
     expect(checkCapture({ ...shot, videoId: null })).toContain('没有点开的抖音视频');
     expect(checkCapture({ ...shot, ready: false })).toContain('画面还没准备好');
@@ -1168,13 +1165,13 @@ describe('酷播播放页', () => {
   });
 
   it('不能录的原因用人话说：不是播放页 / 没找到视频', () => {
-    expect(clipUnavailable('kubb', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('不是播放页');
-    expect(clipUnavailable('kubb', { enabled: true, videoId: MOVIE, shorts: false, hasVideo: false })).toContain('没找到播放器里的视频');
-    expect(clipUnavailable('kubb', { enabled: true, videoId: MOVIE, shorts: false, hasVideo: true })).toBeUndefined();
-    expect(clipUnavailable('kubb', { enabled: false, videoId: MOVIE, shorts: false, hasVideo: true })).toContain('已在设置中关闭');
+    expect(clipUnavailable('kubb', { enabled: true, videoId: null, hasVideo: false })).toContain('不是播放页');
+    expect(clipUnavailable('kubb', { enabled: true, videoId: MOVIE, hasVideo: false })).toContain('没找到播放器里的视频');
+    expect(clipUnavailable('kubb', { enabled: true, videoId: MOVIE, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('kubb', { enabled: false, videoId: MOVIE, hasVideo: true })).toContain('已在设置中关闭');
   });
   it('Capture：播放页能截；广告、受保护、画面没准备好、不是播放页时说明原因', () => {
-    const ctx: ClipCaptureContext = { site: 'kubb', enabled: true, videoId: MOVIE, shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    const ctx: ClipCaptureContext = { site: 'kubb', enabled: true, videoId: MOVIE, hasVideo: true, ad: false, drm: false, ready: true };
     expect(checkCapture(ctx)).toBeUndefined();
     expect(checkCapture({ ...ctx, ad: true })).toContain('广告');
     expect(checkCapture({ ...ctx, drm: true })).toContain('DRM');
@@ -1342,13 +1339,13 @@ describe('B 站（www.bilibili.com）', () => {
   });
 
   it('不能录的原因用人话说：页面上没有播放器 / 没找到视频', () => {
-    expect(clipUnavailable('bilibili', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('没有 B 站的播放器');
-    expect(clipUnavailable('bilibili', { enabled: true, videoId: 'ss28747', shorts: false, hasVideo: false })).toContain('没找到播放器里的视频');
-    expect(clipUnavailable('bilibili', { enabled: true, videoId: 'ss28747', shorts: false, hasVideo: true })).toBeUndefined();
-    expect(clipUnavailable('bilibili', { enabled: false, videoId: 'ss28747', shorts: false, hasVideo: true })).toContain('已在设置中关闭');
+    expect(clipUnavailable('bilibili', { enabled: true, videoId: null, hasVideo: false })).toContain('没有 B 站的播放器');
+    expect(clipUnavailable('bilibili', { enabled: true, videoId: 'ss28747', hasVideo: false })).toContain('没找到播放器里的视频');
+    expect(clipUnavailable('bilibili', { enabled: true, videoId: 'ss28747', hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('bilibili', { enabled: false, videoId: 'ss28747', hasVideo: true })).toContain('已在设置中关闭');
   });
   it('Capture：有播放器就能截；受保护、画面没准备好、没有播放器时说明原因', () => {
-    const ctx: ClipCaptureContext = { site: 'bilibili', enabled: true, videoId: 'ep733317', shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    const ctx: ClipCaptureContext = { site: 'bilibili', enabled: true, videoId: 'ep733317', hasVideo: true, ad: false, drm: false, ready: true };
     expect(checkCapture(ctx)).toBeUndefined();
     expect(checkCapture({ ...ctx, drm: true })).toContain('DRM');
     expect(checkCapture({ ...ctx, ready: false })).toContain('画面还没准备好');
@@ -1396,6 +1393,48 @@ describe('B 站（www.bilibili.com）', () => {
     const saved = await recordSavedClip(ctx, { ...record, url: 'https://www.bilibili.com/bangumi/play/ep733317?from_spmid=666.25.episode.0' }, 'bilibili');
     expect(saved).toMatchObject({ site: 'bilibili', videoId: 'ep733317', url: 'https://www.bilibili.com/bangumi/play/ep733317' });
     expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_bili']);
+  });
+});
+
+describe('YouTube Shorts', () => {
+  const ID = 'aB3dE6gH9jK';
+  it('Shorts 的视频在 #shorts-player 里；播放页、直播在 #movie_player 里；不是视频页时不找', () => {
+    expect(youtubePlayerId(`https://www.youtube.com/shorts/${ID}`)).toBe('shorts-player');
+    expect(youtubePlayerId(`https://www.youtube.com/shorts/${ID}?feature=share`)).toBe('shorts-player');
+    expect(youtubePlayerId(`https://www.youtube.com/watch?v=${ID}&t=30s`)).toBe('movie_player');
+    expect(youtubePlayerId(`https://www.youtube.com/live/${ID}`)).toBe('movie_player');
+    expect(youtubePlayerId('https://www.youtube.com/')).toBeUndefined();
+    expect(youtubePlayerId('https://www.youtube.com/shorts/')).toBeUndefined();
+    expect(youtubePlayerId('https://www.youtube.com/feed/subscriptions')).toBeUndefined();
+    expect(youtubePlayerId('not a url')).toBeUndefined();
+  });
+  it('Shorts 能录、能截：不再说"暂不支持"；Shorts 播放器里还没有视频时说清楚', () => {
+    expect(clipUnavailable('youtube', { enabled: true, videoId: ID, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('youtube', { enabled: true, videoId: ID, hasVideo: false })).toContain('没找到播放器里的视频');
+    const start: ClipStartContext = { site: 'youtube', enabled: true, videoId: ID, hasVideo: true, busy: false, duration: 14.98, currentTime: 3, ended: false, maxSec: 600 };
+    expect(checkClipStart({ mode: 'free' }, start)).toBeUndefined();
+    expect(checkClipStart({ mode: 'range', start: 2, end: 9 }, start)).toBeUndefined();
+    const shot: ClipCaptureContext = { site: 'youtube', enabled: true, videoId: ID, hasVideo: true, ad: false, drm: false, ready: true };
+    expect(checkCapture(shot)).toBeUndefined();
+    expect(checkCapture({ ...shot, ad: true })).toContain('广告');
+  });
+  it('放到结尾自己从头再放：自由录制录完这一遍就结束，时间段的终点写过了头也只录一遍', () => {
+    // 播放器跳回开头（loop 属性或播放器自己跳）时，每 100 毫秒看一次：上一轮离结尾不到半秒，这一轮回到了开头
+    const looped = loopedToStart(14.93, 0.04, 14.98);
+    expect(looped).toBe(true);
+    const control: ClipControl = { mode: 'free', videoId: ID, recordedSec: 11, bytes: 1000, maxSec: 600, maxBytes: 1e9, userPaused: false };
+    const sample: ClipSample = { videoId: ID, currentTime: 0.04, paused: false, ended: looped, seeking: false, ready: true, ad: false, visible: true, duration: 14.98 };
+    expect(decideClip(control, sample)).toEqual({ kind: 'stop', reason: 'ended' });
+    expect(decideClip({ ...control, mode: 'range', start: 3, end: 20 }, sample)).toEqual({ kind: 'stop', reason: 'range-end' });
+    // 划到下一条 Short：网址里的 ID 变了，这一段结束
+    expect(decideClip(control, { ...sample, ended: false, currentTime: 0.5, videoId: 'zY9xW8vU7tS' })).toEqual({ kind: 'stop', reason: 'video-changed' });
+    // Shorts 播放器给的广告：和播放页一样，播放器带 ad-showing 时暂停
+    expect(decideClip(control, { ...sample, ended: false, currentTime: 5, ad: true })).toEqual({ kind: 'wait', why: 'ad' });
+  });
+  it('文件名和回到这一段的链接与播放页一样：标题去掉" - YouTube"，链接是 watch?v=…&t=…（Shorts 的网址不认时间参数）', () => {
+    expect(titleFromDocumentTitle('(3) 一分钟看懂 GPU #shorts - YouTube')).toBe('一分钟看懂 GPU #shorts');
+    expect(clipFileName('一分钟看懂 GPU #shorts', ID, 2, 14.9, 'mp4')).toBe('一分钟看懂 GPU #shorts_00m02s-00m14s.mp4');
+    expect(clipWatchUrl({ videoId: ID, start: 2.6 })).toBe(`https://www.youtube.com/watch?v=${ID}&t=2s`);
   });
 });
 
