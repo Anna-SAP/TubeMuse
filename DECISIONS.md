@@ -1190,3 +1190,24 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - e2e：仿抖音页面加搜索结果页 `/douyin/search/<搜索词>`（页面标题不变、网址带 `type=general`）。没点开时的说明；点开后标题是"作者 - 描述"而不是页面标题；录一段，记录里的链接是 `/douyin/jingxuan?modal_id=…`，不含搜索页网址和搜索词；页面原样未动、没有点到页面元素；Capture 的文件名和尺寸；关掉视频后的说明。
   - 没有在真实抖音上跑完整扩展（原因同 §52）；手测清单（README）加 2 条。
 - **日后替换**：要放开推荐、个人主页，在 `parseDouyinUrl` 里再加一种路径（先改红线，先看那个页面的结构，尤其是"从外面直接打开回不回得到视频"）。
+
+## 59. 片段录制：抖音站内搜索的网址前面带着路径（2026-11-11，§58 的补丁）
+
+- **现象**：§58 合并后，用户在 `www.douyin.com/jingxuan/search/大麦哥?aid=…&modal_id=7682374086533631283&type=general` 上仍然看到"这个页面上没有点开的抖音视频"（新提示语，说明扩展已更新）。
+- **根因**：§58 只认路径 `search/<搜索词>`，这个网址的路径是 `jingxuan/search/<搜索词>`。§58 核实时是直接输网址打开搜索页的，抖音把它规范成 `/search/<词>`，没有走"在站内搜索框里搜"这条路，漏了这种形式。这是 §58 的核实不到位，不是又一种页面。
+- **外部事实（2026-11-11 实测，用户的 Chrome，已登录抖音）**
+  - **在站内搜索框里搜，网址是"发起搜索时所在页面的路径 + `/search/<搜索词>`"**：从精选页搜是 `/jingxuan/search/<词>`；从推荐（`/?recommend=1`）搜也是 `/jingxuan/search/<词>`；从关注页搜是 `/follow/search/<词>`；从类目页搜是 `/jingxuan/travel/search/<词>`；从"我的"搜是 `/user/self/search/<词>`。查询参数先是 `aid`、`enter_from`、`source`，随后变成 `aid`、`type=general`。
+  - **直接输网址**：`/search/<词>`、`/jingxuan/search/<词>`、`/root/search/<词>` 都被改写成 `/search/<词>`（并丢掉 `modal_id`，同 §58）。
+  - `/jingxuan/search/<词>` 上点开一条视频：网址多了 `modal_id`，结构和 §58 一样（`#sliderVideo[data-e2e="feed-active-video"][data-e2e-vid]` 与 `modal_id` 一致，里面一个 `blob:` 的 `<video>`，容器是 `#dy-modal-video-container-search_multi_modal`；作者、描述、"展开"按钮同样；画到画布读得到，`captureStream()` 一条音轨一条画面轨）。
+  - `/follow/search/<词>` 上还没点开视频时，页面里留着关注页自己的 `[data-e2e="feed-active-video"]`（别的视频的 ID）。`douyinItem` 要求 `data-e2e-vid` 和网址里的 `modal_id` 一致，不会把它当成点开的那条。
+  - **没有核实的**：`/follow/search/`、`/jingxuan/<类目>/search/`、`/user/self/search/` 上点开视频以后的结构。连着搜了几次以后抖音弹出了图片验证码，没有绕过，核实停在这里。
+- **改动**：`DOUYIN_SEARCH_PATH` 改成 `search/<搜索词>` 前面允许 0 到 3 段路径。规范链接仍是 `/jingxuan?modal_id=<ID>`。`DOUYIN_FEED_PATH` 顺带把类目名 `search` 排除（`/jingxuan/search?modal_id=…` 没有搜索词，不是类目页也不是搜索结果页）。
+- **为什么按"任意前缀"认，而不是只加 `jingxuan/`**：前缀是你发起搜索时所在的页面，实测至少 5 种，逐个列举一定会再漏。几种前缀下是同一个搜索结果组件（页面标题、参数、弹层容器的 ID 都一样）。没核实过点开结构的那几种如果真不一样，`douyinItem` 找不到和 `modal_id` 对得上的"当前这一条"，会提示"没找到这条视频的画面"，不会录错视频。这一点和 §57"不往没核实过的页面上承诺能录"有出入，README 的已知限制里写明了哪几种核对过。
+- **红线**：CLAUDE.md §1、§2 里"搜索结果页"的写法补上了带前缀的形式。范围没有变宽到别的页面：仍然只是搜索结果页里点开的视频。
+- **放弃**
+  - 只加 `jingxuan/search/`：见上。
+  - 前缀不限段数：实测最多两段（`jingxuan/travel`、`user/self`），留到 3 段（别人主页 `user/<ID>` 也是两段）。
+- **测试**
+  - 单测：用户给的第二个网址原样、`follow/`、`jingxuan/travel/`、`user/self/` 前缀、搜索词本身是"search"；不算的多了没点开视频的、`/jingxuan/search`（没有搜索词）、`searchx`、多一级路径、4 段前缀、伪造域名；记录校验（带前缀的搜索页网址 → 精选页链接）。
+  - e2e：搜索结果页那一组改用 `/douyin/jingxuan/search/<搜索词>?aid=…`（站内搜索的真实形式）。直接输网址的 `/search/<词>` 形式由单测覆盖。
+- **教训**：核实网址形式时要走用户实际会走的路（站内点、站内搜），不能只直接输网址；抖音会改写直接输入的网址。

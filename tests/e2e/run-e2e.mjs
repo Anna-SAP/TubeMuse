@@ -2560,17 +2560,18 @@ try {
 
   // 搜索结果页里点开的视频（2026-11-11 用户要求）：同样能录；记下的链接是精选页的那种（搜索页的网址回不到这条视频），搜索词不进记录
   console.log('\n[抖音：搜索结果页里点开的视频也能录、也能 Capture；记下的链接不带搜索词]');
-  const douyinSearchPath = `/douyin/search/${encodeURIComponent('大麦哥')}`;
+  // 网址用站内搜索框搜出来的那种：search 前面带着发起搜索时所在页面的路径（这里是精选页），并带着 aid
+  const douyinSearchPath = `/douyin/jingxuan/search/${encodeURIComponent('大麦哥')}`;
   const [douyinSearch] = await Promise.all([
     context.waitForEvent('page'),
-    panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}${douyinSearchPath}?type=general`),
+    panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}${douyinSearchPath}?aid=4fe2f184-e2e&type=general`),
   ]);
   douyinSearch.on('pageerror', (e) => consoleErrors.push(`douyin search pageerror: ${e.message}`));
   await douyinSearch.waitForLoadState('domcontentloaded');
   await panel.bringToFront();
   await panel.evaluate(async () => {
     const c = /** @type {any} */ (globalThis).chrome;
-    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/douyin/search/'));
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/douyin/jingxuan/search/'));
     await c.tabs.update(t.id, { active: true });
   });
   await clipStatus.filter({ hasText: '没有点开的抖音视频' }).waitFor({ timeout: 10000 });
@@ -2582,7 +2583,7 @@ try {
   const douyinSearchUrl = await douyinSearch.evaluate(() => location.pathname + location.search);
   check(
     douyinSearchUrl === `${douyinSearchPath}?modal_id=${DOUYIN_VIDEO.id}&type=general` && (await douyinTitle()) === DOUYIN_VIDEO.title && (await douyinSearch.evaluate(() => document.title)) === DOUYIN_SEARCH_TITLE,
-    `搜索结果里点开视频（网址是 /search/<搜索词>?modal_id=…&type=general）后能录：标题是作者 - 描述，不是页面标题"${DOUYIN_SEARCH_TITLE}"`,
+    `搜索结果里点开视频（网址是 /jingxuan/search/<搜索词>?modal_id=…&type=general）后能录：标题是作者 - 描述，不是页面标题"${DOUYIN_SEARCH_TITLE}"`,
   );
   const douyinSearchHtmlBefore = await douyinSearch.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
   await panel.getByTestId('clip-start').click();

@@ -1,6 +1,6 @@
 // @ts-check
 // e2e 用的仿抖音网页版页面（由 mock 服务在 /douyin/ 下提供；精选页是 /douyin/jingxuan，带类目是 /douyin/jingxuan/<类目>，
-// 搜索结果页是 /douyin/search/<搜索词>）。
+// 搜索结果页是 /douyin/search/<搜索词>，在站内搜索框里搜出来的前面带着当时所在页面的路径，如 /douyin/jingxuan/search/<搜索词>）。
 // 结构照 2026-11-10 实测的真实精选页（搜索结果页 2026-11-11 实测，点开视频以后的结构相同，只有两处不一样：
 // 页面标题一直是"发现更多精彩视频 - 抖音搜索"，点开视频也不变；网址除了 modal_id 还带着 type=general）：
 // - 单页应用：在精选页点开一条视频，网址加上 ?modal_id=<视频ID>，不重新加载；划到下一条时 modal_id 跟着换；
@@ -84,5 +84,6 @@ export function douyinMediaSeconds(/** @type {string} */ path) {
 /** @param {string} path /douyin/ 开头的路径；认不出的返回 undefined（mock 回 404） */
 export function douyinPage(path) {
   if (/^\/douyin\/jingxuan(?:\/[a-z]+)?$/.test(path)) return feedPage();
-  return /^\/douyin\/search\/[^/]+$/.test(path) ? feedPage(DOUYIN_SEARCH_TITLE) : undefined;
+  // 搜索结果页：/douyin/search/<搜索词>，或前面带着发起搜索时所在页面的路径（/douyin/jingxuan/search/<搜索词>）
+  return /^\/douyin\/(?:[a-z]+\/){0,3}search\/[^/]+$/.test(path) ? feedPage(DOUYIN_SEARCH_TITLE) : undefined;
 }
