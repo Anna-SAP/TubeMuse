@@ -219,7 +219,7 @@ export const DEFAULT_SETTINGS = {
   email: {
     enabled: true,
   },
-  /** 「问 muse」（DECISIONS §60、§61） */
+  /** 「问 muse」（DECISIONS §60、§62） */
   muse: {
     /**
      * 在 YouTube 上点「问 muse」时，自动取这个视频自带的字幕 / 转写（位置前后 30 秒）。
@@ -621,7 +621,7 @@ export const MUSE = {
   videoCacheMax: 30,
   /** 点「问 muse」时取 YouTube 自带的字幕最多等多久（读字幕轨、等播放器给出带令牌的字幕请求、取回字幕）；超时就写「无字幕」并说明 */
   captionFetchMs: 8000,
-  /** 咨询包末尾给 Muse 的回答要求（用户 2026-11-11 手测后改定的原话，见 DECISIONS §61） */
+  /** 咨询包末尾给 Muse 的回答要求（用户 2026-11-11 手测后改定的原话，见 DECISIONS §62） */
   answerRule: '视频里的说法必须引用位置或原文；通用概念问题可用通用知识回答，但必须标明「这是通用知识，不是视频原话」。',
 } as const;
 
