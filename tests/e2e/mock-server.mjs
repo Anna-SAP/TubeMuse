@@ -578,7 +578,7 @@ export function startMockServer() {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);
       }
-      // 仿抖音网页版（精选页 /douyin/jingxuan 及其类目、搜索结果页 /douyin/search/<搜索词>）
+      // 仿抖音网页版（精选页 /douyin/jingxuan 及其类目、搜索结果页 /douyin/search/<搜索词>、/douyin/jingxuan/search/<搜索词>）
       if (p.startsWith('/douyin/')) {
         const html = douyinPage(p);
         if (!html) return send(404, {});

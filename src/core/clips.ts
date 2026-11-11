@@ -415,9 +415,13 @@ export function loopedToStart(previousTime: number, currentTime: number, duratio
 // ── 抖音：精选页、搜索结果页里点开的视频 ──
 
 /** 精选页的路径：jingxuan，或 jingxuan/<类目>（如 travel、beauty） */
-const DOUYIN_FEED_PATH = /^jingxuan(?:\/[A-Za-z0-9_-]{1,40})?$/;
-/** 搜索结果页的路径：search/<搜索词>（网址里是转了码的一段，不含斜杠；综合、视频等标签只差 type 参数） */
-const DOUYIN_SEARCH_PATH = /^search\/[^/]{1,600}$/;
+const DOUYIN_FEED_PATH = /^jingxuan(?:\/(?!search$)[A-Za-z0-9_-]{1,40})?$/;
+/**
+ * 搜索结果页的路径：search/<搜索词>，前面可以带着发起搜索时所在页面的路径（2026-11-11 实测：在站内的搜索框里搜，网址是
+ * /jingxuan/search/<词>、/follow/search/<词>、/jingxuan/travel/search/<词>、/user/self/search/<词>；直接输网址才是 /search/<词>）。
+ * 搜索词在网址里是转了码的一段，不含斜杠；综合、视频等标签只差 type 参数。
+ */
+const DOUYIN_SEARCH_PATH = /^(?:[^/]+\/){0,3}search\/[^/]{1,600}$/;
 /** 视频 ID：一串数字（2026-11-10 实测 19 位） */
 const DOUYIN_VIDEO_ID = /^\d{6,25}$/;
 
@@ -430,7 +434,8 @@ export function isDouyinPage(url: string): boolean {
  * 抖音精选页里打开了一条视频时的网址 → 视频 ID 与规范链接（2026-11-10 实测）：/jingxuan?modal_id=<视频ID>，
  * 带类目时是 /jingxuan/<类目>?modal_id=<视频ID>。划到下一条视频时 modal_id 跟着变，所以换一条就算换了视频。
  * 链接只留路径和 modal_id，别的查询参数去掉。
- * 搜索结果页里点开的视频（2026-11-11 实测）：/search/<搜索词>?modal_id=<视频ID>&type=general，页面结构和精选页里点开的一样。
+ * 搜索结果页里点开的视频（2026-11-11 实测）：/search/<搜索词>?modal_id=<视频ID>&type=general，在站内搜索框里搜出来的前面还带着
+ * 当时所在页面的路径（如 /jingxuan/search/<搜索词>?aid=…&modal_id=…，见 DOUYIN_SEARCH_PATH）；页面结构和精选页里点开的一样。
  * 但这种网址从外面直接打开时抖音会把 modal_id 丢掉、只剩搜索结果，回不到这条视频；/jingxuan?modal_id=<同一个ID> 打得开。
  * 所以搜索页上的规范链接写成精选页的那种，搜索词不进链接（也就不进记录）。
  * 没打开视频的页面、/video/<ID>、推荐、个人主页等别的页面返回 undefined。

@@ -68,7 +68,7 @@ export const IG_PAGES: readonly string[] = ['https://www.instagram.com/'];
 
 /**
  * 抖音网页版（2026-11-10 新增，见 DECISIONS §57）：片段录制脚本注入的页面，只录精选页（/jingxuan 及其类目）和搜索结果页
- * （/search/<搜索词>，2026-11-11 放开，见 DECISIONS §58）里打开的那条视频（网址带 ?modal_id=<视频ID>）。抖音是单页应用，点开视频、划到下一条都不重新加载，所以注入范围是整个站，脚本自己只认这种网址。
+ * （/search/<搜索词>，前面可以带着发起搜索时所在页面的路径，如 /jingxuan/search/<搜索词>；2026-11-11 放开，见 DECISIONS §58、§59）里打开的那条视频（网址带 ?modal_id=<视频ID>）。抖音是单页应用，点开视频、划到下一条都不重新加载，所以注入范围是整个站，脚本自己只认这种网址。
  * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
  */
 export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/'];

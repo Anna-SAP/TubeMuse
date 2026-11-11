@@ -969,6 +969,15 @@ describe('抖音精选页', () => {
     expect(parseDouyinUrl('https://www.douyin.com/search/AI%20agent/?modal_id=7697926023714737408')).toEqual(canonical);
     expect(canonical.url).not.toContain('search');
   });
+  it('网址（2026-11-11 用户给的第二种）：在站内搜索框里搜出来的，search 前面带着当时所在页面的路径，同样认', () => {
+    // 实测：从精选页搜是 /jingxuan/search/<词>，从关注页搜是 /follow/search/<词>，从类目页、个人主页搜前面是两段；直接输网址才是 /search/<词>
+    const canonical = { id: '7682374086533631283', url: 'https://www.douyin.com/jingxuan?modal_id=7682374086533631283' };
+    expect(parseDouyinUrl('https://www.douyin.com/jingxuan/search/大麦哥?aid=4fe2f184-fc1c-4996-9f8f-d5da433a90af&modal_id=7682374086533631283&type=general')).toEqual(canonical);
+    expect(parseDouyinUrl('https://www.douyin.com/follow/search/%E5%A4%A7%E9%BA%A6%E5%93%A5?aid=x&modal_id=7682374086533631283&type=video')).toEqual(canonical);
+    expect(parseDouyinUrl('https://www.douyin.com/jingxuan/travel/search/AI?modal_id=7682374086533631283')).toEqual(canonical);
+    expect(parseDouyinUrl('https://www.douyin.com/user/self/search/AI/?modal_id=7682374086533631283')).toEqual(canonical);
+    expect(parseDouyinUrl('https://www.douyin.com/user/MS4wLjABAAAA/search/search?modal_id=7682374086533631283')).toEqual(canonical);
+  });
   it('网址：没打开视频的精选页和搜索页、/video/、推荐、个人主页、伪造域名都不算', () => {
     for (const url of [
       'https://www.douyin.com/jingxuan',
@@ -988,6 +997,13 @@ describe('抖音精选页', () => {
       `https://www.douyin.com/search/?modal_id=${ID}`,
       `https://www.douyin.com/search/AI/more?modal_id=${ID}`,
       `https://www.douyin.com/searchx/AI?modal_id=${ID}`,
+      'https://www.douyin.com/jingxuan/search/AI?type=general',
+      `https://www.douyin.com/jingxuan/search?modal_id=${ID}`,
+      `https://www.douyin.com/jingxuan/search/?modal_id=${ID}`,
+      `https://www.douyin.com/jingxuan/searchx/AI?modal_id=${ID}`,
+      `https://www.douyin.com/jingxuan/search/AI/more?modal_id=${ID}`,
+      `https://www.douyin.com/a/b/c/d/search/AI?modal_id=${ID}`,
+      `https://www.douyin.com.evil.example/jingxuan/search/AI?modal_id=${ID}`,
       `https://www.douyin.com.evil.example/search/AI?modal_id=${ID}`,
       `https://www.douyin.com/user/MS4wLjABAAAA?modal_id=${ID}`,
       `https://www.douyin.com.evil.example/jingxuan?modal_id=${ID}`,
@@ -1041,6 +1057,7 @@ describe('抖音精选页', () => {
     // 在搜索结果里录的：记成精选页的链接（搜索页的网址回不到这条视频），搜索词不留；ID 对不上照样不收
     expect(sanitizeClipRecord({ ...raw, url: `https://www.douyin.com/search/%E5%A4%A7%E9%BA%A6%E5%93%A5?modal_id=${ID}&type=general` }, 'douyin')).toEqual({ ...record, site: 'douyin', url: `https://www.douyin.com/jingxuan?modal_id=${ID}` });
     expect(sanitizeClipRecord({ ...raw, url: 'https://www.douyin.com/search/AI?modal_id=7706025941717672121&type=general' }, 'douyin')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: `https://www.douyin.com/jingxuan/search/%E5%A4%A7%E9%BA%A6%E5%93%A5?aid=x&modal_id=${ID}&type=general` }, 'douyin')).toEqual({ ...record, site: 'douyin', url: `https://www.douyin.com/jingxuan?modal_id=${ID}` });
     expect(sanitizeClipRecord({ ...raw, url: undefined }, 'douyin')).toBeNull();
     expect(sanitizeClipRecord({ ...raw, videoId: '../../etc' }, 'douyin')).toBeNull();
     // 同样的记录从 Instagram 页面、YouTube 页面送来：不收，或不带站点和链接
