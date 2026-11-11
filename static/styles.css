@@ -1734,3 +1734,27 @@ a.db-title:hover {
 .email-verdict-text {
   margin: 6px 0 0;
 }
+
+/* ── 问 muse ── */
+.muse-btn {
+  flex: none;
+  margin-left: auto;
+}
+.muse-btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.muse-head {
+  justify-content: space-between;
+}
+.muse .kv dd {
+  overflow-wrap: anywhere;
+}
+.muse-package {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, 'Noto Sans Mono CJK SC', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 160px;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}

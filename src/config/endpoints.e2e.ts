@@ -44,3 +44,6 @@ export const IG_PAGES: readonly string[] = ['https://www.instagram.com/', `${MOC
 
 /** e2e：本机 mock 的 /douyin/ 下是仿抖音网页版的页面（精选页是 /douyin/jingxuan，搜索结果页是 /douyin/search/<搜索词> 或 /douyin/jingxuan/search/<搜索词>） */
 export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/', `${MOCK}/douyin/`];
+
+/** e2e："打开 muse.ai"打开的是本机 mock 的一个空页面，测试不出网 */
+export const MUSE_CHAT_URL = `${MOCK}/muse/`;

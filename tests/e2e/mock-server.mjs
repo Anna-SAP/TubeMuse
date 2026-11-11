@@ -557,6 +557,11 @@ export function startMockServer() {
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
         return res.end(wav);
       }
+      // 「问 muse」的"打开 muse.ai"在 e2e 里打开的页面：一个空壳，扩展不往这里发任何东西
+      if (p === '/muse/') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end('<!doctype html><html><head><meta charset="utf-8"><title>mock muse</title></head><body>mock muse</body></html>');
+      }
       // 仿 Gmail（邮件脚本只注入 /gmail/ 下的页面）
       if (p.startsWith('/gmail/')) {
         const html = gmailPage(p);
