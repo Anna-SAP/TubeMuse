@@ -22,10 +22,15 @@
 // 5. Capture 截图（用户 2026-11-06 要求，见 DECISIONS §50、§52）：只在你点按钮时，把这一帧按视频的真实尺寸
 //    画到不放进页面的画布上，在本机编成 PNG，由侧边栏取走后交给浏览器保存（这里不保存：从这个页面连续下载，
 //    第二次起会被 Chrome 拦下）。不录声音、不带字幕和播放器控件，广告时不截。
+// 6. 「问 muse」（用户 2026-11-11 要求，见 DECISIONS §60）：只在你点侧边栏顶部的「问 muse」时，把当前这条视频 / 帖子的
+//    链接、标题、作者、正文（或描述）和这一刻的播放位置读一次，交给侧边栏拼成一段文字（咨询包），由你自己粘贴到 Muse。
+//    不暂停视频、不改页面、不发网络请求；读的都是当前这一条：第 4 点里已经在读的那些，外加小红书这篇笔记的作者名和正文；
+//    X 帖子页的作者和正文来自页面标题。别的帖子、评论、弹幕不读。
 // 受版权保护（DRM）的视频浏览器不允许录制或截图，本脚本不绕过。
 
-import { CLIPS, DEFAULT_SETTINGS } from '../config/defaults';
+import { CLIPS, DEFAULT_SETTINGS, MUSE } from '../config/defaults';
 import { MULTICC_LINE_COLORS } from '../core/multi-captions';
+import { MUSE_MSG, museItem, museUnavailable, type MuseSnapshot } from '../core/muse';
 import { parseXhsUrl, xhsPath } from '../core/xhs';
 import {
   CLIP_MSG,
@@ -62,6 +67,7 @@ import {
   titleFromDocumentTitle,
   videoBitrate,
   visibleArea,
+  xPostParts,
   type BurnBox,
   type BurnLine,
   type ClipCaptureReply,
@@ -201,11 +207,20 @@ function xStatusVideoEl(): HTMLVideoElement | null {
   return all[pick] ?? null;
 }
 
-/** 首页信息流（X、Instagram）里一条帖子的链接、ID 和"作者 - 正文" */
+/** 首页信息流（X、Instagram）里一条帖子的链接、ID 和"作者 - 正文"；作者、正文另外各留一份（「问 muse」分开用） */
 interface FeedPost {
   id: string;
   url: string;
   title?: string;
+  author?: string;
+  text?: string;
+}
+
+/** 帖子的链接、作者、正文 → FeedPost（标题是"作者 - 正文"，见 feedPostTitle） */
+function feedPost(page: { id: string; url: string }, author: string, text: string): FeedPost {
+  const title = feedPostTitle(author, text);
+  const [a, t] = [author.replace(/\s+/g, ' ').trim(), text.trim()];
+  return { ...page, ...(title ? { title } : {}), ...(a ? { author: a } : {}), ...(t ? { text: t } : {}) };
 }
 
 /** 这个页面上现在该录的视频、帖子 ID、帖子链接和标题（X、Instagram）；feed：现在是不是在首页信息流上 */
@@ -215,6 +230,8 @@ interface FeedSiteNow {
   videoId: string | null;
   url?: string;
   title?: string;
+  /** 首页信息流上锁定的视频所在的那条帖子 */
+  post?: FeedPost;
 }
 
 /** 首页信息流里锁定的视频和它所在的帖子（判断见 pickFeedVideo）；离开首页就清掉 */
@@ -251,8 +268,7 @@ function readXFeedPost(video: HTMLVideoElement): FeedPost | undefined {
     const quote = t.closest('[role="link"]');
     return !quote || !article.contains(quote);
   });
-  const title = feedPostTitle(author, postText(body));
-  return { ...page, ...(title ? { title } : {}) };
+  return feedPost(page, author, postText(body));
 }
 
 /**
@@ -277,8 +293,7 @@ function readIgFeedPost(video: HTMLVideoElement): FeedPost | undefined {
     const box = s.parentElement?.closest('span[dir="auto"]')?.parentElement;
     return !!author && !!box && article.contains(box) && profileOf(box).includes(author);
   });
-  const title = feedPostTitle(author, postText(body));
-  return { ...page, ...(title ? { title } : {}) };
+  return feedPost(page, author, postText(body));
 }
 
 /** 首页信息流上现在该录的视频和它的帖子；没有"在播且有声音"的视频（也没有还算数的上一个）时返回 undefined */
@@ -313,7 +328,7 @@ function feedTarget(readPost: (video: HTMLVideoElement) => FeedPost | undefined)
 /** 首页信息流上：锁定的视频和它所在的帖子 */
 function feedNow(readPost: (video: HTMLVideoElement) => FeedPost | undefined): FeedSiteNow {
   const t = feedTarget(readPost);
-  return { feed: true, video: t?.video ?? null, videoId: t?.post?.id ?? null, ...(t?.post ? { url: t.post.url } : {}), ...(t?.post?.title ? { title: t.post.title } : {}) };
+  return { feed: true, video: t?.video ?? null, videoId: t?.post?.id ?? null, ...(t?.post ? { url: t.post.url, post: t.post } : {}), ...(t?.post?.title ? { title: t.post.title } : {}) };
 }
 
 /**
@@ -365,10 +380,15 @@ function douyinItem(): Element | null {
  * 只读当前这一条的昵称和描述，别的视频不读；只用来显示和起文件名。
  */
 function douyinTitle(): string | undefined {
+  const post = douyinPost();
+  return post ? feedPostTitle(post.author, post.text) || undefined : undefined;
+}
+
+/** 抖音当前这一条视频上的作者昵称（去掉开头的 @）和描述；没有点开的视频时 undefined */
+function douyinPost(): { author: string; text: string } | undefined {
   const item = douyinItem();
   if (!item) return undefined;
-  const author = postText(item.querySelector('[data-e2e="feed-video-nickname"]')).trim().replace(/^@/, '');
-  return feedPostTitle(author, postText(item.querySelector('[data-e2e="video-desc"]'))) || undefined;
+  return { author: postText(item.querySelector('[data-e2e="feed-video-nickname"]')).trim().replace(/^@/, ''), text: postText(item.querySelector('[data-e2e="video-desc"]')) };
 }
 
 /**
@@ -947,6 +967,72 @@ function shotChunk(id: unknown, index: unknown): string | undefined {
   return part;
 }
 
+// ── 「问 muse」──
+
+/**
+ * 小红书笔记详情里这篇笔记的作者名和正文（2026-11-11 新增，见 DECISIONS §60）。
+ * 作者栏有两份（视频笔记顶上那份是藏起来的，看得见的在右侧互动区，见 content/xhs.ts 的 detailAuthorRow），名字一样，取第一份有字的；
+ * 评论区每条评论也有 .author-wrapper，但里面没有 .info，不会认错。正文是 #detail-desc（标题在它上面的 #detail-title，来自页面标题，不重复取）。
+ * 只读这一篇笔记的这两处：评论和别的笔记不读。
+ */
+function xhsNote(): { author: string; text: string } {
+  const box = document.querySelector('#noteContainer, .note-container');
+  const names = [...(box?.querySelectorAll('.author-wrapper:has(> .info) a.name, .author-container .info a.name') ?? [])].map((a) => postText(a).replace(/\s+/g, ' ').trim());
+  return { author: names.find(Boolean) ?? '', text: postText(box?.querySelector('#detail-desc')) };
+}
+
+/** 当前这一条的标题、作者、正文（或描述）。X、Instagram、抖音的帖子 / 视频没有单独的标题，不拿"作者 - 正文"顶替 */
+function museTexts(now: FeedSiteNow | undefined): { title?: string; author?: string; body?: string } {
+  if (SITE === 'xhs') {
+    const note = xhsNote();
+    return { title: pageTitle(), author: note.author, body: note.text };
+  }
+  if (SITE === 'douyin') {
+    const post = douyinPost();
+    return { author: post?.author, body: post?.text };
+  }
+  if (now?.feed) return { author: now.post?.author, body: now.post?.text };
+  // X 帖子页：作者和正文都在页面标题里
+  if (SITE === 'x') {
+    const post = xPostParts(document.title || '');
+    return { author: post?.author, body: post?.text };
+  }
+  return { title: pageTitle() };
+}
+
+/**
+ * 你点「问 muse」的这一刻：当前这条视频 / 帖子是什么、播到哪了。只读一次，不暂停视频、不改页面。
+ * 认的是和片段录制同一条（首页信息流上是正在播放、开着声音的那个视频所在的帖子），但不看"片段录制"的开关；
+ * 没有视频的笔记、帖子也能问，播放位置不给。广告期间读到的是广告的进度，也不给；Shorts 的播放器不读。
+ */
+function museSnapshot(): MuseSnapshot {
+  const now = feedSiteNow();
+  const { videoId, shorts } = currentIds();
+  const video = shorts ? null : videoEl();
+  const unavailable = museUnavailable(SITE, { videoId, feed: onFeed(), hasVideo: !!video });
+  if (unavailable || !videoId) return { site: SITE, unavailable: unavailable ?? '没认出当前这条视频' };
+  const item = SITE === 'youtube' ? undefined : museItem(SITE, sourceUrl());
+  if (SITE !== 'youtube' && item?.id !== videoId) return { site: SITE, unavailable: '没认出当前这条视频的链接：等页面加载完再点「问 muse」' };
+  const ad = adShowing();
+  const readable = !!video && !ad && Number.isFinite(video.currentTime);
+  const { title, author, body } = museTexts(now);
+  const text = body?.trim() ?? '';
+  const total = [...text].length;
+  return {
+    site: SITE,
+    videoId,
+    ...(item ? { url: item.url } : {}),
+    ...(shorts ? { shorts: true } : {}),
+    ...(title ? { title } : {}),
+    ...(author ? { author } : {}),
+    ...(text ? { body: total > MUSE.bodyReadMaxChars ? [...text].slice(0, MUSE.bodyReadMaxChars).join('') : text } : {}),
+    ...(total > MUSE.bodyReadMaxChars ? { bodyTotal: total } : {}),
+    ...(readable ? { position: video.currentTime } : {}),
+    ...(readable && Number.isFinite(video.duration) && video.duration > 0 ? { duration: video.duration } : {}),
+    ...(readable ? {} : { gap: shorts ? ('shorts' as const) : !video ? ('no-video' as const) : ('ad' as const) }),
+  };
+}
+
 // ── 每一轮 ──
 
 function tick(): void {
@@ -1144,6 +1230,9 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
       return true;
     case CLIP_MSG.captureChunk:
       sendResponse(shotChunk(msg.id, msg.index));
+      return false;
+    case MUSE_MSG.snapshot:
+      sendResponse(museSnapshot());
       return false;
     default:
       return false;

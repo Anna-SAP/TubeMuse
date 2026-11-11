@@ -1,7 +1,7 @@
 # main 的分支保护把 verify 设成必过项：改 job 名要同时改分支保护，否则所有 PR 都合不进去。
 # 不加路径过滤：被过滤掉的 PR 不会产生 verify，会一直等下去。
 # 分支的 push 不跑：每个改动都走 PR，PR 会检查与 main 合并后的结果；再跑一遍 push 只是同一份检查多等一遍（DECISIONS §48）。
-# 检查拆成几个 job 并行跑，verify 只汇总它们的结果；合并后 main 上的那一次，文件树和 PR 里验过的一模一样时不重跑（DECISIONS §60）。
+# 检查拆成几个 job 并行跑，verify 只汇总它们的结果；合并后 main 上的那一次，文件树和 PR 里验过的一模一样时不重跑（DECISIONS §61）。
 name: CI
 
 on:

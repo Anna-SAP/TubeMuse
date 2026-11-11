@@ -156,6 +156,7 @@ const manifest = {
   // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
   // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
   // eMails（DECISIONS §44）：只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"，不发网络请求，不写页面
+  // 问 muse（DECISIONS §60）：没有新脚本。片段录制脚本在你点「问 muse」时把当前这条视频 / 帖子读一次交给侧边栏，多语字幕脚本交出已读到的字幕
   content_scripts: [
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
@@ -347,6 +348,13 @@ for (const bad of [
   /window\.open\(/,
 ]) {
   if (bad.test(email)) fail(`邮件脚本里出现了不允许的操作（${bad}）：它只能在被问到时读打开的这封邮件。`);
+}
+
+// 「问 muse」（2026-11-11 新增，DECISIONS §60）：只生成一段文字，由你自己粘贴到 Muse。muse.ai 只由侧边栏在新标签页里打开：
+// 不进网络出口（host_permissions / connect-src），注入网页的脚本里也不出现它的地址（它们不能替你打开或联系它）
+if (origins.some((o) => /muse\.ai/i.test(o))) fail('muse.ai 不应出现在网络出口里：「问 muse」只生成文字，扩展不向 Muse 发请求。');
+for (const file of readdirSync(outdir).filter((f) => /^content-.*\.js$/.test(f))) {
+  if (/muse\.ai/i.test(readFileSync(join(outdir, file), 'utf8'))) fail(`注入网页的脚本 ${file} 里出现了 muse.ai：只有侧边栏能在新标签页里打开它。`);
 }
 
 for (const file of walk(outdir)) {

@@ -89,17 +89,26 @@ export function formatBytes(n: number): string {
 const TCO_LINK = /\s*https?:\/\/t\.co\/\S+/g;
 
 /**
- * X 帖子页的标题："X 上的 作者：“正文 https://t.co/…” / X"（英文界面：作者 on X: "正文" / X）→"作者 - 正文"，
- * 帖子只有视频、没有文字时只留作者。还在加载或不是帖子时（"帖子 / X"、"X"）返回空。
+ * X 帖子页的页面标题里的作者和正文："X 上的 作者：“正文 https://t.co/…” / X"（英文界面：作者 on X: "正文" / X）。
+ * 开头的通知数"(12) "和正文里的 t.co 短链去掉；帖子只有视频、没有文字时只有作者；认不出这种写法时整段当正文。
+ * 还在加载或不是帖子时（"帖子 / X"、"X"）返回 undefined。
  */
-function xPostTitle(title: string): string {
-  const body = title.replace(/\s*\/\s*X\s*$/, '').trim();
-  if (/^(?:X|Post|帖子)$/.test(body)) return '';
+export function xPostParts(docTitle: string): { author?: string; text?: string } | undefined {
+  const body = docTitle
+    .replace(/^\(\d+\+?\)\s*/, '')
+    .replace(/\s*\/\s*X\s*$/, '')
+    .trim();
+  if (!body || /^(?:X|Post|帖子)$/.test(body)) return undefined;
   const post = /^(?:X 上的\s*(.+?)|(.+?) on X)\s*[：:]\s*[“"]([\s\S]*)[”"]$/.exec(body);
-  if (!post) return body.replace(TCO_LINK, '').trim();
-  const author = (post[1] ?? post[2])!.trim();
-  const text = post[3]!.replace(TCO_LINK, '').trim();
-  return text ? `${author} - ${text}` : author;
+  const text = (post ? post[3]! : body).replace(TCO_LINK, '').trim();
+  if (!post) return text ? { text } : undefined;
+  return { author: (post[1] ?? post[2])!.trim(), ...(text ? { text } : {}) };
+}
+
+/** X 帖子页的标题 →"作者 - 正文"；帖子没有文字时只留作者。还在加载或不是帖子时返回空 */
+function xPostTitle(title: string): string {
+  const p = xPostParts(title);
+  return p?.author && p.text ? `${p.author} - ${p.text}` : (p?.author ?? p?.text ?? '');
 }
 
 /**

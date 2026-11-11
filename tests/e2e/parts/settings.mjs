@@ -13,7 +13,7 @@ export async function settings(t) {
   // 回归：事件处理函数在异步回调里才读 e.currentTarget 时，设置存不上、也不报错（DECISIONS §45）。遍历所有勾选框，新加的开关也覆盖到
   console.log('\n[设置页：每一项改了都真的存进去，改回来能复原]');
   // 设置页要在前台：Playwright 点击前要等两帧确认元素不动，而后台标签页一秒才出一帧，
-  // 每点一下约 2 秒，28 个勾选框各点两下就是将近 2 分钟（DECISIONS §60）。你自己改设置时这一页也在前台。
+  // 每点一下约 2 秒，28 个勾选框各点两下就是将近 2 分钟（DECISIONS §61）。你自己改设置时这一页也在前台。
   await options.bringToFront();
   /** @param {unknown} v @returns {unknown} */
   const sortKeys = (v) => (Array.isArray(v) ? v.map(sortKeys) : v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(/** @type {Record<string, unknown>} */ (v)[k])])) : v);

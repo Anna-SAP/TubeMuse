@@ -1,4 +1,4 @@
-// CI 把 e2e 分成几组并行跑（DECISIONS §60）。分组表在 tests/e2e/shards.json，CI 的 matrix 是另外手写的一份：
+// CI 把 e2e 分成几组并行跑（DECISIONS §61）。分组表在 tests/e2e/shards.json，CI 的 matrix 是另外手写的一份：
 // 两边对不上时，漏掉的那一组在 CI 上不会跑，也不会报错。这里守着这件事，以及"每一部分恰好属于一组"。
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';

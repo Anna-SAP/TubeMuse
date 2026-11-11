@@ -7,7 +7,7 @@
 // 分组见 shards.json：每一组用一个全新的浏览器和 mock 服务，开头都走一遍"设置"（harness.mjs 的 setup：
 // 填 Key、连接 YouTube），再依次跑这一组的各部分（parts/），结尾查这一组的网络红线。
 // 新加的检查写进 parts/ 里对应的文件；新加一组要同时改 shards.json 和 ci.yml 的 matrix（tests/unit/ci-shards.test.ts 守着）。
-// 为什么分组、怎么分的见 DECISIONS §60。
+// 为什么分组、怎么分的见 DECISIONS §61。
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -16,11 +16,12 @@ import { fail, failureCount, launch, redLines, setup, shots } from './harness.mj
 import { clips } from './parts/clips.mjs';
 import { core } from './parts/core.mjs';
 import { emails } from './parts/emails.mjs';
+import { muse } from './parts/muse.mjs';
 import { settings } from './parts/settings.mjs';
 import { subtitles } from './parts/subtitles.mjs';
 
 /** @type {Record<string, (t: import('./harness.mjs').Harness) => Promise<void>>} */
-const PARTS = { core, subtitles, clips, emails, settings };
+const PARTS = { core, subtitles, clips, emails, muse, settings };
 /** @type {Record<string, string[]>} */
 const SHARDS = JSON.parse(readFileSync(new URL('./shards.json', import.meta.url), 'utf8'));
 

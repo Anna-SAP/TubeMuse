@@ -1,7 +1,7 @@
 // @ts-check
 // e2e 的公共部分：本机 mock 服务、加载了 dist-e2e/ 的 Chromium、网络护栏，
 // 每一组开头都要走一遍的"设置"（填 Key、连接 YouTube），以及每一组结尾的网络红线。
-// 各功能的检查在 parts/ 下；哪几部分放在一组里跑见 shards.mjs（DECISIONS §60）。
+// 各功能的检查在 parts/ 下；哪几部分放在一组里跑见 shards.json（DECISIONS §61）。
 // 任何发往 mock 以外地址的请求都会被拦截并判失败（测试中不得发出真实网络请求）。
 import { chromium } from 'playwright';
 import { mkdtempSync } from 'node:fs';
@@ -129,7 +129,7 @@ export async function setup(base) {
   check(true, '首次安装自动打开设置页');
   await options.getByTestId('anthropic-key').fill(FAKE_KEY);
   await options.locator('#llm .btn', { hasText: '保存' }).first().click();
-  // 等输入框的 placeholder 换成"已保存"（原先等的是页面文字，而这句话只写在 placeholder 里，每次都白等满 30 秒；DECISIONS §60）
+  // 等输入框的 placeholder 换成"已保存"（原先等的是页面文字，而这句话只写在 placeholder 里，每次都白等满 30 秒；DECISIONS §61）
   await options.getByTestId('anthropic-key').and(options.locator('[placeholder="已保存（出于安全不回显）"]')).waitFor({ state: 'attached', timeout: 5000 }).catch(() => undefined);
   const keyInput = await options.getByTestId('anthropic-key').getAttribute('placeholder');
   check(keyInput === '已保存（出于安全不回显）', '保存 Anthropic Key 后输入框不回显 Key');
