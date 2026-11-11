@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockServer, PORT, E2E_CLIENT_SECRET } from './mock-server.mjs';
-import { DOUYIN_NEXT, DOUYIN_VIDEO } from './douyin-pages.mjs';
+import { DOUYIN_NEXT, DOUYIN_SEARCH_TITLE, DOUYIN_VIDEO } from './douyin-pages.mjs';
 import { IG_FEED_POST, IG_PLAIN_POST } from './ig-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from './kubb-pages.mjs';
 import { X_FEED_POST, X_GIF_POST, X_POST, X_TEXT_POST } from './x-pages.mjs';
@@ -2482,7 +2482,7 @@ try {
     const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/douyin/'));
     await c.tabs.update(t.id, { active: true });
   });
-  await clipStatus.filter({ hasText: '不是抖音精选里打开的视频' }).waitFor({ timeout: 10000 });
+  await clipStatus.filter({ hasText: '没有点开的抖音视频' }).waitFor({ timeout: 10000 });
   check(true, '精选页上还没点开视频：说明要点开一条再录');
   const douyinAppHtml = () => douyin.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
   const douyinTitle = async () => (await panel.getByTestId('clip-title').textContent()) ?? '';
@@ -2548,7 +2548,7 @@ try {
     `Capture：截的是当前这一条，文件名用它的作者和描述，按视频的真实尺寸存，不带弹幕：${douyinShotName}（${douyinPng.width}×${douyinPng.height}）`,
   );
   await douyin.evaluate(() => /** @type {any} */ (window).__closeVideo());
-  await clipStatus.filter({ hasText: '不是抖音精选里打开的视频' }).waitFor({ timeout: 5000 });
+  await clipStatus.filter({ hasText: '没有点开的抖音视频' }).waitFor({ timeout: 5000 });
   check(true, '关掉这条视频回到精选页：说明要点开一条再录');
   const douyinPageReqs = requests.slice(douyinReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/douyin/`));
   check(
@@ -2556,6 +2556,70 @@ try {
     `抖音页面上 TubeMuse 没有发出任何请求（只有你打开的页面本身）${douyinPageReqs.length ? `：${douyinPageReqs.map((r) => r.path).join(', ')}` : ''}`,
   );
   await douyin.close();
+  await panel.bringToFront();
+
+  // 搜索结果页里点开的视频（2026-11-11 用户要求）：同样能录；记下的链接是精选页的那种（搜索页的网址回不到这条视频），搜索词不进记录
+  console.log('\n[抖音：搜索结果页里点开的视频也能录、也能 Capture；记下的链接不带搜索词]');
+  const douyinSearchPath = `/douyin/search/${encodeURIComponent('大麦哥')}`;
+  const [douyinSearch] = await Promise.all([
+    context.waitForEvent('page'),
+    panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}${douyinSearchPath}?type=general`),
+  ]);
+  douyinSearch.on('pageerror', (e) => consoleErrors.push(`douyin search pageerror: ${e.message}`));
+  await douyinSearch.waitForLoadState('domcontentloaded');
+  await panel.bringToFront();
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/douyin/search/'));
+    await c.tabs.update(t.id, { active: true });
+  });
+  await clipStatus.filter({ hasText: '没有点开的抖音视频' }).waitFor({ timeout: 10000 });
+  check(((await clipStatus.textContent()) ?? '').includes('搜索结果'), '搜索结果页上还没点开视频：说明在精选页或搜索结果里点开一条再录');
+  await douyinSearch.evaluate(() => /** @type {any} */ (window).__openVideo());
+  await douyinSearch.waitForFunction((s) => (/** @type {HTMLVideoElement | null} */ (document.querySelector(s))?.readyState ?? 0) >= 2, douyinActive, { timeout: 30000 });
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  await panel.getByTestId('clip-position').filter({ hasText: / 0:(19|20)$/ }).waitFor({ timeout: 5000 });
+  const douyinSearchUrl = await douyinSearch.evaluate(() => location.pathname + location.search);
+  check(
+    douyinSearchUrl === `${douyinSearchPath}?modal_id=${DOUYIN_VIDEO.id}&type=general` && (await douyinTitle()) === DOUYIN_VIDEO.title && (await douyinSearch.evaluate(() => document.title)) === DOUYIN_SEARCH_TITLE,
+    `搜索结果里点开视频（网址是 /search/<搜索词>?modal_id=…&type=general）后能录：标题是作者 - 描述，不是页面标题"${DOUYIN_SEARCH_TITLE}"`,
+  );
+  const douyinSearchHtmlBefore = await douyinSearch.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await douyinSearch.waitForTimeout(2000);
+  const [douyinSearchDl] = await Promise.all([douyinSearch.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const douyinSearchName = douyinSearchDl.suggestedFilename();
+  await panel.getByTestId('clip-log').filter({ hasText: douyinSearchName }).waitFor({ timeout: 5000 });
+  const douyinSearchLog = (await clipLog())[0];
+  check(
+    douyinSearchName.startsWith(`${DOUYIN_VIDEO.title}_00m0`) &&
+      douyinSearchLog?.site === 'douyin' &&
+      douyinSearchLog.videoId === DOUYIN_VIDEO.id &&
+      douyinSearchLog.fileName === douyinSearchName &&
+      douyinSearchLog.url === `${MOCK}/douyin/jingxuan?modal_id=${DOUYIN_VIDEO.id}`,
+    `在搜索结果里录的片段存下来了，记的是精选页的链接，不带搜索词：${douyinSearchLog?.url}`,
+  );
+  const douyinSearchLogText = JSON.stringify(douyinSearchLog);
+  check(!douyinSearchLogText.includes('search') && !douyinSearchLogText.includes('大麦哥') && !douyinSearchLogText.includes(encodeURIComponent('大麦哥')), '这条记录里没有搜索页的网址，也没有搜索词');
+  check(
+    (await douyinSearch.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML)) === douyinSearchHtmlBefore,
+    '录制没有往抖音搜索页里加任何元素',
+  );
+  await panel.getByRole('button', { name: '释放内存' }).click();
+  await useFramedVideo(douyinSearch, douyinActive);
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 5000 });
+  const douyinSearchShot = await capture();
+  const douyinSearchPng = await readPng(/** @type {string} */ (await douyinSearchShot.path()), douyinSearch);
+  check(
+    douyinSearchShot.suggestedFilename().startsWith(`${DOUYIN_VIDEO.title}_00-00-0`) && douyinSearchPng.width === 720 && douyinSearchPng.height === 1280,
+    `搜索结果里点开的视频也能 Capture：${douyinSearchShot.suggestedFilename()}（${douyinSearchPng.width}×${douyinSearchPng.height}）`,
+  );
+  check((await douyinSearch.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '没有点到抖音搜索页自己的任何东西');
+  await douyinSearch.evaluate(() => /** @type {any} */ (window).__closeVideo());
+  await clipStatus.filter({ hasText: '没有点开的抖音视频' }).waitFor({ timeout: 5000 });
+  check(true, '关掉这条视频回到搜索结果：说明要点开一条再录');
+  await douyinSearch.close();
   await panel.bringToFront();
 
   // ───────────────────────── 酷播：片段录制 ─────────────────────────

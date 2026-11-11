@@ -412,10 +412,12 @@ export function loopedToStart(previousTime: number, currentTime: number, duratio
   return atVideoEnd(previousTime, duration) && currentTime < CLIPS.endSlackSec && currentTime < previousTime;
 }
 
-// ── 抖音的精选页 ──
+// ── 抖音：精选页、搜索结果页里点开的视频 ──
 
 /** 精选页的路径：jingxuan，或 jingxuan/<类目>（如 travel、beauty） */
 const DOUYIN_FEED_PATH = /^jingxuan(?:\/[A-Za-z0-9_-]{1,40})?$/;
+/** 搜索结果页的路径：search/<搜索词>（网址里是转了码的一段，不含斜杠；综合、视频等标签只差 type 参数） */
+const DOUYIN_SEARCH_PATH = /^search\/[^/]{1,600}$/;
 /** 视频 ID：一串数字（2026-11-10 实测 19 位） */
 const DOUYIN_VIDEO_ID = /^\d{6,25}$/;
 
@@ -427,7 +429,11 @@ export function isDouyinPage(url: string): boolean {
 /**
  * 抖音精选页里打开了一条视频时的网址 → 视频 ID 与规范链接（2026-11-10 实测）：/jingxuan?modal_id=<视频ID>，
  * 带类目时是 /jingxuan/<类目>?modal_id=<视频ID>。划到下一条视频时 modal_id 跟着变，所以换一条就算换了视频。
- * 链接只留路径和 modal_id，别的查询参数去掉。没打开视频的精选页、/video/<ID>、推荐、搜索、个人主页等别的页面返回 undefined。
+ * 链接只留路径和 modal_id，别的查询参数去掉。
+ * 搜索结果页里点开的视频（2026-11-11 实测）：/search/<搜索词>?modal_id=<视频ID>&type=general，页面结构和精选页里点开的一样。
+ * 但这种网址从外面直接打开时抖音会把 modal_id 丢掉、只剩搜索结果，回不到这条视频；/jingxuan?modal_id=<同一个ID> 打得开。
+ * 所以搜索页上的规范链接写成精选页的那种，搜索词不进链接（也就不进记录）。
+ * 没打开视频的页面、/video/<ID>、推荐、个人主页等别的页面返回 undefined。
  */
 export function parseDouyinUrl(url: string): { id: string; url: string } | undefined {
   let u: URL;
@@ -441,7 +447,9 @@ export function parseDouyinUrl(url: string): { id: string; url: string } | undef
   if (!prefix) return undefined;
   const path = full.slice(prefix.length).replace(/\/$/, '');
   const id = u.searchParams.get('modal_id');
-  return DOUYIN_FEED_PATH.test(path) && id && DOUYIN_VIDEO_ID.test(id) ? { id, url: `${prefix}${path}?modal_id=${id}` } : undefined;
+  if (!id || !DOUYIN_VIDEO_ID.test(id)) return undefined;
+  if (DOUYIN_FEED_PATH.test(path)) return { id, url: `${prefix}${path}?modal_id=${id}` };
+  return DOUYIN_SEARCH_PATH.test(path) ? { id, url: `${prefix}jingxuan?modal_id=${id}` } : undefined;
 }
 
 // ── 酷播的播放页 ──
@@ -527,7 +535,7 @@ const CLIP_UNAVAILABLE_TEXT: Record<ClipSite, { noPage: string; noVideo: string 
   kubb: { noPage: '这个页面不是播放页：点开一部影片再录', noVideo: '没找到播放器里的视频，等画面出来后再试' },
   // Instagram 只在首页信息流上录，"没有视频"的说法在 FEED_TEXT 里；这里的 noVideo 用不到，留着是为了每个站都有一句
   ig: { noPage: '这个页面不是 Instagram 的首页信息流：回到首页（www.instagram.com）再录', noVideo: '没找到正在播放的视频，等画面出来后再试' },
-  douyin: { noPage: '这个页面不是抖音精选里打开的视频：在精选页（www.douyin.com/jingxuan）点开一条视频再录', noVideo: '没找到这条视频的画面，等它开始播放后再试' },
+  douyin: { noPage: '这个页面上没有点开的抖音视频：在精选页（www.douyin.com/jingxuan）或搜索结果里点开一条视频再录', noVideo: '没找到这条视频的画面，等它开始播放后再试' },
 };
 
 /** 首页信息流（X、Instagram）上不能录的原因：没有锁定的视频；锁定了视频但认不出它属于哪条帖子（广告没有帖子链接） */
@@ -843,7 +851,7 @@ export interface ClipRecord {
   /**
    * 小红书：笔记链接（只留站点、路径与 xsec_token / xsec_source，从外面打开笔记要带 xsec_token）；
    * X：帖子链接（parseXStatusUrl 的规范链接）；酷播：播放页链接（parseKubbPlayUrl 的规范链接）；
-   * Instagram：帖子链接（parseIgPostUrl 的规范链接）；抖音：精选页里这条视频的链接（parseDouyinUrl 的规范链接）
+   * Instagram：帖子链接（parseIgPostUrl 的规范链接）；抖音：精选页里这条视频的链接（parseDouyinUrl 的规范链接；在搜索结果里录的也记成精选页的链接）
    */
   url?: string;
   title?: string;
