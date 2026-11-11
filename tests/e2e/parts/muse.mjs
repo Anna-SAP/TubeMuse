@@ -1,10 +1,11 @@
 // @ts-check
-// 问 muse：在 YouTube、小红书、X、Instagram、抖音、酷播的仿页面上各冻结一次，核对咨询包的内容与红线。
+// 问 muse：在 YouTube、小红书、X、Instagram、抖音、酷播、B 站的仿页面上各冻结一次，核对咨询包的内容与红线。
 import { join } from 'node:path';
 import { CC_MULTI_DESCRIPTION, E2E_CLIENT_SECRET } from '../mock-server.mjs';
 import { check, FAKE_KEY, MOCK, shots, X_TOKEN } from '../harness.mjs';
 import { DOUYIN_NEXT, DOUYIN_VIDEO } from '../douyin-pages.mjs';
 import { IG_FEED_POST } from '../ig-pages.mjs';
+import { BILI_EPISODE } from '../bili-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_MOVIE } from '../kubb-pages.mjs';
 import { X_FEED_POST, X_POST, X_TEXT_POST } from '../x-pages.mjs';
 import { XHS_N1, XHS_V1 } from '../xhs-pages.mjs';
@@ -395,10 +396,25 @@ export async function muse(t) {
   check(museField(kubbAdPkg, '播放位置') === '未知' && (await museNotes()).includes('正在播广告'), '酷播认得出的片头广告期间：播放位置写「未知」并说明');
   await museKubb.close();
 
+  console.log('\n[问 muse：B 站——只有页面标题和播放位置；链接去掉语言前缀和来源参数]');
+  const museBili = await museTab(`${MOCK}/bili/`);
+  check(await askMuseFails('没有 B 站的播放器'), 'B 站首页：说明要先打开一个播放页');
+  await museBili.evaluate(() => /** @type {any} */ (window).__nextEpisode());
+  await videoReady(museBili, '#bilibili-player video');
+  const biliHtmlBefore = await museBili.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML.replace(/ src="blob:[^"]*"/, ''));
+  const biliPkg = await askMuse();
+  check(
+    museField(biliPkg, '平台') === 'B 站' && museField(biliPkg, '页面链接') === `${MOCK}/bili/bangumi/play/${BILI_EPISODE.id}` && museField(biliPkg, '标题') === BILI_EPISODE.title && museField(biliPkg, '作者') === '无' && /^00:0\d \/ 00:25$/.test(museField(biliPkg, '播放位置')),
+    `标题来自页面标题，UP 主不读（写「无」）：${museField(biliPkg, '页面链接')} / ${museField(biliPkg, '标题')} / ${museField(biliPkg, '播放位置')}`,
+  );
+  check(biliPkg.includes('\n上下文：只有上面的标题（没有字幕 / 转写，也没有正文 / 描述）\n') && !biliPkg.includes('弹幕弹幕') && !biliPkg.includes('推荐视频的封面'), '弹幕、推荐列表不读');
+  check((await museBili.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML.replace(/ src="blob:[^"]*"/, ''))) === biliHtmlBefore && (await nativeClicks(museBili)) === 0, '没有改动页面，没有点任何东西');
+  await museBili.close();
+
   console.log('\n[问 muse：红线]');
   const museReqs = requests.slice(museReqStart);
   check(llmCount() === museLlmStart && museReqs.every((r) => !r.path.startsWith('/openai') && !r.path.startsWith('/x/')), '全程没有调大模型（也没有语音转写、没有读 X）：不产生任何费用');
-  const musePagePaths = ['/watch', '/media/', '/api/timedtext', '/xhs/', '/xpage/', '/igpage/', '/douyin/', '/kubb/', '/muse/', '/favicon.ico'];
+  const musePagePaths = ['/watch', '/media/', '/api/timedtext', '/xhs/', '/xpage/', '/igpage/', '/douyin/', '/kubb/', '/bili/', '/muse/', '/favicon.ico'];
   const fromPages = museReqs.filter((r) => String(r.headers.referer ?? '').startsWith(MOCK));
   const pageLeaks = fromPages.filter((r) => r.method !== 'GET' || !musePagePaths.some((p) => r.path === p || r.path.startsWith(p)));
   const museTt = fromPages.filter((r) => r.path === '/api/timedtext');
@@ -416,7 +432,7 @@ export async function muse(t) {
       !museManifest.content_security_policy.extension_pages.includes('muse'),
     `「问 muse」没有新增权限和域名：${museManifest.permissions.join(', ')}`,
   );
-  check(![ytPkg3, plainPkg, xhsPkg, xFeedPkg, xPostPkg, igPkg, dyPkg, kubbPkg].some((p) => p.includes(FAKE_KEY) || p.includes('e2e-fake-token') || p.includes(E2E_CLIENT_SECRET) || p.includes(X_TOKEN)), '咨询包里没有任何 Key / 令牌');
+  check(![ytPkg3, plainPkg, xhsPkg, xFeedPkg, xPostPkg, igPkg, dyPkg, kubbPkg, biliPkg].some((p) => p.includes(FAKE_KEY) || p.includes('e2e-fake-token') || p.includes(E2E_CLIENT_SECRET) || p.includes(X_TOKEN)), '咨询包里没有任何 Key / 令牌');
   await panel.bringToFront();
   await panel.getByTestId('muse-close').click();
   check((await musePanel.count()) === 0, '点 × 收起面板');

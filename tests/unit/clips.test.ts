@@ -21,6 +21,7 @@ import {
   formatTimecode,
   frameTimestamp,
   igProfileName,
+  isBiliPage,
   isDouyinPage,
   isIgHomeUrl,
   isIgPage,
@@ -32,6 +33,7 @@ import {
   loopedToStart,
   mp4TrackKinds,
   outputSize,
+  parseBiliUrl,
   parseDouyinUrl,
   parseIgPostUrl,
   parseKubbPlayUrl,
@@ -1209,6 +1211,191 @@ describe('酷播播放页', () => {
     const saved = await recordSavedClip(ctx, { ...record, url }, 'kubb');
     expect(saved).toMatchObject({ site: 'kubb', videoId: `${SHOW}.${EPISODE}`, url });
     expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_kubb']);
+  });
+});
+
+describe('B 站（www.bilibili.com）', () => {
+  const BV = 'BV1Kb411W75N';
+  const record = {
+    id: 'clip_bili',
+    videoId: 'ep733317',
+    title: '凡人修仙传第2集',
+    mode: 'free',
+    start: 118,
+    end: 148,
+    durationSec: 30,
+    bytes: 4_200_000,
+    format: 'MP4（H.264 + AAC）',
+    fileName: '凡人修仙传第2集_01m58s-02m28s.mp4',
+    burned: false,
+    savedAt: 1_700_000_000_000,
+  };
+
+  it('判断站点：只认 www.bilibili.com 本身；直播、搜索、空间是别的域名', () => {
+    expect(isBiliPage('https://www.bilibili.com/')).toBe(true);
+    expect(isBiliPage('https://www.bilibili.com/bangumi/play/ss28747?spm_id_from=333.1391.0.0')).toBe(true);
+    expect(isBiliPage('https://live.bilibili.com/22')).toBe(false);
+    expect(isBiliPage('https://search.bilibili.com/all?keyword=x')).toBe(false);
+    expect(isBiliPage('https://space.bilibili.com/2')).toBe(false);
+    expect(isBiliPage('https://bilibili.com/video/BV1Kb411W75N')).toBe(false);
+    expect(isBiliPage('https://www.bilibili.com.evil.example/video/BV1Kb411W75N')).toBe(false);
+    expect(isXPage('https://www.bilibili.com/')).toBe(false);
+  });
+
+  it('番剧影视（用户举的例子）：整季的链接 ID 是 ss 号，一集的链接 ID 是 ep 号；来源参数去掉', () => {
+    expect(parseBiliUrl('https://www.bilibili.com/bangumi/play/ss28747?spm_id_from=333.1391.0.0')).toEqual({ id: 'ss28747', url: 'https://www.bilibili.com/bangumi/play/ss28747', kind: 'bangumi' });
+    // 2026-11-11 实测：换集后网址是 /bangumi/play/ep733317?from_spmid=666.25.episode.0
+    expect(parseBiliUrl('https://www.bilibili.com/bangumi/play/ep733317?from_spmid=666.25.episode.0')).toEqual({ id: 'ep733317', url: 'https://www.bilibili.com/bangumi/play/ep733317', kind: 'bangumi' });
+    expect(parseBiliUrl('https://www.bilibili.com/bangumi/play/ep733317/')?.id).toBe('ep733317');
+  });
+  it('普通视频：ID 是 BV 号（老链接用 av 号）；分 P 带上第几 P，第 1 P 不带', () => {
+    expect(parseBiliUrl(`https://www.bilibili.com/video/${BV}/`)).toEqual({ id: BV, url: `https://www.bilibili.com/video/${BV}/`, kind: 'video' });
+    expect(parseBiliUrl(`https://www.bilibili.com/video/${BV}`)?.url).toBe(`https://www.bilibili.com/video/${BV}/`);
+    // 实测：换到第 5 P 后是 /video/<BV号>/?p=5&spm_id_from=333.788.videopod.episodes
+    expect(parseBiliUrl(`https://www.bilibili.com/video/${BV}/?p=5&spm_id_from=333.788.videopod.episodes`)).toEqual({ id: `${BV}.p5`, url: `https://www.bilibili.com/video/${BV}/?p=5`, kind: 'video' });
+    expect(parseBiliUrl(`https://www.bilibili.com/video/${BV}?p=1`)?.id).toBe(BV);
+    // p 写得不像页码：当没有
+    for (const p of ['0', '-2', '1.5', 'abc', '12345', '']) expect(parseBiliUrl(`https://www.bilibili.com/video/${BV}?p=${p}`)).toEqual({ id: BV, url: `https://www.bilibili.com/video/${BV}/`, kind: 'video' });
+    expect(parseBiliUrl('https://www.bilibili.com/video/av170001/?vd_source=abcdef')).toEqual({ id: 'av170001', url: 'https://www.bilibili.com/video/av170001/', kind: 'video' });
+    // 实测：自动连播到下一个视频时网址换成新的 BV 号，带着来源和 trackid
+    expect(parseBiliUrl('https://www.bilibili.com/video/BV1Psad6jEfR?spm_id_from=333.788.player.player_end_recommend_autoplay&trackid=web_related_0.router')?.id).toBe('BV1Psad6jEfR');
+  });
+  it('海外网络下网址开头多一段语言（/zh-Hans/…，实测）：去掉，ID 和链接与不带时一样', () => {
+    expect(parseBiliUrl('https://www.bilibili.com/zh-Hans/bangumi/play/ep733317?from_spmid=666.25.episode.0')).toEqual(parseBiliUrl('https://www.bilibili.com/bangumi/play/ep733317'));
+    expect(parseBiliUrl(`https://www.bilibili.com/zh-Hans/video/${BV}/?p=3`)).toEqual({ id: `${BV}.p3`, url: `https://www.bilibili.com/video/${BV}/?p=3`, kind: 'video' });
+    expect(parseBiliUrl('https://www.bilibili.com/zh-Hant/video/av170001/')?.id).toBe('av170001');
+    expect(parseBiliUrl('https://www.bilibili.com/zh-Hans')).toEqual({ id: 'home', url: 'https://www.bilibili.com/', kind: 'page' });
+    // 只有两个字母的一段是真的路径（/tv/ 是电视剧频道），不当语言去掉
+    expect(parseBiliUrl('https://www.bilibili.com/tv/')?.id).toBe('tv');
+  });
+  it('课程：ID 前面加 cheese-（和番剧的 ep 号是两套）', () => {
+    expect(parseBiliUrl('https://www.bilibili.com/cheese/play/ss61')).toEqual({ id: 'cheese-ss61', url: 'https://www.bilibili.com/cheese/play/ss61', kind: 'cheese' });
+    expect(parseBiliUrl('https://www.bilibili.com/cheese/play/ep1234?csource=common')).toEqual({ id: 'cheese-ep1234', url: 'https://www.bilibili.com/cheese/play/ep1234', kind: 'cheese' });
+  });
+  it('播放列表、活动页里选了某个视频（网址带 ?bvid=）：ID 是这个 BV 号，链接写成视频页，列表的编号不进链接', () => {
+    // 实测：打开 /list/2 后网址变成 /list/2?oid=116908221270151&bvid=BV1ujNV6qEXg
+    expect(parseBiliUrl('https://www.bilibili.com/list/2?oid=116908221270151&bvid=BV1ujNV6qEXg')).toEqual({ id: 'BV1ujNV6qEXg', url: 'https://www.bilibili.com/video/BV1ujNV6qEXg/', kind: 'video' });
+    const later = parseBiliUrl('https://www.bilibili.com/list/watchlater?oid=1&bvid=BV1ujNV6qEXg&p=2');
+    expect(later).toEqual({ id: 'BV1ujNV6qEXg.p2', url: 'https://www.bilibili.com/video/BV1ujNV6qEXg/?p=2', kind: 'video' });
+    expect(later?.url).not.toContain('watchlater');
+    expect(parseBiliUrl('https://www.bilibili.com/list/ml123456?oid=1&bvid=BV1ujNV6qEXg')?.url).not.toContain('ml123456');
+    expect(parseBiliUrl('https://www.bilibili.com/festival/2022bnj?bvid=BV1ujNV6qEXg')?.id).toBe('BV1ujNV6qEXg');
+    // bvid 写得不像 BV 号：不认，当成网址里认不出视频的页面
+    expect(parseBiliUrl('https://www.bilibili.com/list/2?bvid=../../x')).toEqual({ id: 'list-2', url: 'https://www.bilibili.com/list/2', kind: 'page' });
+    expect(parseBiliUrl('https://www.bilibili.com/list/watchlater?oid=&bvid=')?.kind).toBe('page');
+  });
+  it('别的页面（活动页刚打开、首页、热门）：网址里认不出是哪个视频，ID 用路径拼，有没有视频由录制脚本看播放器', () => {
+    expect(parseBiliUrl('https://www.bilibili.com/festival/2022bnj')).toEqual({ id: 'festival-2022bnj', url: 'https://www.bilibili.com/festival/2022bnj', kind: 'page' });
+    expect(parseBiliUrl('https://www.bilibili.com/')).toEqual({ id: 'home', url: 'https://www.bilibili.com/', kind: 'page' });
+    expect(parseBiliUrl('https://www.bilibili.com/v/popular/all/?x=1#top')).toEqual({ id: 'v-popular-all', url: 'https://www.bilibili.com/v/popular/all', kind: 'page' });
+    // 认不出的视频页写法、路径里的怪字符：不报错，按路径拼，长度有上限
+    expect(parseBiliUrl('https://www.bilibili.com/video/BVshort')).toEqual({ id: 'video-BVshort', url: 'https://www.bilibili.com/video/BVshort', kind: 'page' });
+    expect(parseBiliUrl('https://www.bilibili.com/bangumi/play/md28229233')?.kind).toBe('page');
+    expect(parseBiliUrl('https://www.bilibili.com/blackboard/%E6%B4%BB%E5%8A%A8.html')?.id).toBe('blackboard-_E6_B4_BB_E5_8A_A8.html');
+    expect(parseBiliUrl(`https://www.bilibili.com/${'a'.repeat(200)}`)?.id).toHaveLength(60);
+  });
+  it('不是 B 站的网址不认', () => {
+    for (const url of [
+      'https://live.bilibili.com/22',
+      `https://bilibili.com/video/${BV}`,
+      `https://m.bilibili.com/video/${BV}`,
+      `https://www.bilibili.com.evil.example/video/${BV}`,
+      `https://www.bilibili.com@evil.example/video/${BV}`,
+      `http://www.bilibili.com/video/${BV}`,
+      `https://www.youtube.com/video/${BV}`,
+      'not a url',
+    ]) {
+      expect(parseBiliUrl(url)).toBeUndefined();
+    }
+  });
+
+  it('页面标题（2026-11-11 真实页面的写法）→ 视频标题', () => {
+    // 普通视频、分 P（标题是这一 P 的名字）、课程
+    expect(titleFromDocumentTitle('每 天 亿 遍 🔥 防 止 早 恋！_哔哩哔哩_bilibili', 'bilibili')).toBe('每 天 亿 遍 🔥 防 止 早 恋！');
+    expect(titleFromDocumentTitle('002.尚硅谷_编程入门-资料文件结构2_哔哩哔哩_bilibili', 'bilibili')).toBe('002.尚硅谷_编程入门-资料文件结构2');
+    expect(titleFromDocumentTitle('【初级精讲】唐盾：0-N4日语精讲_哔哩哔哩_bilibili', 'bilibili')).toBe('【初级精讲】唐盾：0-N4日语精讲');
+    // 番剧影视：整季的链接不带集数，一集的链接带
+    expect(titleFromDocumentTitle('凡人修仙传-国创-高清独家在线观看-bilibili-哔哩哔哩', 'bilibili')).toBe('凡人修仙传');
+    expect(titleFromDocumentTitle('凡人修仙传第2集-国创-高清独家在线观看-bilibili-哔哩哔哩', 'bilibili')).toBe('凡人修仙传第2集');
+    expect(titleFromDocumentTitle('工作细胞-番剧-全集-高清独家在线观看-bilibili-哔哩哔哩', 'bilibili')).toBe('工作细胞');
+    expect(titleFromDocumentTitle('名侦探柯南-番剧-高清正版在线观看-bilibili-哔哩哔哩', 'bilibili')).toBe('名侦探柯南');
+    expect(titleFromDocumentTitle('让子弹飞-电影-高清独家在线观看-bilibili-哔哩哔哩', 'bilibili')).toBe('让子弹飞');
+    // 播放列表：标题-创建者-列表名
+    expect(titleFromDocumentTitle('帮不帮？-碧诗-碧诗-哔哩哔哩视频', 'bilibili')).toBe('帮不帮？');
+    // 活动页：标题就是活动名
+    expect(titleFromDocumentTitle('2022拜年纪', 'bilibili')).toBe('2022拜年纪');
+  });
+  it('页面标题：片名里自己带连字符或类型名时不切错；认不出的类型只去掉站名；出错页不当标题', () => {
+    expect(titleFromDocumentTitle('Re-Zero-番剧-全集-高清独家在线观看-bilibili-哔哩哔哩', 'bilibili')).toBe('Re-Zero');
+    expect(titleFromDocumentTitle('我的-电影-梦-电影-高清独家在线观看-bilibili-哔哩哔哩', 'bilibili')).toBe('我的-电影-梦');
+    expect(titleFromDocumentTitle('某部片子-新类型-高清在线观看-bilibili-哔哩哔哩', 'bilibili')).toBe('某部片子-新类型-高清在线观看');
+    expect(titleFromDocumentTitle('A-B_哔哩哔哩_bilibili', 'bilibili')).toBe('A-B');
+    expect(titleFromDocumentTitle('只有标题-哔哩哔哩视频', 'bilibili')).toBe('只有标题');
+    expect(titleFromDocumentTitle('出错啦! - bilibili.com', 'bilibili')).toBe('');
+    // 同一个标题按 YouTube 的规则不动：各站的规则不串
+    expect(titleFromDocumentTitle('让子弹飞-电影-高清独家在线观看-bilibili-哔哩哔哩')).toBe('让子弹飞-电影-高清独家在线观看-bilibili-哔哩哔哩');
+  });
+  it('文件名：标题_起点-终点；没有标题时用 bilibili-ID', () => {
+    expect(clipFileName('凡人修仙传第2集', 'ep733317', 118, 148, 'mp4', 'bilibili')).toBe('凡人修仙传第2集_01m58s-02m28s.mp4');
+    expect(clipFileName(undefined, `${BV}.p5`, 5, 15, 'webm', 'bilibili')).toBe(`bilibili-${BV}.p5_00m05s-00m15s.webm`);
+    expect(captureFileName('让子弹飞', 'ss12548', 30.804, 12, 'bilibili')).toBe('让子弹飞_00-00-30-804_original_00012.png');
+  });
+
+  it('不能录的原因用人话说：页面上没有播放器 / 没找到视频', () => {
+    expect(clipUnavailable('bilibili', { enabled: true, videoId: null, shorts: false, hasVideo: false })).toContain('没有 B 站的播放器');
+    expect(clipUnavailable('bilibili', { enabled: true, videoId: 'ss28747', shorts: false, hasVideo: false })).toContain('没找到播放器里的视频');
+    expect(clipUnavailable('bilibili', { enabled: true, videoId: 'ss28747', shorts: false, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('bilibili', { enabled: false, videoId: 'ss28747', shorts: false, hasVideo: true })).toContain('已在设置中关闭');
+  });
+  it('Capture：有播放器就能截；受保护、画面没准备好、没有播放器时说明原因', () => {
+    const ctx: ClipCaptureContext = { site: 'bilibili', enabled: true, videoId: 'ep733317', shorts: false, hasVideo: true, ad: false, drm: false, ready: true };
+    expect(checkCapture(ctx)).toBeUndefined();
+    expect(checkCapture({ ...ctx, drm: true })).toContain('DRM');
+    expect(checkCapture({ ...ctx, ready: false })).toContain('画面还没准备好');
+    expect(checkCapture({ ...ctx, videoId: null })).toContain('没有 B 站的播放器');
+  });
+  it('换一集、换一 P、连播到下一个视频（网址里的 ID 变了）：这一段结束；放完也结束', () => {
+    const control: ClipControl = { mode: 'free', videoId: 'ep733317', recordedSec: 10, bytes: 1000, maxSec: 600, maxBytes: CLIPS.maxBytes, userPaused: false };
+    const sample: ClipSample = { videoId: 'ep733317', currentTime: 128, paused: false, ended: false, seeking: false, ready: true, ad: false, visible: true, duration: 1076 };
+    expect(decideClip(control, sample)).toEqual({ kind: 'record' });
+    expect(decideClip(control, { ...sample, videoId: 'ep733318' })).toEqual({ kind: 'stop', reason: 'video-changed' });
+    expect(decideClip({ ...control, videoId: `${BV}.p3` }, { ...sample, videoId: `${BV}.p5` })).toEqual({ kind: 'stop', reason: 'video-changed' });
+    expect(decideClip(control, { ...sample, ended: true, paused: true })).toEqual({ kind: 'stop', reason: 'ended' });
+  });
+
+  it('录制记录：ID 与链接对得上才收，链接规范化；站点由后台定，不信记录自己写的', () => {
+    const url = 'https://www.bilibili.com/bangumi/play/ep733317';
+    const raw = { ...record, url: `https://www.bilibili.com/zh-Hans/bangumi/play/ep733317?from_spmid=666.25.episode.0`, site: 'youtube' };
+    expect(sanitizeClipRecord(raw, 'bilibili')).toEqual({ ...record, site: 'bilibili', url });
+    // 分 P 的视频；在播放列表里录的记成视频页的链接
+    expect(sanitizeClipRecord({ ...raw, videoId: `${BV}.p5`, url: `https://www.bilibili.com/video/${BV}/?p=5&spm_id_from=x` }, 'bilibili')).toMatchObject({ videoId: `${BV}.p5`, url: `https://www.bilibili.com/video/${BV}/?p=5` });
+    expect(sanitizeClipRecord({ ...raw, videoId: 'BV1ujNV6qEXg', url: 'https://www.bilibili.com/list/watchlater?oid=1&bvid=BV1ujNV6qEXg' }, 'bilibili')).toMatchObject({ videoId: 'BV1ujNV6qEXg', url: 'https://www.bilibili.com/video/BV1ujNV6qEXg/' });
+    // 活动页（网址里认不出视频）
+    expect(sanitizeClipRecord({ ...raw, videoId: 'festival-2022bnj', url: 'https://www.bilibili.com/festival/2022bnj' }, 'bilibili')).toMatchObject({ videoId: 'festival-2022bnj', url: 'https://www.bilibili.com/festival/2022bnj' });
+    // 对不上：别的集、少了第几 P、别的域名、没有链接、ID 不是字符串
+    expect(sanitizeClipRecord({ ...raw, url: 'https://www.bilibili.com/bangumi/play/ep733318' }, 'bilibili')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: `${BV}.p5`, url: `https://www.bilibili.com/video/${BV}/` }, 'bilibili')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: 'https://evil.example/bangumi/play/ep733317' }, 'bilibili')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: 'https://live.bilibili.com/bangumi/play/ep733317' }, 'bilibili')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: undefined }, 'bilibili')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: 733317 }, 'bilibili')).toBeNull();
+    // 同样的记录从抖音页面送来：不收。从 YouTube 页面送来：ep 号长得也像 YouTube 的视频 ID，只会被当成 YouTube 的记录，
+    // B 站的站点和链接都带不进去（站点由后台按发消息的页面定）
+    expect(sanitizeClipRecord(raw, 'douyin')).toBeNull();
+    const fromYouTube = sanitizeClipRecord(raw);
+    expect(fromYouTube).not.toHaveProperty('site');
+    expect(fromYouTube).not.toHaveProperty('url');
+    expect(sanitizeClipRecord({ ...raw, videoId: `${BV}.p5`, url: `https://www.bilibili.com/video/${BV}/?p=5` })).toBeNull();
+  });
+  it('回到这个视频：用记录里的链接；万一没有链接，回到 B 站首页', () => {
+    expect(clipWatchUrl({ site: 'bilibili', videoId: 'ep733317', url: 'https://www.bilibili.com/bangumi/play/ep733317', start: 118 })).toBe('https://www.bilibili.com/bangumi/play/ep733317');
+    expect(clipWatchUrl({ site: 'bilibili', videoId: 'ep733317', start: 118 })).toBe('https://www.bilibili.com/');
+  });
+  it('后台：B 站的片段存进本地，带上站点和链接', async () => {
+    const ctx = { kv: memoryKV(), locker: memoryLocker() } as unknown as AppContext;
+    const saved = await recordSavedClip(ctx, { ...record, url: 'https://www.bilibili.com/bangumi/play/ep733317?from_spmid=666.25.episode.0' }, 'bilibili');
+    expect(saved).toMatchObject({ site: 'bilibili', videoId: 'ep733317', url: 'https://www.bilibili.com/bangumi/play/ep733317' });
+    expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_bili']);
   });
 });
 

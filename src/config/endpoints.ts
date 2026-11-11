@@ -74,6 +74,15 @@ export const IG_PAGES: readonly string[] = ['https://www.instagram.com/'];
 export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/'];
 
 /**
+ * B 站网页版（2026-11-11 新增，见 DECISIONS §64）：片段录制脚本注入的页面，录页面主播放器里正在看的这个视频——
+ * 普通视频（/video/<BV号>）、番剧影视（/bangumi/play/<ep 或 ss 号>）、课程（/cheese/play/…）、播放列表（/list/…）、活动页（/festival/…）
+ * 用的都是同一个播放器（当天实测）。B 站是单页应用，换集、换分 P、自动连播都不重新加载，所以注入范围是整个站，脚本自己只认主播放器。
+ * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
+ * 直播（live.bilibili.com）、搜索（search.bilibili.com）、个人空间（space.bilibili.com）是别的域名，不在范围里。
+ */
+export const BILI_PAGES: readonly string[] = ['https://www.bilibili.com/'];
+
+/**
  * Muse 聊天（2026-11-11 新增，见 DECISIONS §60）：「问 muse」面板里的"打开 muse.ai"只是在新标签页里打开它，
  * 咨询包由你自己粘贴进去。扩展不向它发任何请求、不注入脚本、不读它的页面，所以不在 ENDPOINTS（connect-src / host_permissions）里，
  * 也不在任何内容脚本的 matches 里。
