@@ -8,7 +8,7 @@
 import { MULTI_CC } from '../config/defaults';
 import { isLangCode } from './multicc-protocol';
 
-export { BRIDGE_OPS, BRIDGE_TAG, isLangCode, type BridgeOp } from './multicc-protocol';
+export { BRIDGE_OPS, BRIDGE_TAG, isLangCode, playerRootId, type BridgeOp } from './multicc-protocol';
 
 export const MULTICC_MSG = {
   getState: 'tubemuse:multicc:get-state',

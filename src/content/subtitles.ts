@@ -582,7 +582,8 @@ function tabState(): SubtitleTabState {
   const st = statusLine(active);
   const m = videoId ? manual.get(videoId) : undefined;
   let status: string;
-  if (!videoId) status = '这个页面不是视频播放页';
+  // Shorts 上不出自动字幕（多语字幕 2026-11-11 起支持 Shorts，见 DECISIONS §67）：说清楚，不说"不是视频页"
+  if (!videoId) status = videoIdFromUrl(location.href).shorts ? 'Shorts 上不提供自动字幕（多语字幕可以用）' : '这个页面不是视频播放页';
   else if (!settings.enabled) status = '自动字幕已在设置中关闭';
   else if (fatalActive() && m !== 'off') status = `已停止：${fatal!.message}`;
   else if (active) status = st?.text.replace(/^TubeMuse 字幕：/, '') ?? '正在出字幕';

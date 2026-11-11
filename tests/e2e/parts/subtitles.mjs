@@ -1,5 +1,5 @@
 // @ts-check
-// 自动字幕（浏览器识别 / OpenAI 转写、翻译、预算与限流）与多语字幕（叠加、顺序、让位原生字幕、慢与出错时的说明、自动显示）。
+// 自动字幕（浏览器识别 / OpenAI 转写、翻译、预算与限流）与多语字幕（叠加、顺序、让位原生字幕、慢与出错时的说明、自动显示、Shorts）。
 import { join } from 'node:path';
 import { check, FAKE_KEY, MOCK, shots } from '../harness.mjs';
 
@@ -725,5 +725,74 @@ export async function subtitles(t) {
   await checkStickyAbsorbed('ccSticky0005', '广告期间开启');
 
   await cc.close();
+  await panel.bringToFront();
+
+  // 2026-11-11 用户要求：多语字幕也支持 Shorts（DECISIONS §67）。仿 Shorts 页面里，假播放器挂在 #shorts-player 上；
+  // 页面上还藏着一个播放页的 #movie_player（另一个视频的字幕轨，被调用会记下来），多语字幕不应碰它
+  console.log('\n[多语字幕：YouTube Shorts → 不再说"不是视频播放页"；开启后三种语言叠在 Shorts 播放器里，放在底部的标题上面；藏着的播放页播放器不碰]');
+  await panel.getByRole('tab', { name: '字幕', exact: true }).click();
+  const [sc] = await Promise.all([
+    context.waitForEvent('page'),
+    panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/shorts/ccShorts0008`),
+  ]);
+  sc.on('pageerror', (e) => consoleErrors.push(`multicc shorts pageerror: ${e.message}`));
+  sc.on('console', (m) => m.type() === 'error' && consoleErrors.push(`multicc shorts: ${m.text()}`));
+  await sc.waitForFunction(() => (/** @type {HTMLVideoElement | null} */ (document.querySelector('#shorts-player video'))?.readyState ?? 0) >= 2, null, { timeout: 30000 });
+  await ccStatus.filter({ hasText: '未开启' }).waitFor({ timeout: 10000 });
+  check(!((await ccStatus.textContent()) ?? '').includes('不是视频播放页'), `Shorts 上多语字幕不再说"这个页面不是视频播放页"：${(await ccStatus.textContent()) ?? ''}`);
+  const scOpts = (await panel.getByTestId('multicc-langs').textContent()) ?? '';
+  check(['Korean', 'English', 'Chinese (Simplified)'].every((x) => scOpts.includes(x)) && !scOpts.includes('French'), '侧边栏列出的是这条 Short 的字幕轨，不是藏着的播放页播放器里那个视频的');
+  await panel.getByTestId('subtitle-status').filter({ hasText: 'Shorts 上不提供自动字幕' }).waitFor({ timeout: 5000 });
+  check(true, '自动字幕那一块写明 Shorts 上不提供（多语字幕可以用），不说"不是视频播放页"');
+  await panel.getByRole('button', { name: '显示多语字幕' }).click();
+  await seekPaused(sc, 3.0);
+  await waitCcText(sc, ['쇼츠 자막 테스트', 'Shorts caption test', 'Shorts 字幕测试']);
+  const scLines = await ccLines(sc);
+  check(JSON.stringify(scLines.map((l) => l.lang)) === JSON.stringify(['ko', 'en', 'zh-Hans']), `从上到下：原声（韩语）、英文、简体中文：${scLines.map((l) => l.lang).join(' / ')}`);
+  await seekPaused(sc, 5.0);
+  await waitCcText(sc, ['두 번째 문장', 'Second line', '第二句']);
+  check(true, '跟着 Shorts 的播放进度换句');
+  const scPT = playerTt('ccShorts0008');
+  const scOT = ourTt('ccShorts0008');
+  check(
+    scPT.length === 1 && scOT.length === 3 && scOT.every((r) => r.query.pot === scPT[0]?.query.pot && r.query.fmt === 'json3' && !r.headers.authorization),
+    `和播放页一样：请 Shorts 播放器选一次轨、复用它带令牌的请求只换语言（播放器 ${scPT.length} 个，TubeMuse ${scOT.length} 个：${scOT.map((r) => r.query.lang).join(', ')}）`,
+  );
+  const scNative = await sc.evaluate(() => {
+    const p = /** @type {any} */ (document.getElementById('shorts-player'));
+    const w = /** @type {any} */ (window);
+    return { lang: p.getOption('captions', 'track')?.languageCode ?? null, calls: /** @type {any[]} */ (w.__playerCalls), foreign: /** @type {string[]} */ (w.__foreign), stale: /** @type {any[]} */ (w.__staleCalls) };
+  });
+  check(scNative.lang === null && onlyCaptionCalls(scNative.calls) && scNative.calls.length >= 2, `为取字幕打开的原生字幕随即关掉；只调用了 Shorts 播放器自己的字幕开关：${scNative.calls.map((c) => c.join(' ')).join('；')}`);
+  check(scNative.foreign.length === 0, `YouTube 自己的元素原样未动${scNative.foreign.length ? `：${scNative.foreign.join(', ')}` : ''}`);
+  check(scNative.stale.length === 0, `页面上藏着的播放页播放器一次都没被调用（${scNative.stale.length} 次）`);
+  const scGeom = await sc.evaluate(() => {
+    const host = /** @type {HTMLElement | null} */ (document.querySelector('[data-tubemuse="multicc"]'));
+    const player = /** @type {HTMLElement} */ (document.getElementById('shorts-player'));
+    const pr = player.getBoundingClientRect();
+    const lines = [...(host?.shadowRoot?.querySelectorAll('.line:not([hidden])') ?? [])].map((l) => l.getBoundingClientRect());
+    return {
+      inShorts: host?.parentElement === player,
+      inWatch: !!document.querySelector('#movie_player [data-tubemuse]'),
+      fs: parseFloat(host?.style.getPropertyValue('--fs') ?? ''),
+      bottom: parseFloat(host?.style.getPropertyValue('--bottom') ?? ''),
+      h: pr.height,
+      inside: lines.length === 3 && lines.every((r) => r.left >= pr.left - 0.5 && r.right <= pr.right + 0.5 && r.top >= pr.top && r.bottom <= pr.bottom - pr.height * 0.2),
+    };
+  });
+  check(scGeom.inShorts && !scGeom.inWatch, '字幕层加在 Shorts 播放器里，藏着的播放页播放器里没有');
+  check(
+    scGeom.bottom >= scGeom.h * 0.2 && scGeom.inside,
+    `字幕层离底边 ${scGeom.bottom}px（播放器高 ${scGeom.h}px）：在 Shorts 叠在底部的标题、频道名上面，三行都在画面里`,
+  );
+  check(scGeom.fs >= 13 && scGeom.fs < scGeom.h * 0.042 * 0.75, `竖屏按短边（宽）定字号：${scGeom.fs}px（按高度算会是 ${(scGeom.h * 0.042).toFixed(1)}px）`);
+  check(((await ccStatus.textContent()) ?? '').includes('正在显示 3 种语言'), `侧边栏：${await ccStatus.textContent()}`);
+  await sc.screenshot({ path: join(shots, '35-multicc-shorts.png') });
+  await panel.getByRole('button', { name: '关闭多语字幕' }).click();
+  await sc.waitForFunction(() => !document.querySelector('[data-tubemuse="multicc"]'), null, { timeout: 5000 });
+  await sc.waitForTimeout(1000);
+  const scAfter = await sc.evaluate(() => ({ lang: /** @type {any} */ (document.getElementById('shorts-player')).getOption('captions', 'track')?.languageCode ?? null, stale: /** @type {any[]} */ (/** @type {any} */ (window).__staleCalls).length }));
+  check(scAfter.lang === null && scAfter.stale === 0, '关闭后字幕层移除，原生字幕本来关着、保持关着；藏着的播放器始终没被碰');
+  await sc.close();
   await panel.bringToFront();
 }
