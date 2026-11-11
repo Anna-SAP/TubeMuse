@@ -577,6 +577,8 @@ export const CLIPS = {
   captureChunkBytes: 16 * 1024 * 1024,
   /** Capture：截好的 PNG 在页面内存里最多留多久（侧边栏取走后立即释放；这是侧边栏中途关掉时的兜底） */
   captureHoldMs: 30_000,
+  /** Capture：PNG 交给浏览器后，写进系统剪贴板最多等多久；超过就说明没放进去，不让 Capture 按钮一直卡在"截图中" */
+  captureClipboardTimeoutMs: 5_000,
   /** 编码格式，按优先级：MP4 通用性最好，浏览器不支持时退回 WebM */
   formats: [
     { mimeType: 'video/mp4;codecs=avc1.640028,mp4a.40.2', ext: 'mp4', label: 'MP4（H.264 + AAC）' },

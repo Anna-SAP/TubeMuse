@@ -261,7 +261,7 @@ export async function clips(t) {
   check(true, '侧边栏说明这一段为什么结束');
   await panel.screenshot({ path: join(shots, '24-clip-panel.png'), fullPage: true });
 
-  console.log('\n[片段：Capture → 按视频的真实尺寸存无损 PNG，由侧边栏交给浏览器；录制中也能截；广告时不截；不动页面、不发请求]');
+  console.log('\n[片段：Capture → 按视频的真实尺寸存无损 PNG，由侧边栏交给浏览器，同时放进系统剪贴板；录制中也能截；广告时不截；不动页面、不发请求]');
   await clipPage.goto(`${MOCK}/watch?v=clipShot0001`);
   await clipPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 2, null, { timeout: 30000 });
   await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
@@ -371,6 +371,38 @@ export async function clips(t) {
   const requestsBeforeShot = requests.length;
   const captureSeq = () => panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('captureSeq').then((/** @type {any} */ r) => r.captureSeq));
   const capture = () => Promise.all([panel.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-capture').click()]).then(([d]) => d);
+  /** 在侧边栏里按 Ctrl+V，看系统剪贴板里现在是什么：是图片就解码，取尺寸和左右两边的像素（和 readPng 同一种取法）。
+   *  不把侧边栏切到前台：e2e 里它是个普通标签页，切过去的话"当前标签页"就成了它自己，片段页就空了 */
+  const pasteImage = async () => {
+    await panel.evaluate(() => {
+      /** @type {any} */ (window).__pasted = new Promise((resolve) =>
+        document.addEventListener(
+          'paste',
+          async (e) => {
+            const types = Array.from(e.clipboardData?.items ?? [], (i) => `${i.kind}:${i.type}`);
+            const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type === 'image/png');
+            if (!file) return resolve({ types });
+            const signature = Array.from(new Uint8Array(await file.slice(0, 8).arrayBuffer()), (x) => x.toString(16).padStart(2, '0')).join('');
+            const bmp = await createImageBitmap(file);
+            const c = document.createElement('canvas');
+            c.width = bmp.width;
+            c.height = bmp.height;
+            const g = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+            g.drawImage(bmp, 0, 0);
+            const at = (/** @type {number} */ x) => Array.from(g.getImageData(x, Math.floor(bmp.height / 2), 1, 1).data);
+            resolve({ types, signature, width: bmp.width, height: bmp.height, left: at(Math.floor(bmp.width / 4)), right: at(Math.floor((bmp.width * 3) / 4)) });
+          },
+          { once: true },
+        ),
+      );
+    });
+    await panel.keyboard.press('Control+V');
+    return /** @type {Promise<{ types: string[]; signature?: string; width?: number; height?: number; left?: number[]; right?: number[] }>} */ (panel.evaluate(() => /** @type {any} */ (window).__pasted));
+  };
+  // 截图之前先在剪贴板里放一段文字：后面粘贴出图片，才说明是这次 Capture 放进去的
+  await panel.evaluate(() => navigator.clipboard.writeText('截图之前的剪贴板'));
+  const pastedBefore = await pasteImage();
+  check(pastedBefore.signature === undefined && pastedBefore.types.includes('string:text/plain'), `截图之前剪贴板里是文字，不是图片：${pastedBefore.types.join(', ')}`);
 
   const shot1 = await capture();
   check(/^mock watch_00-00-0\d-\d{3}_original_00001\.png$/.test(shot1.suggestedFilename()), `文件名：标题_时间戳_original_序号.png：${shot1.suggestedFilename()}`);
@@ -380,6 +412,16 @@ export async function clips(t) {
   check(png1.left[0] > 150 && png1.left[2] < 90 && png1.right[2] > 150 && png1.right[0] < 90, `存下的是视频这一帧，左红右蓝，不是黑帧（左 ${png1.left.join(',')}，右 ${png1.right.join(',')}）`);
   const shotSaved = ((await panel.getByTestId('clip-capture-saved').textContent()) ?? '');
   check(shotSaved.includes(shot1.suggestedFilename()) && shotSaved.includes('1920×1080'), '侧边栏写明文件名和实际尺寸');
+  check(shotSaved.includes('也已放进剪贴板') && (await panel.getByTestId('clip-capture-clipboard-error').count()) === 0, '侧边栏写明这张图也放进了剪贴板');
+  const pasted1 = await pasteImage();
+  check(
+    pasted1.signature === '89504e470d0a1a0a' && pasted1.width === 1920 && pasted1.height === 1080,
+    `下载的同时截图进了系统剪贴板：Ctrl+V 粘贴出来是 PNG，尺寸和存下的文件一样（${pasted1.width}×${pasted1.height}；剪贴板里有 ${pasted1.types.join(', ')}）`,
+  );
+  check(
+    !!pasted1.left && !!pasted1.right && pasted1.left[0] > 150 && pasted1.left[2] < 90 && pasted1.right[2] > 150 && pasted1.right[0] < 90,
+    `粘贴出来的就是这一帧，左红右蓝（左 ${pasted1.left?.join(',')}，右 ${pasted1.right?.join(',')}）`,
+  );
   await panel.screenshot({ path: join(shots, '24b-clip-capture.png'), fullPage: true });
 
   // 连点第二次：序号递增。这里只能证明序号和文件；"不被 Chrome 拦"要真实下载限流才测得出（Playwright 接管下载时不限流），见 DECISIONS §50
@@ -391,6 +433,11 @@ export async function clips(t) {
   await panel.getByTestId('clip-capture').click();
   await panel.getByText('正在播广告：广告结束后再截图').waitFor({ timeout: 5000 });
   check((await captureSeq()) === 2, '广告时不截图，说明原因，不占序号');
+  const pastedAfterAd = await pasteImage();
+  check(
+    pastedAfterAd.width === 1920 && pastedAfterAd.height === 1080 && (await panel.getByTestId('clip-capture-clipboard-error').count()) === 0,
+    '广告时没截成：剪贴板原样未动（还是上一张截图），也不报剪贴板的错',
+  );
   await clipPage.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ad-showing'));
 
   await panel.getByTestId('clip-start').click();
@@ -398,6 +445,29 @@ export async function clips(t) {
   const shot3 = await capture();
   check(shot3.suggestedFilename().endsWith('_original_00003.png'), `录制中也能截：${shot3.suggestedFilename()}`);
   check((await panel.getByTestId('clip-live').count()) === 1 && (await clipStatus.textContent())?.includes('视频已暂停') === true, '截图不打断正在进行的录制');
+  // 剪贴板写不进去（这里让浏览器像"侧边栏没有焦点"那样拒绝）：文件照常存下，界面说明没放进剪贴板，剪贴板里还是原来的内容
+  // 先等上一张（录制中截的那张）写完剪贴板，再往里放文字：不然它可能晚一步落进去，把这段文字盖掉
+  await panel.getByTestId('clip-capture-saved').filter({ hasText: shot3.suggestedFilename() }).waitFor({ timeout: 10000 });
+  await panel.evaluate(() => navigator.clipboard.writeText('写不进去之前的剪贴板'));
+  await panel.evaluate(() => {
+    navigator.clipboard.write = () => Promise.reject(new DOMException('Document is not focused.', 'NotAllowedError'));
+  });
+  const shot4 = await capture();
+  const png4 = await readPng(/** @type {string} */ (await shot4.path()));
+  await panel.getByTestId('clip-capture-clipboard-error').waitFor({ timeout: 5000 });
+  const clipboardError = (await panel.getByTestId('clip-capture-clipboard-error').textContent()) ?? '';
+  const shot4Saved = (await panel.getByTestId('clip-capture-saved').textContent()) ?? '';
+  check(shot4.suggestedFilename().endsWith('_original_00004.png') && png4.width === 1920 && png4.height === 1080, `剪贴板写不进去时文件照常存下：${shot4.suggestedFilename()}`);
+  check(
+    clipboardError.includes('没能放进剪贴板') && clipboardError.includes('侧边栏当时不在最前面') && shot4Saved.includes(shot4.suggestedFilename()) && !shot4Saved.includes('也已放进剪贴板'),
+    `并用人话说明这张图没放进剪贴板，不假装放进去了：${clipboardError}`,
+  );
+  await panel.evaluate(() => {
+    // 去掉上面盖在实例上的那一个，回到浏览器自己的 write
+    delete (/** @type {any} */ (navigator.clipboard).write);
+  });
+  const pastedAfterDenied = await pasteImage();
+  check(pastedAfterDenied.signature === undefined && pastedAfterDenied.types.includes('string:text/plain'), `剪贴板里还是原来的文字：${pastedAfterDenied.types.join(', ')}`);
   await panel.getByTestId('clip-stop').click();
   await panel.getByTestId('clip-live').waitFor({ state: 'detached', timeout: 5000 });
 
@@ -859,6 +929,11 @@ export async function clips(t) {
   check(xPng.signature === '89504e470d0a1a0a' && xPng.depth === 8 && xPng.width === 720 && xPng.height === 1280, `按视频的真实尺寸存，不是页面上显示的 286×508：${xPng.width}×${xPng.height}`);
   check(xPng.left[0] > 150 && xPng.left[2] < 90 && xPng.right[2] > 150 && xPng.right[0] < 90, `存下的是主帖视频的这一帧，左红右蓝，不是黑帧（左 ${xPng.left.join(',')}，右 ${xPng.right.join(',')}）`);
   check(((await panel.getByTestId('clip-capture-saved').textContent()) ?? '').includes('720×1280'), '侧边栏写明文件名和实际尺寸');
+  const xPasted = await pasteImage();
+  check(
+    xPasted.signature === '89504e470d0a1a0a' && xPasted.width === 720 && xPasted.height === 1280 && !!xPasted.left && !!xPasted.right && xPasted.left[0] > 150 && xPasted.right[2] > 150,
+    `别的站也一样：X 上截的这一帧同时进了剪贴板（${xPasted.width}×${xPasted.height}）`,
+  );
   check(xPageDownloads.length === 0, '下载算在侧边栏上，不算在 X 页面上（从页面连续下载，第二次起 Chrome 会拦）');
   xPage.off('download', onXPageDownload);
   check((await xAppHtml()) === xShotHtmlBefore && (await xPage.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '截图没有往 X 页面里加任何元素，没有点到 X 自己的任何东西');
