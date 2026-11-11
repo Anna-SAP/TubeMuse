@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockServer, PORT, E2E_CLIENT_SECRET } from './mock-server.mjs';
+import { startMockServer, PORT, E2E_CLIENT_SECRET, CC_MULTI_DESCRIPTION } from './mock-server.mjs';
 import { DOUYIN_NEXT, DOUYIN_SEARCH_TITLE, DOUYIN_VIDEO } from './douyin-pages.mjs';
 import { IG_FEED_POST, IG_PLAIN_POST } from './ig-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from './kubb-pages.mjs';
@@ -2887,7 +2887,7 @@ try {
   console.log('\n[问 muse：顶部按钮；当前标签页不是视频页时说明原因]');
   const museReqStart = requests.length;
   const museLlmStart = llmCount();
-  const MUSE_RULE = '请用中文回答，引用位置或原文；上下文里没有就直说没有，不要编造。';
+  const MUSE_RULE = '视频里的说法必须引用位置或原文；通用概念问题可用通用知识回答，但必须标明「这是通用知识，不是视频原话」。';
   /** 咨询包里某一项的值（"作者：xxx" → "xxx"） */
   const museField = (/** @type {string} */ pkg, /** @type {string} */ name) => new RegExp(`^${name}：(.*)$`, 'm').exec(pkg)?.[1] ?? '';
   /** 把网址里带 needle 的那个标签页切成当前标签页（就像你点回它） */
@@ -2956,42 +2956,66 @@ try {
   check((await panel.getByTestId('muse-ask').count()) === 1 && (await musePanel.count()) === 0, '侧边栏顶部有「问 muse」按钮，没点之前不占地方');
   check(await askMuseFails('当前标签页没有响应'), '当前标签页不是支持的视频页：说明原因和怎么办，不生成咨询包');
 
-  console.log('\n[问 muse：YouTube——冻结不暂停视频，链接带 &t=，上下文是已读到的字幕，作者来自官方接口；生成 / 复制 / 打开 muse.ai]');
+  console.log('\n[问 muse：YouTube——不用先开字幕，点一下自己取视频自带的字幕；有章节和简介；冻结不暂停视频，链接带 &t=；生成 / 复制 / 打开 muse.ai]');
   const museYt = await museTab(`${MOCK}/watch?v=ccMulti0001`);
   await videoReady(museYt, 'video');
-  await panel.bringToFront();
-  await panel.getByRole('tab', { name: '字幕', exact: true }).click();
-  await activateTab('ccMulti0001');
-  await panel.getByRole('button', { name: '显示多语字幕' }).click();
-  await ccStatus.filter({ hasText: '正在显示' }).waitFor({ timeout: 15000 });
   await museYt.evaluate(() => {
     const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
-    v.currentTime = 5;
+    v.currentTime = 2;
     return v.play();
   });
-  await museYt.waitForFunction(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime > 5.2, null, { timeout: 10000 });
+  await museYt.waitForFunction(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime > 2.2, null, { timeout: 10000 });
   const ytPlayerKids = () => museYt.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).children.length);
   const ytKidsBefore = await ytPlayerKids();
-  const ytMetaBefore = requests.filter((r) => r.path === '/youtube/v3/videos' && r.query.id === 'ccMulti0001').length;
+  const ytIntroCalls = () => requests.filter((r) => r.path === '/youtube/v3/videos' && r.query.id === 'ccMulti0001' && r.query.part === 'snippet').length;
+  const ytIntroBefore = ytIntroCalls();
+  const ytTtBefore = { player: playerTt('ccMulti0001').length, ours: ourTt('ccMulti0001').length };
+  /** 这一段开始以来：播放器自己发了几次字幕请求、我们取了几次 */
+  const ytTt = () => ({ player: playerTt('ccMulti0001').length - ytTtBefore.player, ours: ourTt('ccMulti0001').length - ytTtBefore.ours });
+  // 先关掉"自动取 YouTube 字幕"：这个页面刚打开，什么字幕都还没读到
+  const museFetchBox = panel.getByTestId('muse-fetch-captions');
+  check(await museFetchBox.isChecked(), '面板里有"自动取 YouTube 字幕"的开关，默认开着');
+  await museFetchBox.uncheck();
+  const ytOffPkg = await askMuse();
+  const ytOffState = await nativeState(museYt);
+  check(
+    ytOffPkg.includes('\n上下文：无字幕\n') && (await museNotes()).includes('你关掉了"自动取 YouTube 字幕"') && ytTt().player === 0 && ytTt().ours === 0 && ytOffState.calls.length === 0,
+    '关掉自动取字幕：上下文写「无字幕」并说明原因，不取字幕、不碰播放器',
+  );
+  await museFetchBox.check();
+  // 打开开关再点：多语字幕一直没开过，「问 muse」自己去取
+  const ytFirstPkg = await askMuse();
+  const ytNative = await nativeState(museYt);
+  check(
+    ytFirstPkg.includes('上下文（当前位置前后 30 秒的字幕 · YouTube 字幕（') && ytTt().player === 1 && ytTt().ours === 1,
+    `没开多语字幕也带上了字幕：请播放器取了 ${ytTt().player} 次（拿到带令牌的请求），再复用它取了 ${ytTt().ours} 种语言`,
+  );
+  check(
+    ytNative.lang === null && ytNative.windows === 0 && ytNative.calls.length > 0 && onlyCaptionCalls(ytNative.calls) && ytNative.foreign.length === 0 && (await museYt.locator('[data-tubemuse="multicc"]').count()) === 0,
+    `取完把为此打开的原生字幕关了回去，不显示字幕层，页面别处没动（对播放器只调了字幕开关：${ytNative.calls.length} 次）`,
+  );
   const ytPkg = await askMuse();
+  check(ytTt().player === 1 && ytTt().ours === 1, '同一个视频再点一次：字幕已经读到了，不再取');
   const ytAfter = await museYt.evaluate(() => {
     const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
     return { t: v.currentTime, paused: v.paused };
   });
   const ytLink = museField(ytPkg, '页面链接');
   const ytT = Number(/^https:\/\/www\.youtube\.com\/watch\?v=ccMulti0001&t=(\d+)s$/.exec(ytLink)?.[1] ?? -1);
-  check(museField(ytPkg, '平台') === 'YouTube' && ytT >= 5 && ytT <= ytAfter.t, `YouTube 的链接拼上了冻结那一刻的秒数：${ytLink}`);
+  check(museField(ytPkg, '平台') === 'YouTube' && ytT >= 2 && ytT <= ytAfter.t, `YouTube 的链接拼上了冻结那一刻的秒数：${ytLink}`);
   check(museField(ytPkg, '标题') === '多语字幕测试' && museField(ytPkg, '作者') === 'CC Mock', `标题来自页面标题，作者来自官方接口（页面上的不读）：${museField(ytPkg, '标题')} / ${museField(ytPkg, '作者')}`);
-  check(new RegExp(`^00:0${ytT} / 00:16$`).test(museField(ytPkg, '播放位置')), `播放位置是 mm:ss / 总时长：${museField(ytPkg, '播放位置')}`);
+  check(museField(ytPkg, '播放位置') === `00:${String(ytT).padStart(2, '0')} / 00:16`, `播放位置是 mm:ss / 总时长：${museField(ytPkg, '播放位置')}`);
+  const ytChapters = ytT < 5 ? '当前 [00:00] 开场；下一章 [00:05] 第二段' : ytT < 10 ? '上一章 [00:00] 开场；当前 [00:05] 第二段；下一章 [00:10] 结尾' : '上一章 [00:05] 第二段；当前 [00:10] 结尾';
+  check(museField(ytPkg, '章节') === ytChapters, `章节只放当前位置所在的那一章和前后各一章：${museField(ytPkg, '章节')}`);
+  check(ytPkg.includes(`\n简介：\n${CC_MULTI_DESCRIPTION}\n上下文（`) && ((await panel.getByTestId('muse-chapters').textContent()) ?? '') === ytChapters, '简介来自官方 videos.list，放在章节后面；面板里也显示当前章节');
   check(
     ytPkg.includes('上下文（当前位置前后 30 秒的字幕 · YouTube 字幕（') && /\n\[00:00\] (내 이름을 불러줘|Call my name|叫我的名字)\n/.test(ytPkg) && !ytPkg.includes('只有标题'),
-    '上下文用的是多语字幕已经读到的字幕：一句一行，带时间',
+    '上下文是位置前后 30 秒的字幕：一句一行，带时间',
   );
-  check(ytPkg.includes('\n我的问题：无\n\n') && ytPkg.endsWith(MUSE_RULE), '还没写问题时"我的问题"是「无」；末尾附给 Muse 的回答要求');
-  check(!ytAfter.paused && ytAfter.t > 5.2 && ((await panel.getByTestId('muse-position').textContent()) ?? '').includes('视频没有暂停'), '冻结只是记下位置：视频照常在播');
+  check(ytPkg.includes('\n我的问题：无\n\n') && ytPkg.endsWith(MUSE_RULE) && MUSE_RULE.includes('这是通用知识，不是视频原话'), '还没写问题时"我的问题"是「无」；末尾是改定的那句给 Muse 的指令');
+  check(!ytAfter.paused && ytAfter.t > 2.2 && ((await panel.getByTestId('muse-position').textContent()) ?? '').includes('视频没有暂停'), '冻结只是记下位置：视频照常在播');
   check((await ytPlayerKids()) === ytKidsBefore, '没有往播放器里加任何东西');
-  const ytMetaCalls = requests.filter((r) => r.path === '/youtube/v3/videos' && r.query.id === 'ccMulti0001').length - ytMetaBefore;
-  check(ytMetaCalls <= 1, `作者优先用本机缓存，没有才查一次官方 videos.list（这次查了 ${ytMetaCalls} 次）`);
+  check(ytIntroCalls() - ytIntroBefore === 1, `作者、简介和章节走官方 videos.list：这个视频点了 3 次，只查了 ${ytIntroCalls() - ytIntroBefore} 次（查过就记在本机）`);
   // 写问题 → 咨询包不自己变 → 点"生成"才更新；播放位置还是冻结的那一刻
   await museYt.waitForTimeout(1200);
   await panel.getByTestId('muse-question').fill('这句歌词是什么意思？\n第二行');
@@ -3026,7 +3050,7 @@ try {
   check(((await musePage.locator('body').textContent()) ?? '').trim() === 'mock muse', '打开的页面里没有被写进任何东西');
   await musePage.close();
 
-  console.log('\n[问 muse：YouTube 没有已读到的字幕——只有标题；广告中位置写「未知」；本机存着自动字幕时用转写]');
+  console.log('\n[问 muse：YouTube 取不到字幕——上下文写「无字幕」；广告中位置写「未知」；本机存着自动字幕时用转写]');
   await museYt.goto(`${MOCK}/watch?v=clipFree0001`);
   await scriptReady(museYt);
   // 刚才把侧边栏拿到了前台：先切回这个标签页再等视频（后台标签页不加载媒体）
@@ -3035,15 +3059,19 @@ try {
   await museYt.evaluate(() => {
     /** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 7;
   });
-  const plainMetaBefore = requests.filter((r) => r.path === '/youtube/v3/videos' && r.query.id === 'clipFree0001').length;
+  const plainIntroCalls = () => requests.filter((r) => r.path === '/youtube/v3/videos' && r.query.id === 'clipFree0001' && r.query.part === 'snippet').length;
+  const plainMetaBefore = plainIntroCalls();
   const plainPkg = await askMuse();
   check(
     museField(plainPkg, '页面链接') === 'https://www.youtube.com/watch?v=clipFree0001&t=7s' && museField(plainPkg, '播放位置') === '00:07 / 00:20' && museField(plainPkg, '标题') === 'mock watch',
     `暂停着也能冻结：${museField(plainPkg, '页面链接')}，${museField(plainPkg, '播放位置')}`,
   );
-  check(plainPkg.includes('\n上下文（只有标题：没有字幕 / 转写，也没有正文 / 描述）：mock watch\n'), '没有字幕也没有正文：上下文只有标题，并写明');
+  check(plainPkg.includes('\n章节：无\n简介：无\n上下文：无字幕\n') && plainPkg.split('mock watch').length === 2, 'YouTube 实在取不到字幕：上下文写「无字幕」（不把标题再抄一遍）；官方接口查不到的视频，章节和简介写「无」');
   const plainNotes = await museNotes();
-  check(museField(plainPkg, '作者') === '无' && plainNotes.includes('查不到这个视频') && plainNotes.includes('没有带上字幕'), '官方接口查不到的视频：作者写「无」并说明原因；没带上字幕也说明怎么带');
+  check(
+    museField(plainPkg, '作者') === '无' && plainNotes.includes('查不到这个视频') && plainNotes.includes('没有带上字幕：') && plainNotes.includes('先在"字幕"页打开多语字幕或自动字幕'),
+    '官方接口查不到的视频：作者写「无」并说明原因；没带上字幕时说明这一次为什么没取到，并保留怎么带上的提示',
+  );
   await museYt.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.add('ad-showing'));
   const adPkg = await askMuse();
   check(
@@ -3070,8 +3098,21 @@ try {
     '本机存着这个视频的自动字幕：上下文用位置前后 30 秒的转写，远处的句子不带',
   );
   await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.remove('subtitles:clipFree0001'));
-  const plainMetaCalls = requests.filter((r) => r.path === '/youtube/v3/videos' && r.query.id === 'clipFree0001').length - plainMetaBefore;
-  check(plainMetaCalls <= 1, `同一个视频冻结了 3 次，官方接口最多查一次（这次 ${plainMetaCalls} 次；观看记录先查过的话是 0 次），查过就记在本机`);
+  const plainMetaCalls = plainIntroCalls() - plainMetaBefore;
+  check(plainMetaCalls === 1, `同一个视频冻结了 3 次，官方接口只查了 ${plainMetaCalls} 次（查不到也记在本机，不反复查）`);
+  // 有播放器、但这个视频一条字幕轨都没有
+  await museYt.goto(`${MOCK}/watch?v=ccNoTrack003`);
+  await scriptReady(museYt);
+  await videoReady(museYt, 'video');
+  await museYt.evaluate(() => {
+    /** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 3;
+  });
+  const noTrackPkg = await askMuse();
+  const noTrackState = await nativeState(museYt);
+  check(
+    noTrackPkg.includes('\n上下文：无字幕\n') && (await museNotes()).includes('没有带上字幕：这个视频没有 YouTube 字幕') && noTrackState.calls.length === 0 && timedtextReqs('ccNoTrack003').length === 0,
+    '视频本身没有 YouTube 字幕：上下文写「无字幕」并说明，不去动播放器、不发字幕请求',
+  );
   await museYt.close();
 
   console.log('\n[问 muse：小红书——笔记的标题、作者、正文；链接不带 xsec_token；图文笔记位置写「未知」]');
@@ -3095,6 +3136,7 @@ try {
   check(museField(xhsPkg, '标题') === XHS_V1.title && museField(xhsPkg, '作者') === '李诞小卖部' && /^00:0[3-9] \/ 00:12$/.test(museField(xhsPkg, '播放位置')), `标题、作者、播放位置：${museField(xhsPkg, '标题')} / ${museField(xhsPkg, '作者')} / ${museField(xhsPkg, '播放位置')}`);
   check(xhsPkg.includes(`\n上下文（这篇笔记的正文）：\n${XHS_V1.desc}\n我的问题：`) && !xhsPkg.includes('听了半天') && !xhsPkg.includes('自如签'), '上下文是这篇笔记的正文（换行、#话题都在），评论不读');
   check(!xhsPkg.includes('&t=') && !/[?&]t=\d/.test(museField(xhsPkg, '页面链接')), '别的平台不在链接上拼时间');
+  check(xhsPkg.includes('\n章节：无\n简介：无\n上下文（这篇笔记的正文）：\n'), '所有平台同一组字段：YouTube 以外"章节""简介"写「无」');
   check((await museNotes()).includes('没有带 xsec_token'), '面板里说明：小红书链接没带 xsec_token，从外面打开可能要登录');
   check((await xhsNoteHtml()) === xhsNoteBefore && (await nativeClicks(museXhs)) === 0 && !(await museXhs.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).paused)), '读笔记没有改动页面、没有点任何东西，视频照常在播');
   await museXhs.goto(`${MOCK}/xhs/explore/${XHS_N1.id}`);
@@ -3197,7 +3239,10 @@ try {
     museField(kubbPkg, '平台') === '酷播' && museField(kubbPkg, '页面链接') === `${MOCK}/kubb/play/${KUBB_MOVIE.id}` && museField(kubbPkg, '标题') === KUBB_MOVIE.title && museField(kubbPkg, '作者') === '无' && /^00:0\d \/ 00:20$/.test(museField(kubbPkg, '播放位置')),
     `标题来自页面标题，作者没有就写「无」：${museField(kubbPkg, '标题')} / ${museField(kubbPkg, '作者')} / ${museField(kubbPkg, '播放位置')}`,
   );
-  check(kubbPkg.includes(`\n上下文（只有标题：没有字幕 / 转写，也没有正文 / 描述）：${KUBB_MOVIE.title}\n`) && !kubbPkg.includes('弹幕弹幕'), '上下文只有标题；弹幕不读');
+  check(
+    kubbPkg.includes('\n上下文：只有上面的标题（没有字幕 / 转写，也没有正文 / 描述）\n') && kubbPkg.split(KUBB_MOVIE.title).length === 2 && !kubbPkg.includes('弹幕弹幕'),
+    '上下文只有标题时不把标题再抄一遍（标题在咨询包里只出现一次）；弹幕不读',
+  );
   check((await museKubb.evaluate(() => /** @type {HTMLElement} */ (document.querySelector('.root-container')).outerHTML.replace(/ src="blob:[^"]*"/, ''))) === kubbHtmlBefore && (await nativeClicks(museKubb)) === 0, '没有改动页面，没有点任何东西');
   await museKubb.evaluate(() => /** @type {any} */ (window).__playAd());
   await museKubb.waitForFunction((seconds) => Math.round(/** @type {HTMLVideoElement} */ (document.querySelector('#video_player')).duration) === seconds, KUBB_AD_SECONDS, { timeout: 15000 });
@@ -3211,7 +3256,11 @@ try {
   const musePagePaths = ['/watch', '/media/', '/api/timedtext', '/xhs/', '/xpage/', '/igpage/', '/douyin/', '/kubb/', '/muse/', '/favicon.ico'];
   const fromPages = museReqs.filter((r) => String(r.headers.referer ?? '').startsWith(MOCK));
   const pageLeaks = fromPages.filter((r) => r.method !== 'GET' || !musePagePaths.some((p) => r.path === p || r.path.startsWith(p)));
-  check(pageLeaks.length === 0, `注入各个网站的脚本没有为「问 muse」发任何请求（页面上只有它自己加载的页面和媒体）${pageLeaks.length ? `：${pageLeaks.map((r) => `${r.method} ${r.path}`).join(', ')}` : ''}`);
+  const museTt = fromPages.filter((r) => r.path === '/api/timedtext');
+  check(
+    pageLeaks.length === 0 && museTt.every((r) => String(r.headers.referer ?? '').includes('/watch?v=')),
+    `除了在 YouTube 播放页上取字幕（同源的 /api/timedtext，${museTt.length} 次，含播放器自己发的），注入各个网站的脚本没有为「问 muse」发任何请求${pageLeaks.length ? `：${pageLeaks.map((r) => `${r.method} ${r.path}`).join(', ')}` : ''}`,
+  );
   const museLeaks = museReqs.filter((r) => /我的问题|上下文（|这句歌词|改过的问题/.test(JSON.stringify(r.query) + String(r.body ?? '')));
   check(museLeaks.length === 0, '咨询包和你的问题没有发往任何地方（只在侧边栏和剪贴板里）');
   const museManifest = await (context.serviceWorkers()[0] ?? sw).evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());

@@ -310,7 +310,20 @@ const NEW_CREATOR_VIDEOS = ['UCnewA', 'UCnewB', 'UCnewC', 'UCnewD', 'UCnewE', 'U
 ).concat([{ id: 'oldv0xxxxxxx', title: '很久以前的视频', channelId: 'UCold', channelTitle: '停更频道', hoursAgo: 24 * 300, duration: 'PT15M', views: 1, likes: 1, lang: 'zh' }]);
 
 /** 多语字幕的播放页也能被 videos.list 查到（原声语言） */
-const CC_AS_MOCK = CC_VIDEOS.filter((c) => c.lang).map((c) => ({ id: c.id, title: `多语字幕测试 ${c.id}`, channelId: 'UCccmock', channelTitle: 'CC Mock', hoursAgo: 300, duration: `PT${c.seconds}S`, views: 1000, likes: 10, lang: c.lang }));
+/** ccMulti0001 的简介里带章节列表（「问 muse」从官方 videos.list 给的简介里认章节） */
+export const CC_MULTI_DESCRIPTION = '多语字幕测试用的视频。\n\n0:00 开场\n0:05 第二段\n0:10 结尾';
+const CC_AS_MOCK = CC_VIDEOS.filter((c) => c.lang).map((c) => ({
+  id: c.id,
+  title: `多语字幕测试 ${c.id}`,
+  channelId: 'UCccmock',
+  channelTitle: 'CC Mock',
+  hoursAgo: 300,
+  duration: `PT${c.seconds}S`,
+  views: 1000,
+  likes: 10,
+  lang: c.lang,
+  ...(c.id === 'ccMulti0001' ? { description: CC_MULTI_DESCRIPTION } : {}),
+}));
 
 const ALL = [...AI_VIDEOS, ...SAFETY_VIDEOS, ...WATCH_AS_MOCK, ...NEW_CREATOR_VIDEOS, ...CC_AS_MOCK];
 const SUBSCRIPTIONS = [

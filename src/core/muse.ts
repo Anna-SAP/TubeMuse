@@ -257,10 +257,14 @@ const CHAPTER_STAMP = /(?<![\d:])(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?![\d:])/;
 /** 有字母、数字或汉字：算"有内容" */
 const HAS_WORD = /[\p{L}\p{N}]/u;
 
+/** 行首的序号："1."、"2)"、"3、" */
+const LIST_MARKER = /^\s*\d{1,3}\s*[.)、．]\s*/;
+
 /**
- * 从简介里认章节列表。YouTube 的规则（2026-11 帮助文档）：简介里一行一个"时间 + 标题"，第一个时间是 0:00，
- * 至少三个，时间递增。这里照这个规则认：时间要在一行的开头或结尾（前后只能是符号、序号），正文中间顺带提到的时间不算；
- * 从 0:00 那一行起，往后时间不再递增就停。认不出（不到三个、没有 0:00）返回空。
+ * 从简介里认章节列表：一行一个"时间 + 标题"。时间要在一行的开头或结尾（前后只能是符号、序号），正文中间顺带提到的时间不算；
+ * 取时间连续递增的最长一段，至少三行才算。
+ * 比 YouTube 自己的规则（要从 0:00 开始）宽：实际的简介常常不从 0:00 写起，还带序号和方括号，例如
+ * "1. [01:13] 第一个话题"（2026-11-11 在用户手测的那个视频上看到的），这种列表正是要放进咨询包的。
  */
 export function parseChapters(description: string): MuseChapter[] {
   const found: MuseChapter[] = [];
@@ -269,35 +273,35 @@ export function parseChapters(description: string): MuseChapter[] {
     if (!m) continue;
     const before = line.slice(0, m.index);
     const after = line.slice(m.index + m[0].length);
-    const atStart = !HAS_WORD.test(before) || /^\s*\d{1,2}\s*[.)、]\s*$/.test(before);
+    const atStart = !HAS_WORD.test(before.replace(LIST_MARKER, ''));
     const atEnd = !HAS_WORD.test(after);
     if (!atStart && !atEnd) continue;
     if (Number(m[3]) >= 60 || (m[1] !== undefined && Number(m[2]) >= 60)) continue;
-    const title = oneLine((atStart ? after : before).replace(/^[\s\-–—:：|·•)\]）>]+|[\s\-–—:：|·•(\[（<]+$/g, ''), MUSE.chapterTitleMaxChars);
+    const rest = atStart ? after : before.replace(LIST_MARKER, '');
+    const title = oneLine(rest.replace(/^[\s\-–—:：|·•)\]）】>]+|[\s\-–—:：|·•(\[（【<]+$/g, ''), MUSE.chapterTitleMaxChars);
     if (!title) continue;
     found.push({ start: Number(m[1] ?? 0) * 3600 + Number(m[2]) * 60 + Number(m[3]), title });
   }
-  const from = found.findIndex((c) => c.start === 0);
-  if (from < 0) return [];
-  const out = [found[from]!];
-  for (const c of found.slice(from + 1)) {
-    if (c.start <= out[out.length - 1]!.start) break;
-    out.push(c);
+  let best: MuseChapter[] = [];
+  let run: MuseChapter[] = [];
+  for (const c of found) {
+    if (run.length && c.start <= run[run.length - 1]!.start) run = [];
+    run.push(c);
+    if (run.length > best.length) best = run;
   }
-  return out.length >= 3 ? out : [];
+  return best.length >= 3 ? best : [];
 }
 
-/** 位置所在的那一章，和它前后各一章 */
-export function chaptersAround(chapters: readonly MuseChapter[], position: number): { prev?: MuseChapter; current: MuseChapter; next?: MuseChapter } | undefined {
+/** 位置所在的那一章，和它前后各一章；位置在第一章开始之前时没有"当前"，只有下一章 */
+export function chaptersAround(chapters: readonly MuseChapter[], position: number): { prev?: MuseChapter; current?: MuseChapter; next?: MuseChapter } {
   let i = -1;
   chapters.forEach((c, n) => {
     if (c.start <= position) i = n;
   });
-  const current = chapters[i];
-  if (!current) return undefined;
   const prev = chapters[i - 1];
+  const current = chapters[i];
   const next = chapters[i + 1];
-  return { ...(prev ? { prev } : {}), current, ...(next ? { next } : {}) };
+  return { ...(prev ? { prev } : {}), ...(current ? { current } : {}), ...(next ? { next } : {}) };
 }
 
 /**
@@ -307,9 +311,11 @@ export function chaptersAround(chapters: readonly MuseChapter[], position: numbe
 export function museChapterText(description: string | undefined, position: number | undefined): string {
   const chapters = description ? parseChapters(description) : [];
   if (!chapters.length) return MUSE_NONE;
-  const near = position === undefined ? undefined : chaptersAround(chapters, position);
-  if (!near) return `${MUSE_UNKNOWN}（播放位置没读到；这个视频分了 ${chapters.length} 章）`;
+  if (position === undefined) return `${MUSE_UNKNOWN}（播放位置没读到；这个视频分了 ${chapters.length} 章）`;
+  const near = chaptersAround(chapters, position);
   const one = (label: string, c: MuseChapter) => `${label} [${museClock(c.start)}] ${c.title}`;
+  // 简介里的列表不一定从 0:00 写起：还没播到第一章时没有"当前"
+  if (!near.current) return `${near.next ? one('下一章', near.next) : MUSE_NONE}（当前位置在第一章之前）`;
   return [...(near.prev ? [one('上一章', near.prev)] : []), one('当前', near.current), ...(near.next ? [one('下一章', near.next)] : [])].join('；');
 }
 

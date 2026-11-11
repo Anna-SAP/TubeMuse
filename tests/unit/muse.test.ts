@@ -200,7 +200,7 @@ describe('字幕 / 转写', () => {
 });
 
 describe('章节（从 YouTube 简介里认）', () => {
-  it('一行一个"时间 + 标题"：从 0:00 起、至少三个、时间递增', () => {
+  it('一行一个"时间 + 标题"：至少三个、时间递增', () => {
     expect(parseChapters(DESCRIPTION)).toEqual([
       { start: 0, title: 'Intro' },
       { start: 90, title: 'Attention' },
@@ -221,13 +221,33 @@ describe('章节（从 YouTube 简介里认）', () => {
     ]);
   });
 
-  it('不是章节列表的不认：没有 0:00、不到三个、正文里顺带提到的时间', () => {
-    expect(parseChapters('1:00 A\n2:00 B\n3:00 C')).toEqual([]);
+  it('真实简介里的写法：带序号和方括号，不从 0:00 写起（用户手测的那个视频就是这样）', () => {
+    const real = ['➤ 年终复盘系列第二期。', '', '10 个 Aha Moments：', '', '1. [01:13] RSI：大厂的窘境', '2. [04:28] Computer Use：白干了？', '3. [13:10] 为什么 Scaling Law 值得相信？', '4. [16:18] Continual Learning：Memory Notes 不行 ——被打脸了…', '5. [17:55] 学术会议体系', '10. [36:25] Personal Agent 真的有用！'].join('\n');
+    expect(parseChapters(real).map((c) => `${c.start} ${c.title}`)).toEqual([
+      '73 RSI：大厂的窘境',
+      '268 Computer Use：白干了？',
+      '790 为什么 Scaling Law 值得相信？',
+      '978 Continual Learning：Memory Notes 不行 ——被打脸了…',
+      '1075 学术会议体系',
+      '2185 Personal Agent 真的有用！',
+    ]);
+    // 17:22 正在讲 Memory Notes 那一章
+    expect(museChapterText(real, 17 * 60 + 22)).toBe('上一章 [13:10] 为什么 Scaling Law 值得相信？；当前 [16:18] Continual Learning：Memory Notes 不行 ——被打脸了…；下一章 [17:55] 学术会议体系');
+    // 还没播到第一章：没有"当前"，不硬凑
+    expect(museChapterText(real, 30)).toBe('下一章 [01:13] RSI：大厂的窘境（当前位置在第一章之前）');
+    expect(chaptersAround(parseChapters(real), 30)).toEqual({ next: { start: 73, title: 'RSI：大厂的窘境' } });
+    // 时间在行尾、前面带序号
+    expect(parseChapters('1. 开场 0:00\n2. 正题 3:20\n3. 收尾 9:05').map((c) => c.title)).toEqual(['开场', '正题', '收尾']);
+  });
+
+  it('不是章节列表的不认：不到三个、正文里顺带提到的时间', () => {
     expect(parseChapters('0:00 A\n2:00 B')).toEqual([]);
+    expect(parseChapters('2026 年 12:30 开播\n欢迎 13:00 来看')).toEqual([]);
     expect(parseChapters('我在 12:30 的时候说过这个，你可以回去看 0:00 那一段\n没有章节')).toEqual([]);
     expect(parseChapters('')).toEqual([]);
-    // 列表后面又出现更早的时间：到那里为止
+    // 列表后面又出现更早的时间：到那里为止；有两段时取长的那一段
     expect(parseChapters('0:00 A\n1:00 B\n2:00 C\n0:30 另一份清单').map((c) => c.title)).toEqual(['A', 'B', 'C']);
+    expect(parseChapters('5:00 赞助\n0:00 A\n1:00 B\n2:00 C\n3:00 D').map((c) => c.title)).toEqual(['A', 'B', 'C', 'D']);
     // 时间不合法（秒数 ≥ 60）的行跳过
     expect(parseChapters('0:00 A\n1:75 坏的\n2:00 B\n3:00 C').map((c) => c.title)).toEqual(['A', 'B', 'C']);
   });
