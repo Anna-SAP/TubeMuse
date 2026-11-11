@@ -11,6 +11,8 @@
 //    几句交给侧边栏（拼进你自己粘贴到 Muse 的那段文字）。已经读到的直接用；还没读到时为这一次提问取一种语言
 //    （按你排的语言顺序，这个视频自带的第一种；不用自动翻译）——取法和第 2 点完全一样，原生字幕关着时同样要请播放器
 //    短暂打开一次字幕，拿到请求后立刻关回去。不显示字幕层；侧边栏里可以关掉这个自动取。
+// 6. YouTube Shorts（2026-11-11 起，用户要求，见 DECISIONS §67）：一样的做法，播放器换成 Shorts 的 #shorts-player
+//    （页面上藏着的播放页播放器 #movie_player 不碰）；字号按竖屏的短边算，字幕层放在 Shorts 叠在画面底部的标题、频道名上面。
 // 本脚本唯一的网络请求是第 2 点（构建时检查只有一处 fetch；地址先经 trackUrl 校验：同源、/api/timedtext、当前视频）。
 
 import { DEFAULT_SETTINGS, MULTI_CC, MUSE } from '../config/defaults';
@@ -32,6 +34,7 @@ import {
   sameCcLangs,
   sanitizeCcLangs,
   sanitizeTrackList,
+  playerRootId,
   textAt,
   timedtextVideoId,
   trackKey,
@@ -111,8 +114,9 @@ function alive(): boolean {
   }
 }
 
+/** 正在看的视频所在的播放器：播放页是 #movie_player，Shorts 是 #shorts-player（页面上藏着的 #movie_player 不算） */
 function playerEl(): HTMLElement | null {
-  return document.getElementById('movie_player');
+  return document.getElementById(playerRootId(location.pathname));
 }
 
 function videoEl(): HTMLVideoElement | null {
@@ -521,17 +525,22 @@ function renderText(): void {
   fitLines(changed);
 }
 
-/** 字号随播放器高度变（全屏、剧场模式自动变大）；控制栏出现时上移；自动字幕层也在时叠在它上面 */
+/**
+ * 字号随播放器高度变（全屏、剧场模式自动变大）；竖屏的 Shorts 按短边（宽度）算，不然一行放不下几个字。
+ * 控制栏出现时上移；自动字幕层也在时叠在它上面。Shorts 的标题、频道名、进度条叠在画面底部（在播放器外面），字幕放在它们上面。
+ */
 function layout(o: NonNullable<typeof overlay>, player: HTMLElement): void {
   const h = player.clientHeight || 360;
-  const fs = Math.min(38, Math.max(13, h * 0.042)) * (settings.fontScale || 1);
-  const controls = player.classList.contains('ytp-autohide') ? 0 : ((player.querySelector('.ytp-chrome-bottom') as HTMLElement | null)?.offsetHeight ?? 48);
-  let bottom = controls ? controls + 12 : Math.max(12, h * 0.05);
+  const w = player.clientWidth || 640;
+  const shorts = player.id === 'shorts-player';
+  const fs = Math.min(38, Math.max(13, (shorts ? Math.min(h, w) : h) * 0.042)) * (settings.fontScale || 1);
+  const controls = shorts || player.classList.contains('ytp-autohide') ? 0 : ((player.querySelector('.ytp-chrome-bottom') as HTMLElement | null)?.offsetHeight ?? 48);
+  let bottom = shorts ? Math.max(12, h * MULTI_CC.shortsBottomRatio) : controls ? controls + 12 : Math.max(12, h * 0.05);
   const asr = player.querySelector('[data-tubemuse="subtitles"]')?.shadowRoot?.querySelector<HTMLElement>('.wrap');
   if (asr && !asr.hidden && asr.offsetHeight > 0) bottom = Math.max(bottom, player.getBoundingClientRect().bottom - asr.getBoundingClientRect().top + 6);
   o.host.style.setProperty('--fs', `${fs.toFixed(1)}px`);
   o.host.style.setProperty('--bottom', `${Math.round(bottom)}px`);
-  const next = { fs: Math.round(fs * 10) / 10, avail: Math.floor((player.clientWidth || 640) * MULTI_CC.lineMaxWidthRatio) - 2 };
+  const next = { fs: Math.round(fs * 10) / 10, avail: Math.floor(w * MULTI_CC.lineMaxWidthRatio) - 2 };
   if (!geom || geom.fs !== next.fs || geom.avail !== next.avail) {
     geom = next;
     fitLines(o.lines);
@@ -701,8 +710,8 @@ function switchVideo(next: string | null): void {
 
 function tick(): void {
   if (!alive()) return teardown();
-  const { videoId: vid, shorts } = videoIdFromUrl(location.href);
-  const next = shorts ? null : vid;
+  // Shorts 也算（2026-11-11 起）：网址里的 ID 就是这条 Short
+  const { videoId: next } = videoIdFromUrl(location.href);
   if (next !== videoId) switchVideo(next);
   const v = videoEl();
   autoWindow.sample({ now: Date.now(), ad: adShowing(), playing: !!v && !v.paused && !v.seeking && v.readyState >= 3 });

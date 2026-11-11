@@ -99,7 +99,7 @@ export const SUBTITLE_VIDEOS = [
  * replies：TubeMuse（不是播放器）第 1、2、3…次取这条轨时字幕接口怎么回——'ok'、HTTP 状态码、或 'slow:毫秒'（等这么久再正常回）；
  * 用完后一律 'ok'（模拟 2026-11-03 实测的 YouTube 字幕接口：慢、时不时 502）。
  * @typedef {{ lang: string; kind?: 'asr'; label: string; cues: [number, number, string][]; empty?: boolean; replies?: (string | number)[] }} MockCcTrack
- * @type {{ id: string; seconds: number; lang?: string; initial?: string; sticky?: string; adMs?: number; stale?: boolean; tracks: MockCcTrack[]; translationLangs: string[] }[]}
+ * @type {{ id: string; seconds: number; lang?: string; initial?: string; sticky?: string; adMs?: number; stale?: boolean; shorts?: boolean; tracks: MockCcTrack[]; translationLangs: string[] }[]}
  */
 export const CC_VIDEOS = [
   {
@@ -179,6 +179,20 @@ export const CC_VIDEOS = [
     ],
     translationLangs: ['ja'],
   },
+  // 2026-11-11：多语字幕也支持 Shorts（DECISIONS §67）。页面是 /shorts/ccShorts0008，假播放器挂在 #shorts-player 上，
+  // 同一页面里藏着一个播放页的 #movie_player（另一个视频的字幕轨，见 ccShortsPage），多语字幕不应碰它
+  {
+    id: 'ccShorts0008',
+    shorts: true,
+    seconds: 12,
+    lang: 'ko',
+    tracks: [
+      { lang: 'ko', label: 'Korean', cues: [[0.5, 4.0, '쇼츠 자막 테스트'], [4.2, 8.0, '두 번째 문장']] },
+      { lang: 'en', label: 'English', cues: [[0.5, 4.0, 'Shorts caption test'], [4.2, 8.0, 'Second line']] },
+      { lang: 'zh-Hans', label: 'Chinese (Simplified)', cues: [[0.5, 4.0, 'Shorts 字幕测试'], [4.2, 8.0, '第二句']] },
+    ],
+    translationLangs: ['ja'],
+  },
   {
     id: 'ccStale00004',
     seconds: 10,
@@ -204,7 +218,8 @@ export const CC_VIDEOS = [
  * @param {number} stickyDelayMs
  */
 function mockPlayer(cfg, stickyDelayMs) {
-  const p = /** @type {any} */ (document.getElementById('movie_player'));
+  // Shorts 的播放器是 #shorts-player（真实页面里的播放器配置写明的根元素），播放页的是 #movie_player
+  const p = /** @type {any} */ (document.getElementById(cfg.shorts ? 'shorts-player' : 'movie_player'));
   const video = /** @type {HTMLVideoElement} */ (p.querySelector('video'));
   const box = /** @type {HTMLElement} */ (p.querySelector('.ytp-caption-window-container'));
   const btn = p.querySelector('.ytp-subtitles-button');
@@ -299,6 +314,42 @@ function mockPlayer(cfg, stickyDelayMs) {
       contentStart();
     }, cfg.adMs);
   } else contentStart();
+}
+
+/**
+ * Shorts 页面上藏着的播放页播放器（YouTube 站内跳转后留下的，里面是上一个视频）：有播放器的接口、另一个视频的字幕轨，
+ * 被调用时记进 window.__staleCalls（多语字幕不应碰它）。
+ */
+function staleWatchPlayer() {
+  const p = /** @type {any} */ (document.getElementById('movie_player'));
+  const w = /** @type {any} */ (window);
+  const calls = (w.__staleCalls = /** @type {unknown[]} */ ([]));
+  const response = {
+    videoDetails: { videoId: 'ccMulti0001' },
+    captions: { playerCaptionsTracklistRenderer: { captionTracks: [{ baseUrl: '/api/timedtext?v=ccMulti0001&lang=fr', name: { simpleText: 'French' }, vssId: '.fr', languageCode: 'fr', isTranslatable: true }], translationLanguages: [] } },
+  };
+  p.getPlayerResponse = () => (calls.push(['getPlayerResponse']), response);
+  p.getOption = (/** @type {string} */ m, /** @type {string} */ o) => (calls.push(['getOption', m, o]), {});
+  p.setOption = (/** @type {string} */ m, /** @type {string} */ o, /** @type {unknown} */ v) => calls.push(['setOption', m, o, JSON.stringify(v)]);
+  p.loadModule = (/** @type {string} */ m) => calls.push(['loadModule', m]);
+}
+
+/** 仿 Shorts 的多语字幕页面：结构同 shorts-pages.mjs（只有当前这一格里有播放器，另藏着一个播放页的 #movie_player） */
+function ccShortsPage(/** @type {(typeof CC_VIDEOS)[number]} */ cv) {
+  return (
+    `<!doctype html><html><head><meta charset="utf-8"><title>Shorts 多语字幕测试 #shorts - YouTube</title><style>body{margin:0}` +
+    `#shorts-player{position:relative;width:315px;height:560px;background:#000;overflow:hidden}#shorts-player video{width:100%;height:100%}` +
+    `.ytp-caption-window-container{position:absolute;left:0;right:0;bottom:140px;text-align:center;color:#fff;font:16px sans-serif}` +
+    `#movie_player{position:relative;width:640px;height:360px}</style></head><body><ytd-app id="app"><ytd-page-manager>` +
+    `<ytd-shorts><div id="shorts-container"><div id="shorts-inner-container"><div id="0" class="reel-video-in-sequence-new"><div id="reel-overlay-container">` +
+    `<ytd-reel-video-renderer id="reel-video-renderer"><div id="short-video-container"><div class="player-wrapper"><div id="player-container"><ytd-player id="player"><div id="container">` +
+    `<div id="shorts-player" class="html5-video-player"><div class="html5-video-container"><video class="video-stream html5-main-video" preload="auto" loop src="/media/${cv.id}.wav"></video></div>` +
+    `<div class="ytp-caption-window-container"></div></div>` +
+    `</div></ytd-player></div></div></div><div id="experiment-overlay"><div class="meta">频道名 · 标题</div></div></ytd-reel-video-renderer></div></div>` +
+    `<div id="1" class="reel-video-in-sequence-new"><div class="reel-video-in-sequence-thumbnail"></div></div></div></div></ytd-shorts>` +
+    `<ytd-watch-flexy hidden><div id="movie_player" class="html5-video-player ytp-autohide"><video preload="auto"></video><div class="ytp-caption-window-container"></div></div></ytd-watch-flexy>` +
+    `</ytd-page-manager></ytd-app><script>(${staleWatchPlayer.toString()})();(${mockPlayer.toString()})(${JSON.stringify(cv)}, ${STICKY_DELAY_MS})</script></body></html>`
+  );
 }
 
 /** 播放器在正片开始后多久按你保存的偏好打开字幕（实测约 0.8 秒；放慢到 1 秒，让内容脚本稳定地先于它完成第一次检查） */
@@ -628,6 +679,11 @@ export function startMockServer() {
       }
       // 仿 YouTube Shorts（/shorts/<ID>，和 /watch 一样在"YouTube"这个站上）
       if (p.startsWith('/shorts/')) {
+        const ccShort = CC_VIDEOS.find((x) => x.shorts && p === `/shorts/${x.id}`);
+        if (ccShort) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          return res.end(ccShortsPage(ccShort));
+        }
         const html = shortsPage(p);
         if (!html) return send(404, {});
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });

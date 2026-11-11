@@ -5,8 +5,9 @@
 // 2. prime：让播放器选一条字幕轨——播放器因此自己发出带令牌的字幕请求；
 // 3. hide-native：关掉原生字幕（save 时记住原来的选择）；4. restore-native：恢复记住的选择；5. forget-native：不再恢复。
 // 不发网络请求、不往页面插元素、不读页面上的文字、不用任何扩展接口（构建时检查）。
+// 播放器：播放页是 #movie_player，Shorts 是 #shorts-player（2026-11-11 起，见 DECISIONS §67）。
 
-import { BRIDGE_OPS, BRIDGE_TAG, isLangCode, type BridgeOp } from '../core/multicc-protocol';
+import { BRIDGE_OPS, BRIDGE_TAG, isLangCode, playerRootId, type BridgeOp } from '../core/multicc-protocol';
 
 interface YtPlayer extends HTMLElement {
   getPlayerResponse?(): unknown;
@@ -31,8 +32,9 @@ function text(o: unknown): string {
     .join('');
 }
 
+/** 正在看的视频所在的播放器：Shorts 上是 #shorts-player，页面上藏着的 #movie_player 不碰 */
 function player(): YtPlayer | null {
-  return document.getElementById('movie_player') as YtPlayer | null;
+  return document.getElementById(playerRootId(location.pathname)) as YtPlayer | null;
 }
 
 /** 当前显示的原生字幕；关着（或字幕模块没加载）时 undefined */

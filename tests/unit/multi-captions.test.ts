@@ -19,6 +19,7 @@ import {
   langMatchKey,
   moveCcLang,
   parseJson3,
+  playerRootId,
   primeTrack,
   resolveSources,
   sameCcLangs,
@@ -519,6 +520,28 @@ describe('复用播放器的字幕请求', () => {
     expect(trackUrl(PLAYER_URL, ORIGIN, 'otherVideo1', { track: track('ko') })).toBeUndefined();
     expect(trackUrl(PLAYER_URL.replace(ORIGIN, 'https://evil.example'), ORIGIN, VID, { track: track('ko') })).toBeUndefined();
     expect(trackUrl(PLAYER_URL.replace('&pot=FAKE-POT-TOKEN', ''), ORIGIN, VID, { track: track('ko') })).toBeUndefined();
+  });
+});
+
+// 2026-11-11 用户要求多语字幕也支持 Shorts（DECISIONS §67）
+describe('YouTube Shorts', () => {
+  it('Shorts 上找的是 #shorts-player；播放页、直播和别的页面还是 #movie_player（Shorts 页面上藏着的那个不碰）', () => {
+    expect(playerRootId('/shorts/aB3dE6gH9jK')).toBe('shorts-player');
+    expect(playerRootId('/watch')).toBe('movie_player');
+    expect(playerRootId('/live/aB3dE6gH9jK')).toBe('movie_player');
+    expect(playerRootId('/')).toBe('movie_player');
+    expect(playerRootId('/feed/shorts')).toBe('movie_player');
+  });
+  it('Shorts 播放器发的字幕请求和播放页的一样认、一样只换语言（v 是这条 Short 的 ID）', () => {
+    const shortUrl = PLAYER_URL.replace(`v=${VID}`, 'v=aB3dE6gH9jK');
+    expect(timedtextVideoId(shortUrl, ORIGIN)).toBe('aB3dE6gH9jK');
+    expect(new URL(trackUrl(shortUrl, ORIGIN, 'aB3dE6gH9jK', { track: track('ko') })!).searchParams.get('lang')).toBe('ko');
+    // 从播放页站内跳到 Shorts 时，上一个视频的请求还在资源记录里：对不上这条 Short，不用
+    expect(trackUrl(PLAYER_URL, ORIGIN, 'aB3dE6gH9jK', { track: track('ko') })).toBeUndefined();
+  });
+  it('Shorts 上字幕层放在画面底部叠着的标题、频道名上面（离底边占播放器高度的比例）', () => {
+    expect(MULTI_CC.shortsBottomRatio).toBeGreaterThanOrEqual(0.15);
+    expect(MULTI_CC.shortsBottomRatio).toBeLessThanOrEqual(0.35);
   });
 });
 

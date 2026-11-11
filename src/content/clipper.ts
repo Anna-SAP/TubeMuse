@@ -782,7 +782,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     width: size.width,
     height: size.height,
     // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）；X、酷播、B 站播放器里的字幕不读。
-    // YouTube Shorts 上读的是 Shorts 播放器里的原生字幕（TubeMuse 自动字幕、多语字幕不在 Shorts 上显示）
+    // YouTube Shorts 上读的是 Shorts 播放器里的原生字幕和 TubeMuse 多语字幕（自动字幕不在 Shorts 上显示）
     burn: SITE === 'youtube' && settings.burnSubtitles,
     format,
     maxSec,
