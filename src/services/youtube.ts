@@ -12,6 +12,7 @@ import {
   mapPlaylistItem,
   mapSearchChannels,
   mapUploadsPlaylist,
+  mapVideoIntro,
   mapVideoMeta,
   mapSearchResponse,
   mapSubscriptionItem,
@@ -129,6 +130,11 @@ export function createYouTube(deps: YouTubeDeps) {
       const got = new Set(found.map((m) => m.id));
       const missing = [...new Set(ids)].filter((id) => !got.has(id));
       return [...found, ...missing.map((id) => ({ id, title: '', channelId: '', channelTitle: '', durationSec: 0, tags: [], fetchedAt: now, missing: true }))];
+    },
+    /** 「问 muse」：一个视频的标题、频道名和完整简介（1 unit）。查不到（已删除 / 私享）返回 undefined */
+    async videoIntro(id: string): Promise<{ id: string; title: string; channelTitle: string; description: string } | undefined> {
+      const [found] = await listByIds('videos.list', 'videos', [id], 'snippet', mapVideoIntro);
+      return found;
     },
     /** 频道的上传内容播放列表 id */
     uploadsPlaylists(channelIds: string[]): Promise<{ channelId: string; uploads: string }[]> {

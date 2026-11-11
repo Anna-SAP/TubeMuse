@@ -1,4 +1,4 @@
-// 「问 muse」（2026-11-11 新增，见 DECISIONS §60）：顶部的按钮和它展开的面板。
+// 「问 muse」（2026-11-11 新增，见 DECISIONS §60、§61）：顶部的按钮和它展开的面板。
 // 点按钮的那一刻"冻结"当前标签页这条视频的播放位置（只是记下来，不暂停视频），生成一段咨询包文字；
 // 你写下问题，"生成"更新这段文字、"复制"拷走、"打开 muse.ai"去粘贴。
 // 这里不调大模型，也不向 Muse 发任何东西：咨询包只是一段文字，粘贴和发送都由你来。
@@ -7,9 +7,10 @@ import type { JSX } from 'preact';
 import { useRef, useState } from 'preact/hooks';
 import { MUSE } from '../../config/defaults';
 import { MUSE_CHAT_URL } from '../../config/endpoints';
-import { MUSE_NONE, MUSE_SITE_LABELS, buildMusePackage, musePosition, type MusePackage } from '../../core/muse';
+import { MUSE_NONE, MUSE_NO_CAPTIONS, MUSE_SITE_LABELS, buildMusePackage, museChapterText, musePosition, type MusePackage } from '../../core/muse';
 import { freezeMuse, museSecrets, type MuseFreeze } from '../../services/muse-service';
-import { appCtx } from '../shared/app';
+import { stores } from '../../services/repo';
+import { appCtx, useStore } from '../shared/app';
 import { Spinner } from '../shared/components';
 
 /** 生成好的咨询包，连同生成时用的问题（问题改了就知道它过时了） */
@@ -29,6 +30,7 @@ function contextSummary(f: MuseFreeze, p: MusePackage): string {
     return `前后 ${MUSE.windowSec} 秒的${c.source === 'youtube-cc' ? `字幕（YouTube 字幕${c.label ? ` · ${c.label}` : ''}）` : '转写（TubeMuse 自动字幕）'}，${c.cues.length} 句${cut}`;
   }
   if (p.context === 'captions') return `前后 ${MUSE.windowSec} 秒的字幕 / 转写${cut}`;
+  if (p.context === 'no-captions') return MUSE_NO_CAPTIONS;
   if (p.context === 'body') return `${f.snapshot.site === 'douyin' ? '这条视频的描述' : f.snapshot.site === 'xhs' ? '这篇笔记的正文' : '这条帖子的正文'}${cut}`;
   if (p.context === 'title') return '只有标题（没有字幕 / 转写，也没有正文 / 描述）';
   return MUSE_NONE;
@@ -36,6 +38,7 @@ function contextSummary(f: MuseFreeze, p: MusePackage): string {
 
 /** 顶部的「问 muse」按钮，和它展开的面板（没打开时是 null） */
 export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null } {
+  const settings = useStore(stores.settings);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -48,7 +51,13 @@ export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null }
   const asked = useRef('');
 
   const build = async (f: MuseFreeze, q: string): Promise<Generated> => ({
-    ...buildMusePackage({ snapshot: f.snapshot, ...(f.captions ? { captions: f.captions } : {}), question: q, secrets: await museSecrets(appCtx()) }),
+    ...buildMusePackage({
+      snapshot: f.snapshot,
+      ...(f.captions ? { captions: f.captions } : {}),
+      ...(f.description ? { description: f.description } : {}),
+      question: q,
+      secrets: await museSecrets(appCtx()),
+    }),
     question: q,
   });
 
@@ -69,7 +78,8 @@ export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null }
       const w = await chrome.windows.getCurrent();
       const [tab] = await chrome.tabs.query({ active: true, windowId: w.id });
       const tabId = tab?.id;
-      const r = await freezeMuse(appCtx(), (msg) => (tabId === undefined ? Promise.resolve(undefined) : chrome.tabs.sendMessage(tabId, msg)));
+      const fetchCaptions = (await stores.settings.read(appCtx().kv)).muse.fetchCaptions;
+      const r = await freezeMuse(appCtx(), (msg) => (tabId === undefined ? Promise.resolve(undefined) : chrome.tabs.sendMessage(tabId, msg)), { fetchCaptions });
       if (!r.ok) {
         // 这次没冻结成：上一次的咨询包不留着，免得把别的视频的内容当成这一次的
         setFreeze(undefined);
@@ -106,6 +116,8 @@ export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null }
     }
   };
 
+  const setFetchCaptions = (on: boolean) => void stores.settings.update(appCtx().kv, appCtx().locker, (s) => ({ ...s, muse: { ...s.muse, fetchCaptions: on } }));
+
   const button = (
     <button
       class={`btn small muse-btn${open ? ' on' : ''}`}
@@ -121,11 +133,9 @@ export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null }
 
   const s = freeze?.snapshot;
   const stale = !!pkg && pkg.question !== question;
+  const youtube = s?.site === 'youtube';
   const notes = [
     ...(freeze?.notes ?? []),
-    ...(s?.site === 'youtube' && pkg && pkg.context !== 'captions' && s.position !== undefined
-      ? ['没有带上字幕：这个视频还没有已经读到的字幕。想带上的话，先在"字幕"页打开多语字幕或自动字幕，等字幕出来后再点一次「问 muse」']
-      : []),
     ...(s?.site === 'xhs' ? ['小红书的链接没有带 xsec_token（那是令牌，不进咨询包）：从外面打开这个链接时，小红书可能要求登录'] : []),
     ...(pkg?.redacted ? ['有内容看起来像 Key / 令牌，已换成"[已隐藏]"'] : []),
   ];
@@ -137,7 +147,7 @@ export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null }
           ×
         </button>
       </div>
-      {busy && <Spinner label="正在冻结当前视频的位置…" />}
+      {busy && <Spinner label="位置已记下，正在取这个视频的字幕和资料…" />}
       {error && (
         <div class="notice notice-error" role="alert" data-testid="muse-error">
           <div class="notice-body">
@@ -159,6 +169,16 @@ export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null }
               {musePosition(s.position, s.duration)}
               <span class="muted small">（{clock(freeze.at)} 冻结，视频没有暂停）</span>
             </dd>
+            {youtube && (
+              <>
+                <dt>章节</dt>
+                <dd data-testid="muse-chapters">{museChapterText(freeze.description, s.position)}</dd>
+                <dt>简介</dt>
+                <dd data-testid="muse-description">
+                  {freeze.description ? `已带上${pkg.descriptionTruncated ? `（太长，只放了开头 ${MUSE.descriptionMaxChars} 字，咨询包里已注明）` : ''}` : MUSE_NONE}
+                </dd>
+              </>
+            )}
             <dt>上下文</dt>
             <dd data-testid="muse-context">{contextSummary(freeze, pkg)}</dd>
           </dl>
@@ -204,12 +224,20 @@ export function useMuseAsk(): { button: JSX.Element; panel: JSX.Element | null }
           )}
           {!pkg.question.trim() && !stale && <p class="muted small">还没写问题：咨询包里"我的问题"一项是「{MUSE_NONE}」。写好后点"生成"。</p>}
           <textarea class="input muse-package" readOnly rows={12} aria-label="咨询包" data-testid="muse-package" ref={preview} value={pkg.text} />
-          <p class="muted small">
-            咨询包只是一段文字：TubeMuse 不会把它发给 Muse 或任何地方，也不调大模型；粘贴和发送都由你来。里面只有当前这条视频 / 帖子的信息。YouTube 的作者来自官方接口（本机没有这个视频的资料时查一次，1
-            unit）。
-          </p>
         </>
       )}
+      {settings && (
+        <label class="inline muse-option">
+          <input type="checkbox" data-testid="muse-fetch-captions" checked={settings.muse.fetchCaptions} onChange={(e) => setFetchCaptions(e.currentTarget.checked)} />
+          <span>
+            YouTube：点「问 muse」时自动取视频自带的字幕（只取位置前后要用的那一种语言；原生字幕关着时，播放器的字幕会闪一下）。关掉后只用已经读到的字幕。
+          </span>
+        </label>
+      )}
+      <p class="muted small">
+        咨询包只是一段文字：TubeMuse 不会把它发给 Muse 或任何地方，也不调大模型；粘贴和发送都由你来。里面只有当前这条视频 / 帖子的信息。YouTube 的作者、简介和章节来自官方接口（本机没记着这个视频时查一次，1
+        unit）。
+      </p>
     </section>
   );
   return { button, panel };

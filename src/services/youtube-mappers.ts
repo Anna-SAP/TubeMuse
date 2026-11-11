@@ -108,6 +108,13 @@ export function errorReason(json: Json): { reason?: string; message?: string } {
   return { reason: typeof reason === 'string' ? reason : undefined, message: typeof e?.message === 'string' ? e.message : undefined };
 }
 
+/** videos.list（part=snippet）→ 「问 muse」用的标题、频道名和完整简介（章节列表写在简介里，所以不截短） */
+export function mapVideoIntro(it: Json): { id: string; title: string; channelTitle: string; description: string } | undefined {
+  if (typeof it?.id !== 'string') return undefined;
+  const sn = it.snippet ?? {};
+  return { id: it.id, title: String(sn.title ?? ''), channelTitle: String(sn.channelTitle ?? ''), description: String(sn.description ?? '') };
+}
+
 /** videos.list（part=snippet,contentDetails）→ 观看记录用的元数据 */
 export function mapVideoMeta(it: Json, now: number): VideoMeta | undefined {
   if (typeof it?.id !== 'string') return undefined;
