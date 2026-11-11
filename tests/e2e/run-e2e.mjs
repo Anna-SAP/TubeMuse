@@ -2586,11 +2586,19 @@ try {
     `搜索结果里点开视频（网址是 /jingxuan/search/<搜索词>?modal_id=…&type=general）后能录：标题是作者 - 描述，不是页面标题"${DOUYIN_SEARCH_TITLE}"`,
   );
   const douyinSearchHtmlBefore = await douyinSearch.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  const douyinSearchLogTop = (await clipLog())[0]?.id;
   await panel.getByTestId('clip-start').click();
   await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
   await douyinSearch.waitForTimeout(2000);
   const [douyinSearchDl] = await Promise.all([douyinSearch.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
   const douyinSearchName = douyinSearchDl.suggestedFilename();
+  // 等新记录真的写进去再读：这一段和上面精选页那一段录的是同一条视频、都从 0 秒起，文件名可能一模一样，
+  // 只等"清单里出现这个文件名"会被那条旧记录立刻满足（CI 上撞到过，读到的是旧记录）
+  await panel.waitForFunction(
+    async (prev) => ((await /** @type {any} */ (globalThis).chrome.storage.local.get('clipLog')).clipLog ?? [])[0]?.id !== prev,
+    douyinSearchLogTop,
+    { timeout: 5000 },
+  );
   await panel.getByTestId('clip-log').filter({ hasText: douyinSearchName }).waitFor({ timeout: 5000 });
   const douyinSearchLog = (await clipLog())[0];
   check(
