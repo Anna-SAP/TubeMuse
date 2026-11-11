@@ -1736,13 +1736,26 @@ a.db-title:hover {
 }
 
 /* ── 问 muse ── */
+/* 顶部的按钮是一张图：平时没有边框和底色，悬停 / 展开时才显出来（边框一直占着 1px，显出来时不挤动别的） */
 .muse-btn {
   flex: none;
   margin-left: auto;
+  padding: 2px;
+  border-color: transparent;
+  border-radius: 10px;
+  background: none;
+  line-height: 0;
 }
-.muse-btn.on {
+.muse-btn img {
+  display: block;
+}
+.muse-btn:hover:not(:disabled) {
+  background: var(--surface);
+}
+.muse-btn.on,
+.muse-btn.on:hover:not(:disabled) {
   border-color: var(--accent);
-  color: var(--accent);
+  background: var(--accent-soft);
 }
 .muse-head {
   justify-content: space-between;
