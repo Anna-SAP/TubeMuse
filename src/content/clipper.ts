@@ -6,19 +6,23 @@
 // 2026-11-10 起也注入 Instagram 网页版，只录首页信息流里正在播放、开着声音的那个视频，逻辑与 X 首页信息流相同（用户要求，见 DECISIONS §56）；
 // 2026-11-10 起也注入抖音网页版，录精选页（/jingxuan 及其类目）里打开的那条视频（网址带 ?modal_id=，用户要求，见 DECISIONS §57）；
 // 2026-11-11 起搜索结果页（/search/<搜索词>，或 /jingxuan/search/<搜索词> 这种前面带着发起搜索时所在路径的）里点开的视频也录
-// （用户要求，页面结构相同，见 DECISIONS §58、§59）：
+// （用户要求，页面结构相同，见 DECISIONS §58、§59）；
+// 2026-11-11 起也注入 B 站网页版（www.bilibili.com），录页面主播放器里正在看的这个视频：普通视频、番剧影视、课程、播放列表、活动页
+// 用的是同一个播放器（用户要求"所有视频"，见 DECISIONS §64）：
 // 1. 只在你从侧边栏"片段"页或快捷键开始录制后工作：把正在播放的这个视频逐帧画到一块不放进页面的画布上
 //    （开启字幕烧录时再叠加播放器里当时显示的字幕，只限 YouTube），声音经 video.captureStream() 取这个视频的音轨，
 //    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载这些网站的音视频流。
-// 2. 广告（YouTube 认得出；酷播只认得出"不是正片的流、又很短"的片头广告；X 认不出；Instagram 的广告帖子没有帖子链接，不让录；抖音没有片头广告）、
+// 2. 广告（YouTube 认得出；酷播只认得出"不是正片的流、又很短"的片头广告；X 认不出；Instagram 的广告帖子没有帖子链接，不让录；抖音没有片头广告；
+//    B 站实测时没碰到片头广告，有的话认不出）、
 //    暂停、缓冲、标签页在后台时自动暂停录制；切到别的视频（小红书：关掉这篇笔记；X：离开这条帖子；酷播：换一部或换一集；
-//    Instagram：离开首页；抖音：划到下一条或关掉这条视频）时这一段自动结束。
+//    Instagram：离开首页；抖音：划到下一条或关掉这条视频；B 站：换一集、换一 P 或连播到下一个视频）时这一段自动结束。
 // 3. 录好的片段只在这个页面的内存里；你点"保存"（或开着"停止后直接保存"）时由浏览器存进下载文件夹，
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
 //    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
 // 4. 读取的页面信息只有：播放器状态、页面标题（只用来显示和起文件名）、开启字幕烧录时播放器里当时显示的字幕文字；
 //    X、Instagram 首页信息流上另读锁定的视频所在那一条帖子的链接、作者名和正文（显示、起文件名、记下回到帖子的链接），别的帖子不读；
 //    抖音另读当前这条视频上的作者昵称和描述（页面标题在划到下一条时不更新，不能用），别的视频不读。
+//    B 站只读播放器状态、页面标题和网址：UP 主、简介、评论、弹幕、推荐列表都不读。
 // 5. Capture 截图（用户 2026-11-06 要求，见 DECISIONS §50、§52）：只在你点按钮时，把这一帧按视频的真实尺寸
 //    画到不放进页面的画布上，在本机编成 PNG，由侧边栏取走后交给浏览器保存（这里不保存：从这个页面连续下载，
 //    第二次起会被 Chrome 拦下）。不录声音、不带字幕和播放器控件，广告时不截。
@@ -46,6 +50,7 @@ import {
   formatTimecode,
   feedPostTitle,
   igProfileName,
+  isBiliPage,
   isDouyinPage,
   isIgHomeUrl,
   isIgPage,
@@ -57,6 +62,7 @@ import {
   loopedToStart,
   mp4TrackKinds,
   outputSize,
+  parseBiliUrl,
   parseDouyinUrl,
   parseIgPostUrl,
   parseKubbPlayUrl,
@@ -87,7 +93,7 @@ type ClipSettings = typeof DEFAULT_SETTINGS.clips;
 
 const FONT = '"YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", sans-serif';
 
-/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版或 YouTube */
+/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版、B 站网页版或 YouTube */
 const SITE: ClipSite = xhsPath(location.href)
   ? 'xhs'
   : isXPage(location.href)
@@ -98,7 +104,9 @@ const SITE: ClipSite = xhsPath(location.href)
         ? 'ig'
         : isDouyinPage(location.href)
           ? 'douyin'
-          : 'youtube';
+          : isBiliPage(location.href)
+            ? 'bilibili'
+            : 'youtube';
 /** X 和 Instagram：一页有好几个视频，录的是哪个、属于哪条帖子要从页面上认（见 feedSiteNow） */
 const FEED_SITE = SITE === 'x' || SITE === 'ig';
 
@@ -400,11 +408,33 @@ function kubbVideoEl(): HTMLVideoElement | null {
   return parseKubbPlayUrl(location.href) ? document.querySelector<HTMLVideoElement>('vg-player > video') : null;
 }
 
+/**
+ * B 站页面主播放器里的视频（2026-11-11 实测）：普通视频、番剧影视、播放列表、活动页的播放器都装在 #bilibili-player 里，
+ * 课程的装在 #edu-player 里；里面的结构一样，<video> 是 .bpx-player-video-wrap 的直接子元素，换集、换 P、连播都用同一个元素。
+ * 鼠标停在推荐列表或首页的封面上时，封面里会多出一个同样结构的小播放器（静音的预览，.v-inline-player /
+ * .v-recommend-inline-player）：它不在这两个容器里，所以不会被认成正在看的视频。
+ */
+const BILI_PLAYER_VIDEO = '#bilibili-player .bpx-player-video-wrap > video, #edu-player .bpx-player-video-wrap > video';
+
+function biliVideoEl(): HTMLVideoElement | null {
+  return document.querySelector<HTMLVideoElement>(BILI_PLAYER_VIDEO);
+}
+
+/**
+ * B 站这个页面上现在这一条的 ID 和种类（见 parseBiliUrl）。视频页、番剧页、课程页看网址；
+ * 别的页面（活动页等）网址里认不出是哪个视频，只有找到主播放器时才算数——首页、热门、专栏这些没有播放器的页面不算。
+ */
+function biliPage(): { id: string; url: string } | undefined {
+  const page = parseBiliUrl(location.href);
+  return page && (page.kind !== 'page' || biliVideoEl()) ? page : undefined;
+}
+
 function videoEl(): HTMLVideoElement | null {
   if (SITE === 'youtube') return playerEl()?.querySelector('video') ?? null;
   const now = feedSiteNow();
   if (now) return now.video;
   if (SITE === 'kubb') return kubbVideoEl();
+  if (SITE === 'bilibili') return biliVideoEl();
   if (SITE === 'douyin') return douyinItem()?.querySelector('video') ?? null;
   let all = document.querySelectorAll<HTMLVideoElement>(XHS_PLAYER_VIDEO);
   if (!all.length) all = document.querySelectorAll<HTMLVideoElement>(XHS_ANY_VIDEO);
@@ -435,7 +465,7 @@ function adShowing(): boolean {
 /**
  * YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时；首页信息流上是锁定的视频所在的帖子）；
  * 酷播的影片 ID（网址是播放页时，剧集带分集 ID）；Instagram 的帖子短码（首页信息流上锁定的视频所在的帖子）；
- * 抖音的视频 ID（网址里的 modal_id）
+ * 抖音的视频 ID（网址里的 modal_id）；B 站的 BV 号（分 P 带第几 P）、番剧或课程的 ep / ss 号，别的带播放器的页面用路径（见 biliPage）
  */
 function currentIds(): { videoId: string | null; shorts: boolean } {
   if (SITE === 'youtube') return videoIdFromUrl(location.href);
@@ -443,6 +473,7 @@ function currentIds(): { videoId: string | null; shorts: boolean } {
   if (now) return { videoId: now.videoId, shorts: false };
   if (SITE === 'kubb') return { videoId: parseKubbPlayUrl(location.href)?.id ?? null, shorts: false };
   if (SITE === 'douyin') return { videoId: parseDouyinUrl(location.href)?.id ?? null, shorts: false };
+  if (SITE === 'bilibili') return { videoId: biliPage()?.id ?? null, shorts: false };
   const link = parseXhsUrl(location.href);
   return { videoId: link?.kind === 'note' ? link.noteId : null, shorts: false };
 }
@@ -453,7 +484,7 @@ function pageTitle(): string | undefined {
   if (now?.feed) return now.title;
   if (SITE === 'douyin') return douyinTitle();
   const t = titleFromDocumentTitle(document.title || '', SITE);
-  return t && !/^(?:YouTube|小红书|rednote|酷播)$/i.test(t) ? t : undefined;
+  return t && !/^(?:YouTube|小红书|rednote|酷播|bilibili|哔哩哔哩)$/i.test(t) ? t : undefined;
 }
 
 /** 回到原处的链接：首页信息流（X、Instagram）上是这条帖子的链接（网址只是首页），别处就是网址 */
@@ -473,7 +504,7 @@ function drmProtected(v: HTMLVideoElement): boolean {
 
 /**
  * 画面读得到吗：来自别的网站、又没有放行的视频，画到画布上会被浏览器标为"不可读"，录不了。
- * YouTube、小红书、X、酷播的视频现在都是同源的 blob: 流；X 的动图（GIF）例外，直接从 video.twimg.com 加载。
+ * YouTube、小红书、X、酷播、B 站的视频现在都是同源的 blob: 流；X 的动图（GIF）例外，直接从 video.twimg.com 加载。
  */
 function framesReadable(v: HTMLVideoElement): boolean {
   try {
@@ -727,7 +758,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     g,
     width: size.width,
     height: size.height,
-    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）；X、酷播播放器里的字幕不读
+    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）；X、酷播、B 站播放器里的字幕不读
     burn: SITE === 'youtube' && settings.burnSubtitles,
     format,
     maxSec,
@@ -893,7 +924,7 @@ function saveReady(): void {
   c.savedAt = Date.now();
   const record: ClipRecord = {
     id: c.id,
-    // 小红书、X、酷播：带上原处的链接，"最近录过的片段"里点标题能回去（后台核对链接与 ID）
+    // YouTube 以外的站：带上原处的链接，"最近录过的片段"里点标题能回去（后台核对链接与 ID）
     ...(SITE !== 'youtube' ? { site: SITE, url: c.pageUrl } : {}),
     videoId: c.videoId,
     ...(c.title ? { title: c.title } : {}),

@@ -70,6 +70,8 @@ describe('时间与链接', () => {
       ['kubb', 'https://www.kubb.tv/play/e2rCXFzJUz2?id=lIM07A3d3g8'],
       ['ig', 'https://www.instagram.com/p/DfZNnxxxjB1/'],
       ['douyin', 'https://www.douyin.com/jingxuan?modal_id=7704250528896716072'],
+      ['bilibili', 'https://www.bilibili.com/bangumi/play/ep733317'],
+      ['bilibili', 'https://www.bilibili.com/video/BV1Kb411W75N/?p=5'],
     ];
     for (const [site, url] of links) {
       const link = museLink({ site, videoId: 'x', url, position: 42 });
@@ -98,6 +100,13 @@ describe('这条视频 / 帖子的规范链接', () => {
     expect(museItem('ig', 'https://www.instagram.com/reel/DfZNnxxxjB1/?igsh=abc')?.url).toBe('https://www.instagram.com/p/DfZNnxxxjB1/');
     expect(museItem('douyin', 'https://www.douyin.com/jingxuan/search/%E9%BB%84%E4%BB%81%E5%8B%8B?aid=1&modal_id=7704250528896716072&type=general')?.url).toBe('https://www.douyin.com/jingxuan?modal_id=7704250528896716072');
     expect(museItem('x', 'https://x.com/home')).toBeUndefined();
+  });
+
+  it('B 站：沿用片段录制的规范链接——语言前缀、来源参数去掉；播放列表的编号不带，写成视频页', () => {
+    expect(museItem('bilibili', 'https://www.bilibili.com/zh-Hans/bangumi/play/ep733317?from_spmid=666.25.episode.0')).toMatchObject({ id: 'ep733317', url: 'https://www.bilibili.com/bangumi/play/ep733317' });
+    expect(museItem('bilibili', 'https://www.bilibili.com/video/BV1Kb411W75N/?p=5&spm_id_from=333.788.videopod.episodes&vd_source=abc')?.url).toBe('https://www.bilibili.com/video/BV1Kb411W75N/?p=5');
+    expect(museItem('bilibili', 'https://www.bilibili.com/list/watchlater?oid=1&bvid=BV1ujNV6qEXg')?.url).toBe('https://www.bilibili.com/video/BV1ujNV6qEXg/');
+    expect(museItem('bilibili', 'https://live.bilibili.com/22')).toBeUndefined();
     expect(museItem('douyin', 'https://www.douyin.com/video/7704250528896716072')).toBeUndefined();
   });
 });
@@ -109,6 +118,8 @@ describe('认不出当前这条视频时说明原因', () => {
     expect(museUnavailable('kubb', { videoId: null, feed: false, hasVideo: false })).toContain('不是播放页');
     expect(museUnavailable('ig', { videoId: null, feed: false, hasVideo: false })).toContain('首页信息流');
     expect(museUnavailable('douyin', { videoId: null, feed: false, hasVideo: false })).toContain('没有点开的抖音视频');
+    expect(museUnavailable('bilibili', { videoId: null, feed: false, hasVideo: false })).toContain('没有 B 站的播放器');
+    expect(museUnavailable('bilibili', { videoId: 'ss28747', feed: false, hasVideo: false })).toBeUndefined();
   });
 
   it('首页信息流：没有开着声音在播的视频、或认不出帖子（广告）', () => {
@@ -374,6 +385,10 @@ describe('咨询包', () => {
     );
     expect(kubb.context).toBe('title');
     expect(kubb.text.split('八仙！')).toHaveLength(2);
+    // B 站和酷播一样只有页面标题：UP 主、简介不读页面，写「无」
+    const bili = buildMusePackage({ snapshot: { site: 'bilibili', videoId: 'ep733317', url: 'https://www.bilibili.com/bangumi/play/ep733317', title: '凡人修仙传第2集', position: 118, duration: 1076 }, question: '' });
+    expect(bili.text).toContain('平台：B 站\n页面链接：https://www.bilibili.com/bangumi/play/ep733317\n标题：凡人修仙传第2集\n作者：无\n播放位置：01:58 / 17:56\n章节：无\n简介：无\n上下文：只有上面的标题');
+    expect(bili.context).toBe('title');
     const none = buildMusePackage({ snapshot: { site: 'ig', videoId: 'Dfch523M0ca', url: 'https://www.instagram.com/p/Dfch523M0ca/', author: 'plain.user', position: 3, duration: 30 }, question: '' });
     expect(none.text).toContain('平台：Instagram\n');
     expect(none.text).toContain('上下文：无\n我的问题：无\n\n');
@@ -467,6 +482,8 @@ describe('咨询包里不出现 Key / 令牌', () => {
       `https://www.youtube.com/watch?v=${VID}&t=123s`,
       'https://www.douyin.com/jingxuan?modal_id=7704250528896716072',
       'https://www.kubb.tv/play/e2rCXFzJUz2?id=lIM07A3d3g8',
+      'https://www.bilibili.com/video/BV1Kb411W75N/?p=5',
+      'https://www.bilibili.com/bangumi/play/ep733317',
       '用 sk-learn 做聚类',
     ];
     for (const text of plain) expect(redactMuse(text)).toEqual({ text, changed: false });

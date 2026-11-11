@@ -5,7 +5,7 @@
 // 链接只留认得出这条视频 / 帖子的那部分，看起来像 Key / 令牌的内容一律换掉。
 
 import { MUSE } from '../config/defaults';
-import { parseDouyinUrl, parseIgPostUrl, parseKubbPlayUrl, parseXStatusUrl, type ClipSite } from './clips';
+import { parseBiliUrl, parseDouyinUrl, parseIgPostUrl, parseKubbPlayUrl, parseXStatusUrl, type ClipSite } from './clips';
 import { REDACTED } from './redact';
 import { parseXhsPath, xhsPath } from './xhs';
 
@@ -17,7 +17,7 @@ export const MUSE_MSG = {
   captions: 'tubemuse:muse:captions',
 } as const;
 
-export const MUSE_SITE_LABELS: Record<ClipSite, string> = { youtube: 'YouTube', xhs: '小红书', x: 'X', kubb: '酷播', ig: 'Instagram', douyin: '抖音' };
+export const MUSE_SITE_LABELS: Record<ClipSite, string> = { youtube: 'YouTube', xhs: '小红书', x: 'X', kubb: '酷播', ig: 'Instagram', douyin: '抖音', bilibili: 'B 站' };
 
 /** 没有的项一律写这个，不编造 */
 export const MUSE_NONE = '无';
@@ -31,7 +31,7 @@ export interface MuseSnapshot {
   site: ClipSite;
   /** 认不出当前这条视频 / 帖子的原因；有它时别的都没有 */
   unavailable?: string;
-  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID、Instagram 的帖子短码、抖音的视频 ID */
+  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID、Instagram 的帖子短码、抖音的视频 ID、B 站的 BV 号 / ep 号 */
   videoId?: string;
   /** 这条视频 / 帖子的链接（见 museItem：不带时间、令牌和分享来源）；YouTube 不给，由 videoId 拼 */
   url?: string;
@@ -55,6 +55,7 @@ const UNAVAILABLE: Record<ClipSite, string> = {
   kubb: '这个页面不是播放页：点开一部影片再点「问 muse」',
   ig: '这个页面不是 Instagram 的首页信息流：回到首页（www.instagram.com）再点「问 muse」',
   douyin: '这个页面上没有点开的抖音视频：在精选页（www.douyin.com/jingxuan）或搜索结果里点开一条视频再点「问 muse」',
+  bilibili: '这个页面上没有 B 站的播放器：打开一个视频、番剧、课程或活动的播放页再点「问 muse」',
 };
 
 /**
@@ -81,12 +82,12 @@ export function museItem(site: Exclude<ClipSite, 'youtube'>, url: string): { id:
     const link = p ? parseXhsPath(p.path) : undefined;
     return p && link?.kind === 'note' ? { id: link.noteId, url: `${p.prefix}explore/${link.noteId}` } : undefined;
   }
-  return { x: parseXStatusUrl, kubb: parseKubbPlayUrl, ig: parseIgPostUrl, douyin: parseDouyinUrl }[site](url);
+  return { x: parseXStatusUrl, kubb: parseKubbPlayUrl, ig: parseIgPostUrl, douyin: parseDouyinUrl, bilibili: parseBiliUrl }[site](url);
 }
 
 // ── 校验页面交回来的数据 ──
 
-const SITES: readonly ClipSite[] = ['youtube', 'xhs', 'x', 'kubb', 'ig', 'douyin'];
+const SITES: readonly ClipSite[] = ['youtube', 'xhs', 'x', 'kubb', 'ig', 'douyin', 'bilibili'];
 const YOUTUBE_ID = /^[A-Za-z0-9_-]{6,20}$/;
 /** 控制字符与零宽字符（保留制表符和换行） */
 const CONTROL = new RegExp(`[\x00-\x08\x0B-\x1F\x7F${String.fromCharCode(0x200b)}-${String.fromCharCode(0x200d, 0x2028, 0x2029, 0xfeff)}]`, 'g');
@@ -359,6 +360,7 @@ const BODY_NAMES: Record<ClipSite, string> = {
   kubb: '这部影片的简介',
   ig: '这条帖子的正文',
   douyin: '这条视频的描述',
+  bilibili: '这个视频的简介',
 };
 
 interface MuseContext {

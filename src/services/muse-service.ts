@@ -48,7 +48,7 @@ export interface MuseFreezeOptions {
 export type MuseFreezeResult = { ok: true; freeze: MuseFreeze } | { ok: false; message: string };
 
 export const MUSE_NO_SCRIPT =
-  '当前标签页没有响应：它不是 YouTube 视频页、小红书、X、酷播、Instagram 或抖音网页版。如果是，刷新一下那个页面再点「问 muse」（扩展安装或更新之前打开的页面里还没有 TubeMuse 的脚本）';
+  '当前标签页没有响应：它不是 YouTube 视频页、小红书、X、酷播、Instagram、抖音或 B 站网页版。如果是，刷新一下那个页面再点「问 muse」（扩展安装或更新之前打开的页面里还没有 TubeMuse 的脚本）';
 
 /** 没带上字幕时面板里的提示：前半句是这一次没取到的原因 */
 export const MUSE_CAPTION_HINT = '想带上的话，先在"字幕"页打开多语字幕或自动字幕，等字幕出来后再点一次「问 muse」';

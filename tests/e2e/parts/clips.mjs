@@ -1,9 +1,10 @@
 // @ts-check
-// 片段录制与 Capture：YouTube，然后是小红书（含发布时间、收藏）、X、Instagram、抖音、酷播。
+// 片段录制与 Capture：YouTube，然后是小红书（含发布时间、收藏）、X、Instagram、抖音、酷播、B 站。
 // 这几个站放在同一组里按顺序跑：Capture 的序号是跨站连着排的，后面各站的检查接着前面的序号。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { check, MOCK, shots } from '../harness.mjs';
+import { BILI_EPISODE, BILI_FESTIVAL, BILI_PREVIEW_SECONDS, BILI_SEASON, BILI_VIDEO } from '../bili-pages.mjs';
 import { DOUYIN_NEXT, DOUYIN_SEARCH_TITLE, DOUYIN_VIDEO } from '../douyin-pages.mjs';
 import { IG_FEED_POST, IG_PLAIN_POST } from '../ig-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from '../kubb-pages.mjs';
@@ -1381,5 +1382,143 @@ export async function clips(t) {
     `酷播页面上 TubeMuse 没有发出任何请求（只有页面自己取的视频）${kubbPageReqs.length ? `：${[...new Set(kubbPageReqs.map((r) => r.path))].join(', ')}` : ''}`,
   );
   await kubb.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── B 站：片段录制 ─────────────────────────
+  console.log('\n[B 站：首页（只有封面上的悬停预览）说明要打开播放页；站内跳进番剧页后录主播放器里的视频]');
+  const biliReqStart = requests.length;
+  const [bili] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/bili/`)]);
+  bili.on('pageerror', (e) => consoleErrors.push(`bili pageerror: ${e.message}`));
+  await bili.waitForLoadState('domcontentloaded');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '片段', exact: true }).click();
+  // 把侧边栏拿到前台时，当前标签页变成了侧边栏自己：切回 B 站那个标签页（就像你点回它）
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/bili/'));
+    await c.tabs.update(t.id, { active: true });
+  });
+  await clipStatus.filter({ hasText: '没有 B 站的播放器' }).waitFor({ timeout: 10000 });
+  check((await panel.getByTestId('clip-unsupported').count()) === 0, 'B 站首页上：侧边栏不再说"当前标签页不是…"，而是说明要打开播放页');
+  const biliMain = '#bilibili-player .bpx-player-video-wrap > video';
+  const biliReady = (/** @type {string} */ selector) => bili.waitForFunction((s) => (/** @type {HTMLVideoElement | null} */ (document.querySelector(s))?.readyState ?? 0) >= 2, selector, { timeout: 30000 });
+  /** 侧边栏"当前位置"里的总时长是这么多秒（选错视频会超时） */
+  const biliShowsDuration = (/** @type {number} */ seconds) =>
+    panel.getByTestId('clip-position').filter({ hasText: new RegExp(` 0:(${seconds - 1}|${seconds})$`) }).waitFor({ timeout: 5000 });
+  await bili.evaluate(() => /** @type {any} */ (window).__hoverHome());
+  await biliReady('.v-inline-player video');
+  await bili.waitForTimeout(600);
+  check(
+    ((await clipStatus.textContent()) ?? '').includes('没有 B 站的播放器') && (await panel.getByTestId('clip-start').count()) === 0,
+    '首页封面上的悬停预览在放（静音的小播放器，结构和主播放器一样）：不算正在看的视频，不能录',
+  );
+  await bili.evaluate(() => /** @type {any} */ (window).__openSeason());
+  await biliReady(biliMain);
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 10000 });
+  check(
+    ((await panel.getByTestId('clip-title').textContent()) ?? '') === BILI_SEASON.title && (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-capture').count()) === 1,
+    `站内跳进番剧播放页（用户举的 /bangumi/play/${BILI_SEASON.id}）后不用刷新就能录：标题来自页面标题（去掉"-国创-…-bilibili-哔哩哔哩"），不提供字幕烧录，有 Capture`,
+  );
+  const biliNote = (await panel.getByTestId('clip-no-burn').textContent()) ?? '';
+  check(biliNote.includes('弹幕') && biliNote.includes('悬停') && biliNote.includes('片头广告认不出来'), '界面写明弹幕不会录进去、悬停预览不算、片头广告认不出来');
+  await biliShowsDuration(BILI_SEASON.seconds);
+  const biliAppHtml = () => bili.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  const biliAppBefore = await biliAppHtml();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  const biliBadge = await sw2.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/bili/'));
+    return c.action.getBadgeText({ tabId: t.id });
+  });
+  check(biliBadge === 'REC', `B 站上录制中，工具栏图标也显示 REC（实际："${biliBadge}"）`);
+  await bili.waitForTimeout(2500);
+  const [biliDl] = await Promise.all([bili.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const biliName = biliDl.suggestedFilename();
+  check(/^凡人修仙传_00m\d\ds-00m\d\ds\.(mp4|webm)$/.test(biliName), `停止后保存，文件名用片名与起止时间：${biliName}`);
+  const biliClip = await analyzeClip(bili, /** @type {string} */ (await biliDl.path()));
+  check(container(biliClip.head) === biliName.split('.').pop() && biliClip.duration > 1.5 && biliClip.rms > 0.02, `录到了这个视频的声音（${biliClip.duration.toFixed(1)} 秒，响度 ${biliClip.rms.toFixed(3)}）`);
+  await panel.getByTestId('clip-log').filter({ hasText: biliName }).waitFor({ timeout: 5000 });
+  const biliLog = (await clipLog())[0];
+  check(
+    biliLog?.site === 'bilibili' && biliLog.videoId === BILI_SEASON.id && biliLog.title === BILI_SEASON.title && biliLog.url === `${MOCK}/bili/bangumi/play/${BILI_SEASON.id}` && biliLog.fileName === biliName,
+    `"最近录过的片段"记下这是 B 站的视频；链接去掉了开头的语言（/zh-Hans/）和来源参数：${biliLog?.url}`,
+  );
+  check(((await panel.getByTestId('clip-log').textContent()) ?? '').includes('B 站 · '), '侧边栏的片段清单标出 B 站');
+  check((await biliAppHtml()) === biliAppBefore && (await bili.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '录制没有往 B 站页面里加任何元素，没有点到 B 站自己的任何东西');
+
+  console.log('\n[B 站：换一集（网址换成 ep 号，播放器还是同一个）时这一段自动结束并保存，接下来录的是新的一集]');
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await bili.waitForTimeout(1500);
+  const [biliSwitchDl] = await Promise.all([bili.waitForEvent('download', { timeout: 10000 }), bili.evaluate(() => /** @type {any} */ (window).__nextEpisode())]);
+  check(/^凡人修仙传_.*\.(mp4|webm)$/.test(biliSwitchDl.suggestedFilename()), `换集时自动结束这一段并保存，文件名是开录时那一集的：${biliSwitchDl.suggestedFilename()}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '切到了别的视频' }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('clip-log').filter({ hasText: biliSwitchDl.suggestedFilename() }).waitFor({ timeout: 5000 });
+  check((await clipLog())[0]?.videoId === BILI_SEASON.id, '这一段记在开录时的那个链接名下');
+  await biliReady(biliMain);
+  await panel.getByTestId('clip-title').filter({ hasText: BILI_EPISODE.title }).waitFor({ timeout: 10000 });
+  await biliShowsDuration(BILI_EPISODE.seconds);
+  check(true, `换集后侧边栏跟上新的一集：${(await panel.getByTestId('clip-title').textContent()) ?? ''}`);
+  await panel.getByRole('button', { name: '释放内存' }).click();
+
+  console.log('\n[B 站：普通视频的分 P；推荐列表封面上的悬停预览在放时，录的仍是主播放器；Capture]');
+  await bili.evaluate(() => /** @type {any} */ (window).__openVideo());
+  await biliReady(biliMain);
+  await panel.getByTestId('clip-title').filter({ hasText: BILI_VIDEO.title }).waitFor({ timeout: 10000 });
+  await bili.evaluate(() => /** @type {any} */ (window).__hoverRecommend());
+  await biliReady('.v-recommend-inline-player video');
+  await biliShowsDuration(BILI_VIDEO.seconds);
+  check(
+    (await bili.evaluate(() => document.querySelectorAll('.bpx-player-video-wrap > video').length)) === 2,
+    `页面上有两个结构一样的播放器（主播放器 ${BILI_VIDEO.seconds} 秒、悬停预览 ${BILI_PREVIEW_SECONDS} 秒），选中的是主播放器：${(await panel.getByTestId('clip-position').textContent()) ?? ''}`,
+  );
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await bili.waitForTimeout(2000);
+  const [biliPartDl] = await Promise.all([bili.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const biliPartName = biliPartDl.suggestedFilename();
+  await panel.getByTestId('clip-log').filter({ hasText: biliPartName }).waitFor({ timeout: 5000 });
+  const biliPartLog = (await clipLog())[0];
+  check(
+    biliPartName.startsWith(`${BILI_VIDEO.title}_00m0`) && biliPartLog?.videoId === `${BILI_VIDEO.bv}.p${BILI_VIDEO.part}` && biliPartLog.url === `${MOCK}/bili/video/${BILI_VIDEO.bv}/?p=${BILI_VIDEO.part}`,
+    `分 P 的视频：标题是这一 P 的名字，ID 带上第几 P，链接只留 ?p=：${biliPartLog?.videoId} → ${biliPartLog?.url}`,
+  );
+  await panel.getByRole('button', { name: '释放内存' }).click();
+  // 换成有画面的视频（静音、暂停着交回来），暂停着截
+  await useFramedVideo(bili, biliMain);
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 5000 });
+  const biliSeqBefore = await captureSeq();
+  const biliShot = await capture();
+  const biliShotName = biliShot.suggestedFilename();
+  const biliPng = await readPng(/** @type {string} */ (await biliShot.path()), bili);
+  check(
+    biliShotName.startsWith(`${BILI_VIDEO.title}_00-00-0`) && biliShotName.endsWith(`_original_${String(biliSeqBefore + 1).padStart(5, '0')}.png`) && biliPng.width === 720 && biliPng.height === 1280 && biliPng.left[0] > 150 && biliPng.right[2] > 150,
+    `Capture：截的是主播放器这一帧，按视频的真实尺寸存，不带弹幕：${biliShotName}（${biliPng.width}×${biliPng.height}）`,
+  );
+
+  console.log('\n[B 站：别的带播放器的页面（活动页，网址里认不出是哪个视频）也能录]');
+  await bili.evaluate(() => /** @type {any} */ (window).__openFestival());
+  await biliReady(biliMain);
+  await panel.getByTestId('clip-title').filter({ hasText: BILI_FESTIVAL.docTitle }).waitFor({ timeout: 10000 });
+  await biliShowsDuration(BILI_FESTIVAL.seconds);
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await bili.waitForTimeout(1500);
+  const [biliFestDl] = await Promise.all([bili.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  await panel.getByTestId('clip-log').filter({ hasText: biliFestDl.suggestedFilename() }).waitFor({ timeout: 5000 });
+  const biliFestLog = (await clipLog())[0];
+  check(
+    biliFestDl.suggestedFilename().startsWith(`${BILI_FESTIVAL.docTitle}_00m0`) && biliFestLog?.site === 'bilibili' && biliFestLog.videoId === `festival-${BILI_FESTIVAL.name}` && biliFestLog.url === `${MOCK}/bili/festival/${BILI_FESTIVAL.name}`,
+    `活动页：标题是活动名，ID 用路径拼，链接就是这个页面：${biliFestLog?.videoId} → ${biliFestLog?.url}`,
+  );
+  check((await bili.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '全程没有点到 B 站自己的任何东西');
+  const biliPageReqs = requests.slice(biliReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/bili/`));
+  check(
+    biliPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/bili/') || r.path === '/favicon.ico')),
+    `B 站页面上 TubeMuse 没有发出任何请求（只有页面自己取的视频）${biliPageReqs.length ? `：${[...new Set(biliPageReqs.map((r) => r.path))].join(', ')}` : ''}`,
+  );
+  await bili.close();
   await panel.bringToFront();
 }

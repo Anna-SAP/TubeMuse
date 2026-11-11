@@ -3,7 +3,7 @@
 // 录制本身（画布、MediaRecorder、保存）在 content/clipper.ts；侧边栏"片段"页只经消息控制它。
 
 import { CLIPS } from '../config/defaults';
-import { DOUYIN_PAGES, IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } from '../config/endpoints';
+import { BILI_PAGES, DOUYIN_PAGES, IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } from '../config/endpoints';
 import { canonicalXhsUrl, isXhsId } from './xhs';
 
 export type ClipMode = 'free' | 'range';
@@ -11,9 +11,10 @@ export type ClipMode = 'free' | 'range';
 /**
  * 录的是哪个站的视频：YouTube 播放页、小红书网页版的视频笔记（2026-11-04 新增，见 DECISIONS §43）、
  * X 网页版的帖子（2026-11-06 新增，见 DECISIONS §52）、酷播（kubb.tv）的播放页（2026-11-10 新增，见 DECISIONS §54）、
- * Instagram 网页版的首页信息流（2026-11-10 新增，见 DECISIONS §56）、抖音网页版精选页里打开的视频（2026-11-10 新增，见 DECISIONS §57）
+ * Instagram 网页版的首页信息流（2026-11-10 新增，见 DECISIONS §56）、抖音网页版精选页里打开的视频（2026-11-10 新增，见 DECISIONS §57）、
+ * B 站网页版主播放器里的视频（2026-11-11 新增，见 DECISIONS §64）
  */
-export type ClipSite = 'youtube' | 'xhs' | 'x' | 'kubb' | 'ig' | 'douyin';
+export type ClipSite = 'youtube' | 'xhs' | 'x' | 'kubb' | 'ig' | 'douyin' | 'bilibili';
 
 /** 侧边栏 → 内容脚本、内容脚本 → 侧边栏 / 后台 的消息类型 */
 export const CLIP_MSG = {
@@ -131,8 +132,33 @@ function kubbTitle(title: string): string {
   return /^酷播\s*(?:-|$)/.test(title.trim()) ? '' : title.trim();
 }
 
+/** 番剧影视页标题里夹在片名和"bilibili-哔哩哔哩"之间的类型名 */
+const BILI_SHOW_KINDS = '番剧|国创|电影|电视剧|纪录片|综艺';
+const BILI_SHOW_TITLE = new RegExp(`^(.+?)-(?:${BILI_SHOW_KINDS})(?:-[^-]+){1,2}-bilibili-哔哩哔哩$`);
+
 /**
- * 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"；X 见 xPostTitle；酷播见 kubbTitle）。
+ * B 站各种播放页的标题（2026-11-11 实测）→ 视频标题：
+ * - 普通视频、课程："标题_哔哩哔哩_bilibili"（分 P 的视频这里是当前这一 P 的名字）；
+ * - 番剧影视："片名-国创-高清独家在线观看-bilibili-哔哩哔哩"，也见到"片名-番剧-全集-高清独家在线观看-…""片名-电影-…"；
+ *   网址是 ep 号时片名后面带集数（"凡人修仙传第2集"），是 ss 号时不带；
+ * - 播放列表（/list/…）："标题-创建者-列表名-哔哩哔哩视频"：去掉最后两段（创建者或列表名里自己带连字符时会留下一截，不影响别的）；
+ * - 出错页（"出错啦! - bilibili.com"）返回空；活动页的标题是活动名（"2022拜年纪"），认不出的写法都原样用。
+ */
+function biliTitle(title: string): string {
+  const t = title.trim();
+  if (/^出错啦/.test(t)) return '';
+  const video = /^(.*)_哔哩哔哩_bilibili$/.exec(t);
+  if (video) return video[1]!.trim();
+  const show = BILI_SHOW_TITLE.exec(t) ?? /^(.*)-bilibili-哔哩哔哩$/.exec(t);
+  if (show) return show[1]!.trim();
+  const list = /^(.*)-哔哩哔哩视频$/.exec(t);
+  if (!list) return t;
+  const parts = list[1]!.split('-');
+  return (parts.length >= 3 ? parts.slice(0, -2) : parts).join('-').trim();
+}
+
+/**
+ * 页面标题 → 视频标题：去掉开头的通知数"(12) "与结尾的" - YouTube"（小红书：" - 小红书" / " - rednote"；X 见 xPostTitle；酷播见 kubbTitle；B 站见 biliTitle）。
  * Instagram 首页的页面标题只是"Instagram"，说明不了是哪条帖子：不用（标题来自帖子本身，见 feedPostTitle）。
  * 抖音的页面标题在划到下一条视频时不更新（2026-11-10 实测），会张冠李戴：也不用，标题来自当前这条视频上的作者和描述。
  */
@@ -141,6 +167,7 @@ export function titleFromDocumentTitle(docTitle: string, site: ClipSite = 'youtu
   if (site === 'ig' || site === 'douyin') return '';
   if (site === 'x') return xPostTitle(title);
   if (site === 'kubb') return kubbTitle(title);
+  if (site === 'bilibili') return biliTitle(title);
   return title.replace(site === 'xhs' ? /\s*[-–—]\s*(?:小红书|rednote)\s*$/i : /\s*[-–—]\s*YouTube\s*$/i, '').trim();
 }
 
@@ -466,6 +493,66 @@ export function parseDouyinUrl(url: string): { id: string; url: string } | undef
   return DOUYIN_SEARCH_PATH.test(path) ? { id, url: `${prefix}jingxuan?modal_id=${id}` } : undefined;
 }
 
+// ── B 站：页面主播放器里的视频 ──
+
+/** 海外网络下 B 站把网址改写成带语言的：/zh-Hans/video/…（2026-11-11 实测）。只认"两个字母-地区或文字"这种带连字符的写法 */
+const BILI_LOCALE = /^[a-z]{2}-[A-Za-z]{2,4}(?:\/|$)/;
+/** 普通视频：/video/<BV号>（BV 加 10 位字母数字），老链接是 /video/av<数字> */
+const BILI_VIDEO_PATH = /^video\/(BV[0-9A-Za-z]{10}|av\d{1,12})$/;
+const BILI_BVID = /^BV[0-9A-Za-z]{10}$/;
+/** 番剧影视、课程：/bangumi/play/<ep 或 ss 号>、/cheese/play/<ep 或 ss 号>（ep 是一集，ss 是整季） */
+const BILI_EPISODE_PATH = /^(bangumi|cheese)\/play\/((?:ep|ss)\d{1,12})$/;
+
+/** B 站的页面是哪一种：普通视频、番剧影视、课程，或别的带播放器的页面（活动页等，网址里认不出是哪个视频） */
+export type BiliPageKind = 'video' | 'bangumi' | 'cheese' | 'page';
+
+/** 这个网址是不是 B 站网页版（录制脚本靠它判断自己在哪个站） */
+export function isBiliPage(url: string): boolean {
+  return BILI_PAGES.some((p) => url.startsWith(p));
+}
+
+/**
+ * B 站的网址 → 这一条的 ID 与规范链接（2026-11-11 实测；网址开头带语言的那一段去掉，见 BILI_LOCALE）：
+ * - 普通视频 /video/<BV号>：ID 是 BV 号（老链接 /video/av<数字> 就用 av 号）；分 P 的视频换一 P 网址带上 ?p=<第几P>，
+ *   ID 写成"BV号.p3"（第 1 P 不带），所以换一 P 就算换了视频。自动连播到下一个视频时网址换成新的 BV 号。
+ * - 番剧影视 /bangumi/play/ep<数字>：ID 是 ep 号；从整季的链接 /bangumi/play/ss<数字> 进来时网址不变，ID 是 ss 号
+ *   （放的是哪一集由 B 站定），换集、放完自动播下一集时网址换成那一集的 ep 号。
+ * - 课程 /cheese/play/<ep 或 ss 号>：ID 前面加 cheese-（课程和番剧的 ep 号是两套）。
+ * - 别的页面，网址带 ?bvid=<BV号> 的（播放列表 /list/…、活动页里选了某个视频）：ID 是这个 BV 号，
+ *   规范链接写成视频页 /video/<BV号>/——列表的编号（稍后再看、收藏夹）不进链接，也就不进记录。
+ * - 再别的页面（kind 是 'page'，例如刚打开的活动页 /festival/<活动名>）：网址里认不出是哪个视频，ID 用路径拼
+ *   （festival-2022bnj），链接就是这个页面。这种页面上有没有视频要看页面（录制脚本只在找到主播放器时才认）。
+ * 链接只留认得出这一条的部分，别的查询参数（spm_id_from、trackid 等来源标记）去掉。不是 B 站返回 undefined。
+ */
+export function parseBiliUrl(url: string): { id: string; url: string; kind: BiliPageKind } | undefined {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const full = u.origin + u.pathname;
+  const prefix = BILI_PAGES.find((p) => full.startsWith(p));
+  if (!prefix) return undefined;
+  const path = full.slice(prefix.length).replace(BILI_LOCALE, '').replace(/\/+$/, '');
+  const episode = BILI_EPISODE_PATH.exec(path);
+  if (episode) return { id: episode[1] === 'cheese' ? `cheese-${episode[2]}` : episode[2]!, url: `${prefix}${episode[1]}/play/${episode[2]}`, kind: episode[1] as 'bangumi' | 'cheese' };
+  const bvid = u.searchParams.get('bvid');
+  const video = BILI_VIDEO_PATH.exec(path)?.[1] ?? (bvid && BILI_BVID.test(bvid) ? bvid : undefined);
+  if (video) {
+    const p = u.searchParams.get('p');
+    const part = p && /^\d{1,4}$/.test(p) && Number(p) > 1 ? Number(p) : undefined;
+    return { id: part ? `${video}.p${part}` : video, url: `${prefix}video/${video}/${part ? `?p=${part}` : ''}`, kind: 'video' };
+  }
+  const slug = path
+    .split('/')
+    .map((seg) => seg.replace(/[^A-Za-z0-9_.-]+/g, '_'))
+    .filter(Boolean)
+    .join('-')
+    .slice(0, 60);
+  return { id: slug || 'home', url: `${prefix}${path}`, kind: 'page' };
+}
+
 // ── 酷播的播放页 ──
 
 const KUBB_ID = /^[A-Za-z0-9_-]{6,24}$/;
@@ -550,6 +637,7 @@ const CLIP_UNAVAILABLE_TEXT: Record<ClipSite, { noPage: string; noVideo: string 
   // Instagram 只在首页信息流上录，"没有视频"的说法在 FEED_TEXT 里；这里的 noVideo 用不到，留着是为了每个站都有一句
   ig: { noPage: '这个页面不是 Instagram 的首页信息流：回到首页（www.instagram.com）再录', noVideo: '没找到正在播放的视频，等画面出来后再试' },
   douyin: { noPage: '这个页面上没有点开的抖音视频：在精选页（www.douyin.com/jingxuan）或搜索结果里点开一条视频再录', noVideo: '没找到这条视频的画面，等它开始播放后再试' },
+  bilibili: { noPage: '这个页面上没有 B 站的播放器：打开一个视频、番剧、课程或活动的播放页再录（封面上悬停时的小预览不算）', noVideo: '没找到播放器里的视频，等画面出来后再试' },
 };
 
 /** 首页信息流（X、Instagram）上不能录的原因：没有锁定的视频；锁定了视频但认不出它属于哪条帖子（广告没有帖子链接） */
@@ -828,7 +916,7 @@ export interface ReadyClipInfo {
 
 export interface ClipTabState {
   site: ClipSite;
-  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID（剧集带分集 ID），或 Instagram 的帖子短码 */
+  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID（剧集带分集 ID）、Instagram 的帖子短码、抖音的视频 ID，或 B 站的 BV 号 / ep 号（见 parseBiliUrl） */
   videoId: string | null;
   /** 视频标题（来自页面标题；X、Instagram 首页信息流上来自这条帖子的作者名和正文），只用来显示和起文件名 */
   title?: string;
@@ -858,14 +946,15 @@ export interface ClipTabState {
 
 export interface ClipRecord {
   id: string;
-  /** 小红书的记录带 'xhs'，X 的带 'x'，酷播的带 'kubb'，Instagram 的带 'ig'，抖音的带 'douyin'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
+  /** 小红书的记录带 'xhs'，X 的带 'x'，酷播的带 'kubb'，Instagram 的带 'ig'，抖音的带 'douyin'，B 站的带 'bilibili'；没有这一项的是 YouTube（2026-11-04 之前的记录都是） */
   site?: ClipSite;
-  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID（剧集是"影片ID.分集ID"），或 Instagram 的帖子短码 */
+  /** YouTube 的视频 ID、小红书的笔记 ID、X 的帖子 ID、酷播的影片 ID（剧集是"影片ID.分集ID"）、Instagram 的帖子短码、抖音的视频 ID，或 B 站的 BV 号 / ep 号（见 parseBiliUrl） */
   videoId: string;
   /**
    * 小红书：笔记链接（只留站点、路径与 xsec_token / xsec_source，从外面打开笔记要带 xsec_token）；
    * X：帖子链接（parseXStatusUrl 的规范链接）；酷播：播放页链接（parseKubbPlayUrl 的规范链接）；
-   * Instagram：帖子链接（parseIgPostUrl 的规范链接）；抖音：精选页里这条视频的链接（parseDouyinUrl 的规范链接；在搜索结果里录的也记成精选页的链接）
+   * Instagram：帖子链接（parseIgPostUrl 的规范链接）；抖音：精选页里这条视频的链接（parseDouyinUrl 的规范链接；在搜索结果里录的也记成精选页的链接）；
+   * B 站：视频页、番剧页或课程页的链接（parseBiliUrl 的规范链接；在播放列表里录的记成视频页的链接）
    */
   url?: string;
   title?: string;
@@ -887,7 +976,7 @@ function clipSourceUrl(site: ClipSite, raw: unknown, id: string | null): string 
   if (site === 'youtube') return undefined;
   if (typeof raw !== 'string') return null;
   if (site !== 'xhs') {
-    const page = { x: parseXStatusUrl, kubb: parseKubbPlayUrl, ig: parseIgPostUrl, douyin: parseDouyinUrl }[site](raw);
+    const page = { x: parseXStatusUrl, kubb: parseKubbPlayUrl, ig: parseIgPostUrl, douyin: parseDouyinUrl, bilibili: parseBiliUrl }[site](raw);
     return page?.id === id ? page.url : null;
   }
   const note = canonicalXhsUrl(raw);
@@ -904,7 +993,7 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const num = (v: unknown, max: number) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
   const str = (v: unknown, max: number) => (typeof v === 'string' && v.length > 0 ? v.slice(0, max) : null);
   const id = str(r.id, 64);
-  // X 的帖子 ID、酷播的影片 ID、Instagram 的帖子短码、抖音的视频 ID 由下面的链接核对（只能是从链接里解析出来的那个）
+  // X 的帖子 ID、酷播的影片 ID、Instagram 的帖子短码、抖音的视频 ID、B 站的 BV 号 / ep 号由下面的链接核对（只能是从链接里解析出来的那个）
   const idFromUrl = site !== 'youtube' && site !== 'xhs';
   const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : idFromUrl || VIDEO_ID.test(r.videoId)) ? r.videoId : null;
   const sourceUrl = clipSourceUrl(site, r.url, videoId);
@@ -927,12 +1016,14 @@ export function addClipRecord(log: ClipRecord[], rec: ClipRecord, max: number = 
   return [rec, ...log.filter((r) => r.id !== rec.id)].slice(0, max);
 }
 
-/** 回到视频里这一段的地址；小红书、X、酷播没有按时间打开的地址，回到这篇笔记、这条帖子或这部影片（这一集） */
+/** 回到视频里这一段的地址；小红书、X、酷播、Instagram、抖音、B 站的记录不带时间，回到这篇笔记、这条帖子、这部影片（这一集）或这个视频 */
 export function clipWatchUrl(r: Pick<ClipRecord, 'videoId' | 'start' | 'site' | 'url'>): string {
   if (r.site === 'xhs') return r.url ?? `${XHS_PAGES[0]}explore/${encodeURIComponent(r.videoId)}`;
   if (r.site === 'x') return r.url ?? `${X_PAGES[0]}i/status/${encodeURIComponent(r.videoId)}`;
   if (r.site === 'ig') return r.url ?? `${IG_PAGES[0]}p/${encodeURIComponent(r.videoId)}/`;
   if (r.site === 'douyin') return r.url ?? `${DOUYIN_PAGES[0]}jingxuan?modal_id=${encodeURIComponent(r.videoId)}`;
+  // B 站的记录都带着链接（没有链接的记录过不了校验）；万一没有，回到 B 站首页，不按 ID 猜是哪一种页面
+  if (r.site === 'bilibili') return r.url ?? BILI_PAGES[0]!;
   if (r.site === 'kubb') {
     const [show = '', episode] = r.videoId.split('.');
     return r.url ?? `${KUBB_PAGES[0]}play/${encodeURIComponent(show)}${episode ? `?id=${encodeURIComponent(episode)}` : ''}`;

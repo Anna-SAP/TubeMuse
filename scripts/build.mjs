@@ -38,7 +38,7 @@ if (!e2e && existsSync(configPath)) {
 // ── 读取网络出口（把 endpoints.ts 临时编译成 JS 再导入）──
 const endpointsFile = join(root, 'src', 'config', e2e ? 'endpoints.e2e.ts' : 'endpoints.ts');
 const compiled = await esbuild.build({ entryPoints: [endpointsFile], bundle: true, write: false, format: 'esm', platform: 'neutral' });
-const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XHS_PAGES, EMAIL_PAGES, X_PAGES, KUBB_PAGES, IG_PAGES, DOUYIN_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XHS_PAGES, EMAIL_PAGES, X_PAGES, KUBB_PAGES, IG_PAGES, DOUYIN_PAGES, BILI_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 /** @type {string[]} */
 const origins = [...new Set(Object.values(ENDPOINTS).map((u) => new URL(String(u)).origin))];
 const imgOrigins = ['https://i.ytimg.com', ...DOUBAN_IMAGE_ORIGINS, ...(e2e ? origins.filter((o) => o.startsWith('http://127.0.0.1')) : [])];
@@ -153,6 +153,7 @@ const manifest = {
   // 酷播同理（从首页点进 /play/<ID> 不重新加载），匹配整个 www.kubb.tv，脚本自己只认播放页
   // Instagram 同理（从别的页面回到首页不重新加载），匹配整个 www.instagram.com，脚本自己只认首页信息流
   // 抖音同理（在精选页点开视频、划到下一条都不重新加载），匹配整个 www.douyin.com，脚本自己只认精选页里打开的视频（?modal_id=）
+  // B 站同理（换集、换分 P、连播、从列表里点下一个都不重新加载），匹配整个 www.bilibili.com，脚本自己只认页面的主播放器（DECISIONS §64）
   // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
   // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
   // eMails（DECISIONS §44）：只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"，不发网络请求，不写页面
@@ -161,7 +162,7 @@ const manifest = {
   content_scripts: [
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
-    { matches: [...new Set([...[...TRACKED_SITES].map((o) => `${o}/*`), ...[...XHS_PAGES, ...X_PAGES, ...KUBB_PAGES, ...IG_PAGES, ...DOUYIN_PAGES].map((/** @type {string} */ p) => `${p}*`)])], js: ['content-clipper.js'], run_at: 'document_idle' },
+    { matches: [...new Set([...[...TRACKED_SITES].map((o) => `${o}/*`), ...[...XHS_PAGES, ...X_PAGES, ...KUBB_PAGES, ...IG_PAGES, ...DOUYIN_PAGES, ...BILI_PAGES].map((/** @type {string} */ p) => `${p}*`)])], js: ['content-clipper.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
     { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc.js'], run_at: 'document_idle' },
     { matches: XHS_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
@@ -213,7 +214,7 @@ for (const bad of [/\bfetch\(/, /XMLHttpRequest/, /\bWebSocket\b/, /sendBeacon/,
 }
 // 红线（2026-11-01 变更，DECISIONS §36）：片段录制脚本可以录这个视频的画面与声音、交给浏览器保存，
 // 但不得发网络请求、不得往页面里插入任何元素（画布和下载链接都不放进页面）、不得用 HTML 字符串写页面、不得读写 Cookie。
-// 2026-11-04 起它也注入小红书（DECISIONS §43），2026-11-06 起也注入 X（DECISIONS §52），2026-11-10 起也注入酷播（DECISIONS §54）、Instagram（DECISIONS §56）和抖音（DECISIONS §57）：不得模拟事件；唯一的 .click() 是它自己不放进页面的下载链接
+// 2026-11-04 起它也注入小红书（DECISIONS §43），2026-11-06 起也注入 X（DECISIONS §52），2026-11-10 起也注入酷播（DECISIONS §54）、Instagram（DECISIONS §56）和抖音（DECISIONS §57），2026-11-11 起也注入 B 站（DECISIONS §64）：不得模拟事件；唯一的 .click() 是它自己不放进页面的下载链接
 const clipper = readFileSync(join(outdir, 'content-clipper.js'), 'utf8');
 if ((clipper.match(/\.click\(\)/g) ?? []).length !== 1) fail('片段录制脚本只能有一处 .click()（它自己的下载链接），不得点击页面上的任何东西。');
 for (const bad of [
