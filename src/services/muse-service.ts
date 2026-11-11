@@ -55,7 +55,6 @@ export const MUSE_CAPTION_HINT = '想带上的话，先在"字幕"页打开多�
 
 function gapNote(gap: MusePositionGap, site: ClipSite): string {
   if (gap === 'ad') return '正在播广告：这时读到的是广告的进度，所以播放位置写的是「未知」。广告结束后再点一次「问 muse」';
-  if (gap === 'shorts') return 'Shorts 的播放位置读不到，写的是「未知」';
   if (site === 'xhs') return '这篇笔记里没找到视频（图文笔记，或视频还没出来），播放位置写的是「未知」';
   if (site === 'x') return '这条帖子里没找到视频，播放位置写的是「未知」';
   return '没找到播放器里的视频，播放位置写的是「未知」；等视频开始播放后再点一次「问 muse」';
