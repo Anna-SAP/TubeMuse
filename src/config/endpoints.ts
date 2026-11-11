@@ -72,3 +72,10 @@ export const IG_PAGES: readonly string[] = ['https://www.instagram.com/'];
  * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
  */
 export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/'];
+
+/**
+ * Muse 聊天（2026-11-11 新增，见 DECISIONS §60）：「问 muse」面板里的"打开 muse.ai"只是在新标签页里打开它，
+ * 咨询包由你自己粘贴进去。扩展不向它发任何请求、不注入脚本、不读它的页面，所以不在 ENDPOINTS（connect-src / host_permissions）里，
+ * 也不在任何内容脚本的 matches 里。
+ */
+export const MUSE_CHAT_URL = 'https://muse.ai/';

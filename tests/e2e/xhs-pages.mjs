@@ -6,11 +6,12 @@
 // - 未登录时卡片链接里没有笔记 ID（/user/profile/<用户>/），页面数据里 noteId 也是空的；
 // - 笔记详情（2026-11-04 实测）：#noteContainer 下有两份作者栏，顶上的 .author 是藏起来的，看得见的在右侧互动区
 //   .interaction-container .author-container 里；视频笔记的播放器是 .media-container .player-container .player-el.xgplayer > video。
+// - 笔记正文在标题下面的 #detail-desc 里：文字和 #话题 链接都包在 .note-text 里（「问 muse」读它；评论在另一块 .comments-el 里）。
 // 页面记下小红书自己元素上的点击次数，用来确认 TubeMuse 从不替你点"关注"、点赞或打开笔记。
 
 export const XHS_UID = '67398f95000000001d02d725';
 /** 页面数据里的发布时间比 ID 推算的晚约 2 小时（实测的定时 / 审核后发布笔记） */
-export const XHS_N1 = { id: '691d6e07000000001d03be5e', time: Date.parse('2025-11-19T09:10:02Z'), title: '毛不易 田曦薇 李诞都在看的书', token: 'ABtoken1=' };
+export const XHS_N1 = { id: '691d6e07000000001d03be5e', time: Date.parse('2025-11-19T09:10:02Z'), title: '毛不易 田曦薇 李诞都在看的书', token: 'ABtoken1=', desc: '这本书我读了三遍。\n推荐给想静下来的人 #读书' };
 /** 未登录样式：卡片上没有笔记 ID，只能按位置 + 标题对上页面数据 */
 export const XHS_N2 = { time: Date.parse('2026-10-25T12:00:00Z'), title: '再也不用代购了，真的太好吃！' };
 /** 页面数据里没有：由笔记 ID 推算 */
@@ -18,7 +19,14 @@ export const XHS_N3 = { id: '6ae12de4000000003401f5b2', idTime: Date.parse('2026
 /** 虚拟列表把一张卡片换成这一篇 */
 export const XHS_N4 = { id: '6a6a0e23000000001b01db99', idTime: Date.parse('2026-07-29T14:28:51Z'), title: '换上来的新卡片' };
 /** 视频笔记：片段录制（视频是 /xhs/media/ 下的一段有声音的 WAV） */
-export const XHS_V1 = { id: '6ae9a4e000000000140281c6', time: Date.parse('2026-11-03T09:09:00Z'), title: '视频日记Day255｜一人公司怎么做?', token: 'ABvideo1=', seconds: 12 };
+export const XHS_V1 = {
+  id: '6ae9a4e000000000140281c6',
+  time: Date.parse('2026-11-03T09:09:00Z'),
+  title: '视频日记Day255｜一人公司怎么做?',
+  token: 'ABvideo1=',
+  seconds: 12,
+  desc: '一人公司的第一步：先把一件小事做到有人愿意付钱。\n今天聊聊我踩过的坑 #一人公司 #创业',
+};
 
 const CSS = `
 body { margin: 0; font-family: system-ui, sans-serif; color: #333; }
@@ -118,7 +126,11 @@ const authorRow = () =>
 /** 评论区每条评论也有 .author-wrapper（里面没有 .info）：收藏按钮不该放到这里 */
 const comment = `<div class="comments-el"><div class="comment-item"><div class="right"><div class="author-wrapper"><div class="author"><a class="name" href="/xhs/user/profile/5c8347c70000000012001dde">自如签</a></div><div class="comment-menu"></div></div><div class="content">听了半天</div></div></div></div>`;
 
-/** @param {{ id: string; title: string; time: number; video?: boolean }} n */
+/** 笔记正文（2026-11-11 实测 rednote.com）：换行就是文字里的换行符（white-space: pre-wrap），#话题 是指向搜索页的链接 */
+const noteDesc = (/** @type {string} */ desc) =>
+  `<div id="detail-desc" class="desc"><span class="note-text" style="white-space: pre-wrap"><span>${desc.replace(/#(\S+)/g, '</span><a class="tag" href="/xhs/search_result?keyword=$1">#$1</a><span>')}</span></span></div>`;
+
+/** @param {{ id: string; title: string; time: number; desc: string; video?: boolean }} n */
 function notePage(n) {
   const state = { note: { firstNoteId: { __v_isRef: true, _rawValue: n.id }, noteDetailMap: { [n.id]: { note: { noteId: n.id, title: n.title, time: n.time, lastUpdateTime: n.time - 3600_000, type: n.video ? 'video' : 'normal' } } } } };
   const media = n.video ? `<div class="media-container video-player-media"><div class="player-container"><div class="player-el xgplayer xgplayer-pc"><video preload="auto" src="/xhs/media/${n.id}.wav"></video><xg-controls class="xgplayer-controls"></xg-controls></div></div></div>` : '';
@@ -126,7 +138,7 @@ function notePage(n) {
     `<!doctype html><html><head><meta charset="utf-8"><title>${n.title} - 小红书</title><style>${CSS}</style><script>window.__INITIAL_STATE__ = ${JSON.stringify(state)};</script></head><body>` +
     `<div class="note-detail-mask"><div id="noteContainer" class="note-container"><div class="author">${authorRow()}</div>${media}` +
     `<div class="interaction-container"><div class="author-container">${authorRow()}</div>` +
-    `<div class="note-scroller"><div class="note-content"><div id="detail-title" class="title">${n.title}</div><div class="bottom-container"><span class="date">2025-11-19</span></div></div>${comment}</div></div></div></div>` +
+    `<div class="note-scroller"><div class="note-content"><div id="detail-title" class="title">${n.title}</div>${noteDesc(n.desc)}<div class="bottom-container"><span class="date">2025-11-19</span></div></div>${comment}</div></div></div></div>` +
     `<script>${CLICK_COUNTER}</script></body></html>`
   );
 }

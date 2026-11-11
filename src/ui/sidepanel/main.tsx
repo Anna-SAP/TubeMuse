@@ -17,6 +17,7 @@ import { ClipsView } from './ClipsView';
 import { XhsView } from './XhsView';
 import { EmailView } from './EmailView';
 import { ReminderBanner } from './ReminderBanner';
+import { useMuseAsk } from './MuseAsk';
 import { runScheduledJobs } from '../../services/summary-service';
 
 type Tab = 'find' | 'discover' | 'douban' | 'xhs' | 'email' | 'subtitles' | 'clips' | 'records' | 'profile' | 'changes';
@@ -162,6 +163,7 @@ function App() {
   const settings = useStore(stores.settings);
   const pinned = settings?.ui.pinNav ?? false;
   const pin = usePinnedNav(pinned);
+  const muse = useMuseAsk();
   const togglePin = () => void stores.settings.update(appCtx().kv, appCtx().locker, (s) => ({ ...s, ui: { ...s.ui, pinNav: !s.ui.pinNav } }));
   const go = (id: Tab) => {
     pin.toContentTop();
@@ -179,10 +181,12 @@ function App() {
           TubeMuse
         </div>
         <QuotaMeter snap={quota} x={x} sub={sub} llm={llm} />
+        {muse.button}
         <button class="icon-btn" title="设置" onClick={() => chrome.runtime.openOptionsPage()}>
           ⚙
         </button>
       </header>
+      {muse.panel}
       <SetupBanner />
       <ReminderBanner
         onUseUtterance={(text) => {

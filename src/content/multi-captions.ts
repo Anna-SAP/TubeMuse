@@ -7,9 +7,12 @@
 // 3. 显示期间关掉 YouTube 原生字幕（避免两层），关闭多语字幕时恢复；你自己按 C 打开原生字幕时，多语字幕先让开。
 // 4. 在播放器里叠加一层只读字幕（Shadow DOM，只用 textContent 写字），不改动 YouTube 自己的元素；
 //    TubeMuse 自动字幕层也在时，叠在它上面。
+// 5. 「问 muse」（用户 2026-11-11 要求，见 DECISIONS §60）：你在侧边栏点「问 muse」时，把已经读到的字幕里、那一刻前后 30 秒的
+//    几句交给侧边栏（拼进你自己粘贴到 Muse 的那段文字）。只交已有的：不为此再取字幕、不动播放器。
 // 本脚本唯一的网络请求是第 2 点（构建时检查只有一处 fetch；地址先经 trackUrl 校验：同源、/api/timedtext、当前视频）。
 
-import { DEFAULT_SETTINGS, MULTI_CC } from '../config/defaults';
+import { DEFAULT_SETTINGS, MULTI_CC, MUSE } from '../config/defaults';
+import { MUSE_MSG, cuesAround, type MuseCaptionReply } from '../core/muse';
 import {
   AutoCaptionWindow,
   BRIDGE_TAG,
@@ -753,11 +756,32 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.settings) applySettings(changes.settings.newValue);
 });
 
+/**
+ * 「问 muse」：已经读到的字幕里，位置 t 前后的那几句。按你排的语言顺序取第一种读到了的（关掉多语字幕后，这个视频读过的仍然算）；
+ * 一种都没读到时不回。只交已有的，不为此取字幕。
+ */
+function museCaptions(t: unknown): MuseCaptionReply | undefined {
+  if (!videoId || typeof t !== 'number' || !Number.isFinite(t)) return undefined;
+  for (const s of resolution()?.sources ?? []) {
+    const ld = loaded.get(s.key);
+    if (ld?.state !== 'ok') continue;
+    const cues = cuesAround(ld.cues, t)
+      .slice(0, MUSE.maxCues)
+      .map((c) => ({ start: c.start, text: joinCueLines(c.text) }));
+    return { videoId, label: s.label, autoTranslated: s.autoTranslated, cues };
+  }
+  return undefined;
+}
+
 chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
-  const msg = raw as { type?: string; on?: unknown; langs?: unknown } | undefined;
+  const msg = raw as { type?: string; on?: unknown; langs?: unknown; t?: unknown } | undefined;
   if (msg?.type === MULTICC_MSG.getState) {
     sendResponse(tabState());
+    return false;
+  }
+  if (msg?.type === MUSE_MSG.captions) {
+    sendResponse(museCaptions(msg.t));
     return false;
   }
   if (msg?.type === MULTICC_MSG.toggle && videoId) {

@@ -587,6 +587,28 @@ export const CLIPS = {
   ],
 } as const;
 
+/**
+ * 「问 muse」（2026-11-11 新增，见 DECISIONS §60）：把正在看的这条视频整理成一段"咨询包"文字，由你自己粘贴到 Muse 聊天里。
+ * 只生成文字：不调大模型、不向 Muse 发任何请求。
+ */
+export const MUSE = {
+  /** 上下文取冻结位置前后各多少秒的字幕 / 转写 */
+  windowSec: 30,
+  /** 上下文最多多少个字：超过就截断，并在咨询包里注明 */
+  contextMaxChars: 2000,
+  /** 标题、作者最多多少个字（页面上读来的，防止异常长） */
+  titleMaxChars: 300,
+  authorMaxChars: 100,
+  /** 页面脚本交回的正文最多留多少个字（之后还要按 contextMaxChars 截断；这里只是不让超长的正文整段在扩展里传来传去） */
+  bodyReadMaxChars: 20_000,
+  /** 一次最多交回多少句字幕（前后 30 秒通常只有十几句；防止异常数据） */
+  maxCues: 400,
+  /** YouTube 的作者本机没有缓存时，向官方接口查（videos.list，1 unit）最多等多久；超时就写「无」并说明，查到的结果留给下一次 */
+  authorLookupMs: 5000,
+  /** 咨询包末尾给 Muse 的回答要求（用户 2026-11-11 给定的原话） */
+  answerRule: '请用中文回答，引用位置或原文；上下文里没有就直说没有，不要编造。',
+} as const;
+
 /** 观看追踪的内部参数 */
 export const WATCH = {
   tickMs: 1000,
