@@ -57,7 +57,7 @@ describe('时间与链接', () => {
     expect(musePosition(undefined, undefined)).toBe('未知');
   });
 
-  it('只有 YouTube 在链接上拼 &t=秒数s；位置读不到时不拼，Shorts 不拼', () => {
+  it('只有 YouTube 在链接上拼 &t=秒数s；位置读不到时不拼；Shorts 给 /shorts/ 网址、不拼（它不认时间参数）', () => {
     expect(museLink(youtube())).toBe(`https://www.youtube.com/watch?v=${VID}&t=123s`);
     expect(museLink(youtube({ position: undefined }))).toBe(`https://www.youtube.com/watch?v=${VID}`);
     expect(museLink({ site: 'youtube', videoId: VID, shorts: true, position: 5 })).toBe(`https://www.youtube.com/shorts/${VID}`);
@@ -158,7 +158,9 @@ describe('校验页面交回来的快照', () => {
     expect(sanitizeMuseSnapshot({ site: 'youtube', videoId: VID, position: Number.NaN, duration: 600, gap: 'ad' })).toEqual({ site: 'youtube', videoId: VID, gap: 'ad' });
     expect(sanitizeMuseSnapshot({ site: 'youtube', videoId: VID, position: -3 })).toEqual({ site: 'youtube', videoId: VID });
     expect(sanitizeMuseSnapshot({ site: 'youtube', videoId: VID, position: 5, duration: 0, gap: 'ad' })).toEqual({ site: 'youtube', videoId: VID, position: 5 });
-    expect(sanitizeMuseSnapshot({ site: 'youtube', videoId: VID, shorts: true, gap: 'shorts' })).toEqual({ site: 'youtube', videoId: VID, shorts: true, gap: 'shorts' });
+    // 2026-11-11 起 Shorts 的位置也读（DECISIONS §68）：旧的 'shorts' 不再是一种原因
+    expect(sanitizeMuseSnapshot({ site: 'youtube', videoId: VID, shorts: true, gap: 'shorts' })).toEqual({ site: 'youtube', videoId: VID, shorts: true });
+    expect(sanitizeMuseSnapshot({ site: 'youtube', videoId: VID, shorts: true, gap: 'no-video' })).toEqual({ site: 'youtube', videoId: VID, shorts: true, gap: 'no-video' });
     expect(sanitizeMuseSnapshot({ site: 'youtube', videoId: VID, gap: 'whatever' })).toEqual({ site: 'youtube', videoId: VID });
   });
 
@@ -596,6 +598,24 @@ describe('冻结', () => {
     expect(p?.text).toContain('章节：上一章 [00:00] Intro；当前 [01:30] Attention；下一章 [05:00] Training');
   });
 
+  // 2026-11-11 用户要求「问 muse」也支持 Shorts（DECISIONS §68）
+  it('Shorts：位置读得到，和播放页一样去取字幕；链接是 Shorts 自己的网址（不拼时间），位置写在"播放位置"里', async () => {
+    const t = makeCtx();
+    await t.init();
+    const cc = { videoId: VID, label: 'English', autoTranslated: false, cues: [{ start: 2, text: 'Shorts caption test' }] };
+    const tab = fakeTab({ [MUSE_MSG.snapshot]: { site: 'youtube', videoId: VID, shorts: true, title: 'GPU in 60s #shorts', position: 3.4, duration: 12 }, [MUSE_MSG.captions]: cc });
+    const r = await freezeMuse(t.ctx, tab.send);
+    expect(r.ok && r.freeze.snapshot).toMatchObject({ site: 'youtube', videoId: VID, shorts: true, position: 3.4, duration: 12 });
+    expect(r.ok && r.freeze.snapshot.gap).toBeUndefined();
+    expect(r.ok && r.freeze.captions).toEqual({ source: 'youtube-cc', label: 'English', cues: cc.cues });
+    expect(r.ok && r.freeze.notes.join('\n')).not.toContain('Shorts');
+    expect(tab.sent).toEqual([{ type: MUSE_MSG.snapshot }, { type: MUSE_MSG.captions, t: 3.4, fetch: true }]);
+    const p = r.ok ? buildMusePackage({ snapshot: r.freeze.snapshot, ...(r.freeze.captions ? { captions: r.freeze.captions } : {}), question: '问' }) : undefined;
+    expect(p?.text).toContain(`页面链接：https://www.youtube.com/shorts/${VID}\n`);
+    expect(p?.text).toContain('播放位置：00:03 / 00:12');
+    expect(p?.text).toContain('[00:02] Shorts caption test');
+  });
+
   it('关掉"自动取 YouTube 字幕"：只问已经读到的（fetch: false）', async () => {
     const t = makeCtx();
     await t.init();
@@ -652,7 +672,7 @@ describe('冻结', () => {
     expect(r3.ok && r3.freeze.notes[1]).not.toContain('作者、');
     const gone = makeCtx({ videos: [] });
     await gone.init();
-    const r2 = await freezeMuse(gone.ctx, fakeTab({ [MUSE_MSG.snapshot]: { site: 'youtube', videoId: VID, gap: 'shorts', shorts: true } }).send);
+    const r2 = await freezeMuse(gone.ctx, fakeTab({ [MUSE_MSG.snapshot]: { site: 'youtube', videoId: VID, gap: 'no-video', shorts: true } }).send);
     expect(r2.ok && r2.freeze.snapshot.author).toBeUndefined();
     expect(r2.ok && r2.freeze.notes[1]).toContain('查不到这个视频');
   });

@@ -1057,12 +1057,13 @@ function museTexts(now: FeedSiteNow | undefined): { title?: string; author?: str
 /**
  * 你点「问 muse」的这一刻：当前这条视频 / 帖子是什么、播到哪了。只读一次，不暂停视频、不改页面。
  * 认的是和片段录制同一条（首页信息流上是正在播放、开着声音的那个视频所在的帖子），但不看"片段录制"的开关；
- * 没有视频的笔记、帖子也能问，播放位置不给。广告期间读到的是广告的进度，也不给；Shorts 的播放器不读。
+ * 没有视频的笔记、帖子也能问，播放位置不给。广告期间读到的是广告的进度，也不给。
+ * Shorts 读的是 Shorts 播放器（#shorts-player，2026-11-11 起，见 DECISIONS §68）：页面上藏着的播放页播放器里是上一个视频，不读它。
  */
 function museSnapshot(): MuseSnapshot {
   const now = feedSiteNow();
   const { videoId, shorts } = currentIds();
-  const video = shorts ? null : videoEl();
+  const video = videoEl();
   const unavailable = museUnavailable(SITE, { videoId, feed: onFeed(), hasVideo: !!video });
   if (unavailable || !videoId) return { site: SITE, unavailable: unavailable ?? '没认出当前这条视频' };
   const item = SITE === 'youtube' ? undefined : museItem(SITE, sourceUrl());
@@ -1083,7 +1084,7 @@ function museSnapshot(): MuseSnapshot {
     ...(total > MUSE.bodyReadMaxChars ? { bodyTotal: total } : {}),
     ...(readable ? { position: video.currentTime } : {}),
     ...(readable && Number.isFinite(video.duration) && video.duration > 0 ? { duration: video.duration } : {}),
-    ...(readable ? {} : { gap: shorts ? ('shorts' as const) : !video ? ('no-video' as const) : ('ad' as const) }),
+    ...(readable ? {} : { gap: !video ? ('no-video' as const) : ('ad' as const) }),
   };
 }
 

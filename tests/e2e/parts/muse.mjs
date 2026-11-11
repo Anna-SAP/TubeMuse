@@ -419,16 +419,50 @@ export async function muse(t) {
   check((await museBili.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML.replace(/ src="blob:[^"]*"/, ''))) === biliHtmlBefore && (await nativeClicks(museBili)) === 0, '没有改动页面，没有点任何东西');
   await museBili.close();
 
+  // 2026-11-11 用户要求「问 muse」也支持 Shorts（DECISIONS §68）。仿 Shorts 页面同多语字幕那一段：假播放器挂在 #shorts-player 上，
+  // 页面上藏着一个播放页的 #movie_player（另一个视频，被调用会记下来）
+  console.log('\n[问 muse：YouTube Shorts——位置读的是 Shorts 播放器；自己取这条 Short 的字幕；链接是 Shorts 的网址；藏着的播放页播放器不碰]');
+  const museShort = await museTab(`${MOCK}/shorts/ccShorts0008`);
+  await videoReady(museShort, '#shorts-player video');
+  await museShort.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('#shorts-player video'));
+    v.currentTime = 3;
+    return v.play();
+  });
+  await museShort.waitForFunction(() => /** @type {HTMLVideoElement} */ (document.querySelector('#shorts-player video')).currentTime > 3.2, null, { timeout: 10000 });
+  const shortTtBefore = { player: playerTt('ccShorts0008').length, ours: ourTt('ccShorts0008').length };
+  const shortPkg = await askMuse();
+  const shortState = await museShort.evaluate(() => {
+    const p = /** @type {any} */ (document.getElementById('shorts-player'));
+    const w = /** @type {any} */ (window);
+    return { lang: p.getOption('captions', 'track')?.languageCode ?? null, calls: /** @type {any[]} */ (w.__playerCalls), foreign: /** @type {string[]} */ (w.__foreign), stale: /** @type {any[]} */ (w.__staleCalls).length, layer: !!document.querySelector('[data-tubemuse="multicc"]') };
+  });
+  check(
+    museField(shortPkg, '平台') === 'YouTube' && museField(shortPkg, '页面链接') === 'https://www.youtube.com/shorts/ccShorts0008' && museField(shortPkg, '标题') === 'Shorts 多语字幕测试 #shorts' && museField(shortPkg, '作者') === 'CC Mock',
+    `链接是 Shorts 自己的网址（不拼时间），标题来自页面标题，作者来自官方接口：${museField(shortPkg, '页面链接')} / ${museField(shortPkg, '标题')} / ${museField(shortPkg, '作者')}`,
+  );
+  check(/^00:0[3-9] \/ 00:12$/.test(museField(shortPkg, '播放位置')) && !(await museNotes()).includes('Shorts'), `播放位置读的是 Shorts 播放器（不再写「未知」）：${museField(shortPkg, '播放位置')}`);
+  check(
+    shortPkg.includes('上下文（当前位置前后 30 秒的字幕 · YouTube 字幕（') && /\n\[00:00\] (쇼츠 자막 테스트|Shorts caption test|Shorts 字幕测试)\n/.test(shortPkg),
+    '上下文是这条 Short 自带的字幕（位置前后 30 秒，一句一行，带时间）',
+  );
+  check(
+    playerTt('ccShorts0008').length - shortTtBefore.player === 1 && ourTt('ccShorts0008').length - shortTtBefore.ours === 1 && shortState.lang === null && onlyCaptionCalls(shortState.calls) && shortState.foreign.length === 0 && !shortState.layer,
+    `和播放页一样：请 Shorts 播放器取一次字幕、复用请求取一种语言，取完把原生字幕关回去，不显示字幕层，页面别处没动（对播放器只调了字幕开关：${shortState.calls.length} 次）`,
+  );
+  check(shortState.stale === 0, `页面上藏着的播放页播放器一次都没被调用（${shortState.stale} 次）`);
+  await museShort.close();
+
   console.log('\n[问 muse：红线]');
   const museReqs = requests.slice(museReqStart);
   check(llmCount() === museLlmStart && museReqs.every((r) => !r.path.startsWith('/openai') && !r.path.startsWith('/x/')), '全程没有调大模型（也没有语音转写、没有读 X）：不产生任何费用');
-  const musePagePaths = ['/watch', '/media/', '/api/timedtext', '/xhs/', '/xpage/', '/igpage/', '/douyin/', '/kubb/', '/bili/', '/muse/', '/favicon.ico'];
+  const musePagePaths = ['/watch', '/shorts/', '/media/', '/api/timedtext', '/xhs/', '/xpage/', '/igpage/', '/douyin/', '/kubb/', '/bili/', '/muse/', '/favicon.ico'];
   const fromPages = museReqs.filter((r) => String(r.headers.referer ?? '').startsWith(MOCK));
   const pageLeaks = fromPages.filter((r) => r.method !== 'GET' || !musePagePaths.some((p) => r.path === p || r.path.startsWith(p)));
   const museTt = fromPages.filter((r) => r.path === '/api/timedtext');
   check(
-    pageLeaks.length === 0 && museTt.every((r) => String(r.headers.referer ?? '').includes('/watch?v=')),
-    `除了在 YouTube 播放页上取字幕（同源的 /api/timedtext，${museTt.length} 次，含播放器自己发的），注入各个网站的脚本没有为「问 muse」发任何请求${pageLeaks.length ? `：${pageLeaks.map((r) => `${r.method} ${r.path}`).join(', ')}` : ''}`,
+    pageLeaks.length === 0 && museTt.every((r) => /\/watch\?v=|\/shorts\//.test(String(r.headers.referer ?? ''))),
+    `除了在 YouTube 播放页和 Shorts 上取字幕（同源的 /api/timedtext，${museTt.length} 次，含播放器自己发的），注入各个网站的脚本没有为「问 muse」发任何请求${pageLeaks.length ? `：${pageLeaks.map((r) => `${r.method} ${r.path}`).join(', ')}` : ''}`,
   );
   const museLeaks = museReqs.filter((r) => /我的问题|上下文（|这句歌词|改过的问题/.test(JSON.stringify(r.query) + String(r.body ?? '')));
   check(museLeaks.length === 0, '咨询包和你的问题没有发往任何地方（只在侧边栏和剪贴板里）');
@@ -440,7 +474,7 @@ export async function muse(t) {
       !museManifest.content_security_policy.extension_pages.includes('muse'),
     `「问 muse」没有新增权限和域名：${museManifest.permissions.join(', ')}`,
   );
-  check(![ytPkg3, plainPkg, xhsPkg, xFeedPkg, xPostPkg, igPkg, dyPkg, kubbPkg, biliPkg].some((p) => p.includes(FAKE_KEY) || p.includes('e2e-fake-token') || p.includes(E2E_CLIENT_SECRET) || p.includes(X_TOKEN)), '咨询包里没有任何 Key / 令牌');
+  check(![ytPkg3, plainPkg, shortPkg, xhsPkg, xFeedPkg, xPostPkg, igPkg, dyPkg, kubbPkg, biliPkg].some((p) => p.includes(FAKE_KEY) || p.includes('e2e-fake-token') || p.includes(E2E_CLIENT_SECRET) || p.includes(X_TOKEN)), '咨询包里没有任何 Key / 令牌');
   await panel.bringToFront();
   await panel.getByTestId('muse-close').click();
   check((await musePanel.count()) === 0, '点 × 收起面板');

@@ -23,8 +23,8 @@ export const MUSE_SITE_LABELS: Record<ClipSite, string> = { youtube: 'YouTube', 
 export const MUSE_NONE = '无';
 export const MUSE_UNKNOWN = '未知';
 
-/** 播放位置为什么没读到：正在播广告（读到的会是广告的进度）、这一条里没有视频、Shorts（它的播放器不读） */
-export type MusePositionGap = 'ad' | 'no-video' | 'shorts';
+/** 播放位置为什么没读到：正在播广告（读到的会是广告的进度）、这一条里没有视频（2026-11-11 起 Shorts 也读，见 DECISIONS §68） */
+export type MusePositionGap = 'ad' | 'no-video';
 
 /** 你点「问 muse」那一刻，页面上这条视频 / 帖子的样子（录制脚本交回，侧边栏校验后使用） */
 export interface MuseSnapshot {
@@ -142,7 +142,7 @@ export function sanitizeMuseSnapshot(raw: unknown): MuseSnapshot | null {
   const author = oneLine(r.author, MUSE.authorMaxChars);
   const body = block(r.body, MUSE.bodyReadMaxChars);
   const bodyTotal = typeof r.bodyTotal === 'number' && Number.isSafeInteger(r.bodyTotal) && r.bodyTotal > 0 ? r.bodyTotal : undefined;
-  const gap = r.gap === 'ad' || r.gap === 'no-video' || r.gap === 'shorts' ? r.gap : undefined;
+  const gap = r.gap === 'ad' || r.gap === 'no-video' ? r.gap : undefined;
   return {
     site,
     videoId,
@@ -337,7 +337,8 @@ export function musePosition(position: number | undefined, duration: number | un
 }
 
 /**
- * 页面链接。只有 YouTube 在链接上拼时间（&t=秒数s；位置读不到时不拼，Shorts 不拼）；
+ * 页面链接。只有 YouTube 在链接上拼时间（&t=秒数s；位置读不到时不拼）。Shorts 给 Shorts 自己的网址、不拼：
+ * /shorts/<ID> 不认时间参数，播放位置另写在咨询包里；
  * 别的站没有按时间打开的地址，只给这条视频 / 帖子的链接，不自创时间参数。
  */
 export function museLink(s: Pick<MuseSnapshot, 'site' | 'videoId' | 'url' | 'shorts' | 'position'>): string | undefined {
