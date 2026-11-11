@@ -8,7 +8,8 @@
 // 2026-11-11 起搜索结果页（/search/<搜索词>，或 /jingxuan/search/<搜索词> 这种前面带着发起搜索时所在路径的）里点开的视频也录
 // （用户要求，页面结构相同，见 DECISIONS §58、§59）；
 // 2026-11-11 起也注入 B 站网页版（www.bilibili.com），录页面主播放器里正在看的这个视频：普通视频、番剧影视、课程、播放列表、活动页
-// 用的是同一个播放器（用户要求"所有视频"，见 DECISIONS §64）：
+// 用的是同一个播放器（用户要求"所有视频"，见 DECISIONS §64）；
+// 2026-11-11 起 YouTube Shorts（/shorts/<ID>）也录，录的是 Shorts 播放器（#shorts-player）里的视频，放完一遍就结束（用户要求，见 DECISIONS §66）：
 // 1. 只在你从侧边栏"片段"页或快捷键开始录制后工作：把正在播放的这个视频逐帧画到一块不放进页面的画布上
 //    （开启字幕烧录时再叠加播放器里当时显示的字幕，只限 YouTube），声音经 video.captureStream() 取这个视频的音轨，
 //    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载这些网站的音视频流。
@@ -74,6 +75,7 @@ import {
   videoBitrate,
   visibleArea,
   xPostParts,
+  youtubePlayerId,
   type BurnBox,
   type BurnLine,
   type ClipCaptureReply,
@@ -121,6 +123,8 @@ interface Recording {
   pageUrl: string;
   /** 在首页信息流（X、Instagram）里开录的：网址里没有帖子 ID，换没换视频只看这个元素还在不在、人还在不在首页（见 feedRecordingId） */
   feed: boolean;
+  /** 放到结尾会自己从头再放（Instagram、YouTube Shorts）：从结尾跳回开头就算放完了一遍（见 loopedToStart） */
+  loops: boolean;
   title?: string;
   start?: number;
   end?: number;
@@ -193,8 +197,35 @@ function alive(): boolean {
   }
 }
 
+/** YouTube 正在看的视频所在的播放器：播放页是 #movie_player，Shorts 是 #shorts-player（Shorts 页面上藏着的 #movie_player 不算，见 youtubePlayerId） */
 function playerEl(): HTMLElement | null {
-  return SITE === 'youtube' ? document.getElementById('movie_player') : null;
+  const id = SITE === 'youtube' ? youtubePlayerId(location.href) : undefined;
+  return id ? document.getElementById(id) : null;
+}
+
+/** 几个视频里画面最大的那个（藏起来的面积是 0）；一样大时取前面的 */
+function largestVideo(all: ArrayLike<HTMLVideoElement>): HTMLVideoElement | null {
+  if (all.length <= 1) return all[0] ?? null;
+  let best = all[0]!;
+  let bestArea = -1;
+  for (const v of Array.from(all)) {
+    const r = v.getBoundingClientRect();
+    if (r.width * r.height > bestArea) {
+      bestArea = r.width * r.height;
+      best = v;
+    }
+  }
+  return best;
+}
+
+/**
+ * YouTube 播放器里的视频。播放页沿用第一个 <video>；Shorts 播放器里万一不止一个（播放器换下一条时可能先备好下一个元素，
+ * 没有实测到），取画面最大的那个：备着的那个不显示，面积是 0。
+ */
+function youtubeVideoEl(): HTMLVideoElement | null {
+  const player = playerEl();
+  if (!player) return null;
+  return player.id === 'shorts-player' ? largestVideo(player.querySelectorAll('video')) : player.querySelector('video');
 }
 
 /** 小红书笔记详情（单独的页面或弹出的浮层）里播放器的视频；找不到播放器时退而求其次，取笔记里的视频 */
@@ -430,7 +461,7 @@ function biliPage(): { id: string; url: string } | undefined {
 }
 
 function videoEl(): HTMLVideoElement | null {
-  if (SITE === 'youtube') return playerEl()?.querySelector('video') ?? null;
+  if (SITE === 'youtube') return youtubeVideoEl();
   const now = feedSiteNow();
   if (now) return now.video;
   if (SITE === 'kubb') return kubbVideoEl();
@@ -438,18 +469,8 @@ function videoEl(): HTMLVideoElement | null {
   if (SITE === 'douyin') return douyinItem()?.querySelector('video') ?? null;
   let all = document.querySelectorAll<HTMLVideoElement>(XHS_PLAYER_VIDEO);
   if (!all.length) all = document.querySelectorAll<HTMLVideoElement>(XHS_ANY_VIDEO);
-  if (all.length <= 1) return all[0] ?? null;
-  // 不止一个：取画面最大的那个（藏起来的面积是 0）
-  let best = all[0]!;
-  let bestArea = -1;
-  for (const v of all) {
-    const r = v.getBoundingClientRect();
-    if (r.width * r.height > bestArea) {
-      bestArea = r.width * r.height;
-      best = v;
-    }
-  }
-  return best;
+  // 不止一个：取画面最大的那个
+  return largestVideo(all);
 }
 
 function adShowing(): boolean {
@@ -463,7 +484,7 @@ function adShowing(): boolean {
 }
 
 /**
- * YouTube 的视频 ID；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时；首页信息流上是锁定的视频所在的帖子）；
+ * YouTube 的视频 ID（Shorts 的也是，shorts 为 true）；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时；首页信息流上是锁定的视频所在的帖子）；
  * 酷播的影片 ID（网址是播放页时，剧集带分集 ID）；Instagram 的帖子短码（首页信息流上锁定的视频所在的帖子）；
  * 抖音的视频 ID（网址里的 modal_id）；B 站的 BV 号（分 P 带第几 P）、番剧或课程的 ep / ss 号，别的带播放器的页面用路径（见 biliPage）
  */
@@ -665,19 +686,20 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   const video = videoEl();
   const { videoId, shorts } = currentIds();
   const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
+  // Instagram 和 YouTube Shorts 的视频放到结尾会自己从头再放
+  const loops = SITE === 'ig' || shorts;
   const problem = checkClipStart(req, {
     site: SITE,
     feed: onFeed(),
     enabled: settings.enabled,
     videoId,
-    shorts,
     hasVideo: !!video,
     busy: !!rec,
     duration: video?.duration ?? 0,
     currentTime: video?.currentTime ?? 0,
     // 停在最后一帧也算播完（小红书的播放器不报"播完"）；循环播放的不算：X 的动图只有一两秒，一多半时间都离结尾很近；
-    // Instagram 的视频放到结尾自己跳回开头接着放（没有 loop 属性），也不算
-    ended: !!video && !video.loop && SITE !== 'ig' && (video.ended || atVideoEnd(video.currentTime, video.duration)),
+    // Instagram、YouTube Shorts 的视频放到结尾自己跳回开头接着放，也不算
+    ended: !!video && !video.loop && !loops && (video.ended || atVideoEnd(video.currentTime, video.duration)),
     maxSec,
   });
   if (problem || !video || !videoId) return fail(problem ?? '没找到播放器里的视频');
@@ -751,6 +773,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     videoId,
     pageUrl: sourceUrl(),
     feed: onFeed(),
+    loops,
     ...(title ? { title } : {}),
     ...(req.mode === 'range' ? { start: req.start!, end: req.end! } : {}),
     video,
@@ -758,7 +781,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     g,
     width: size.width,
     height: size.height,
-    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）；X、酷播、B 站播放器里的字幕不读
+    // 小红书的视频没有单独的字幕层（字幕若有，是做在画面里的，会原样录下）；X、酷播、B 站播放器里的字幕不读。
+    // YouTube Shorts 上读的是 Shorts 播放器里的原生字幕（TubeMuse 自动字幕、多语字幕不在 Shorts 上显示）
     burn: SITE === 'youtube' && settings.burnSubtitles,
     format,
     maxSec,
@@ -956,13 +980,12 @@ function releaseShot(): void {
 async function captureFrame(): Promise<ClipCaptureReply> {
   releaseShot();
   const video = videoEl();
-  const { videoId, shorts } = currentIds();
+  const { videoId } = currentIds();
   const problem = checkCapture({
     site: SITE,
     feed: onFeed(),
     enabled: settings.enabled,
     videoId,
-    shorts,
     hasVideo: !!video,
     ad: adShowing(),
     drm: !!video && drmProtected(video),
@@ -1075,8 +1098,8 @@ function tick(): void {
     r.lastTick = now;
     const v = r.video;
     const { videoId } = currentIds();
-    // Instagram：进度从结尾跳回了开头，算放完了一遍（要在记下这一轮的进度之前比）
-    const looped = SITE === 'ig' && loopedToStart(r.seenTime, v.currentTime, v.duration);
+    // Instagram、YouTube Shorts：进度从结尾跳回了开头，算放完了一遍（要在记下这一轮的进度之前比）
+    const looped = r.loops && loopedToStart(r.seenTime, v.currentTime, v.duration);
     if (v.currentTime !== r.seenTime || v.paused || v.seeking) {
       r.seenTime = v.currentTime;
       r.seenAt = now;
@@ -1126,8 +1149,9 @@ function tabState(precise = false): ClipTabState {
   const videoId = (r && FEED_SITE ? feedRecordingId(r) : null) ?? now.videoId;
   const video = r?.video ?? videoEl();
   const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
-  // YouTube 播放页上视频元素几乎立刻就有，沿用原来的判断（不因"还没有视频"挡住）；小红书的图文笔记、X 的文字帖子没有视频
-  const unavailable = clipUnavailable(SITE, { feed: onFeed(), enabled: settings.enabled, videoId, shorts, hasVideo: SITE === 'youtube' || !!video });
+  // YouTube 播放页上视频元素几乎立刻就有，沿用原来的判断（不因"还没有视频"挡住）；小红书的图文笔记、X 的文字帖子没有视频。
+  // Shorts 看的是 Shorts 播放器里有没有视频：页面上另有一个藏着的 #movie_player，不能拿它算"有视频"
+  const unavailable = clipUnavailable(SITE, { feed: onFeed(), enabled: settings.enabled, videoId, hasVideo: (SITE === 'youtube' && !shorts) || !!video });
   const t = video?.currentTime ?? 0;
   let status: string;
   if (r?.stopping) status = '正在收尾…';
@@ -1142,6 +1166,7 @@ function tabState(precise = false): ClipTabState {
     videoId,
     ...(title ? { title } : {}),
     ...(unavailable ? { unavailable } : {}),
+    ...(shorts ? { shorts: true } : {}),
     position: precise ? Math.round(t * 10) / 10 : Math.floor(t),
     duration: video && Number.isFinite(video.duration) ? Math.floor(video.duration) : 0,
     phase: r ? (r.stopping ? 'finishing' : 'recording') : 'idle',

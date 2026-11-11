@@ -436,7 +436,7 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 录制中显示计时、已录大小、时间段进度和暂停原因，可以暂停、继续、停止。
   - 录好的片段（保存 / 再存一次 / 丢弃），最近录过的片段（点标题回到视频的这一段）。
   - 状态由录制脚本在有变化时推送（播放位置不算变化，免得边看边每秒发消息）；页面打开时每秒再问一次位置。"当前标签页状态"的钩子从字幕页抽成共用的 `useActiveTabState`。
-- **快捷键与图标：** `Alt+Shift+R` 开始 / 停止（`commands`，不需要权限）。录制中工具栏图标显示 REC：在录是红色，自动暂停时灰色；失败时（例如在 Shorts 上按快捷键）显示橙色"!"，悬停可看原因。`action.setBadgeText` 不需要权限。
+- **快捷键与图标：** `Alt+Shift+R` 开始 / 停止（`commands`，不需要权限）。录制中工具栏图标显示 REC：在录是红色，自动暂停时灰色；失败时（例如在 Shorts 上按快捷键；2026-11-11 起 Shorts 能录了，见 §66）显示橙色"!"，悬停可看原因。`action.setBadgeText` 不需要权限。
 - **权限：没有新增。** 不用 `downloads`、`tabCapture`、`offscreen`、`desktopCapture`、`web_accessible_resources`；冒烟测试逐项核对。
 - **构建检查：** 录制脚本产物里不得出现以下内容（观看追踪、字幕脚本的检查不变）：
   - 网络：`fetch(`、`XMLHttpRequest`、`WebSocket`、`sendBeacon`、`EventSource`。
@@ -457,7 +457,7 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 剪辑、预览：侧边栏是扩展页面，读不到 youtube.com 页面里的 Blob。
   - 后台标签页继续录。
   - 存进子文件夹（要 `downloads` 权限，还要把数据搬出页面）。
-  - Shorts（播放器结构不同）。
+  - Shorts（播放器结构不同）。2026-11-11 已支持，见 §66。
   - 刷新或关闭页面前提醒未保存的片段（要拦截页面关闭，会打扰正常浏览）。
 
 ## 37. 多语字幕：几种 YouTube 字幕同时叠在播放器里（2026-11-02，用户要求，规格外新增）
@@ -1468,3 +1468,39 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 冒烟测试（正式版 `dist/`）：按钮上的图加载出来了（产物里带着图，CSP 放行）。
   - 浅色 / 深色、平时 / 展开四种情况在无头 Chromium 里各截图看过。用户自己的 Chrome 里的观感留给手测清单（README 新增 1 条）。
 - **日后替换**：换图就换 `static/icons/muse-avatar.png`（建议仍是 5:6、透明底、至少 120×144）；改大小改 `MuseAsk.tsx` 的 `MUSE_AVATAR`（e2e 里核对的数字跟着改）；改边框和底色改 `styles.css` 的 `.muse-btn`。
+
+## 66. 片段录制：YouTube Shorts（2026-11-11，用户要求）
+
+- **需求**：在 `https://www.youtube.com/shorts/<ID>` 上片段录制写"Shorts 暂不支持录制"。用户要给 **片段**（录制和 Capture）加上 Shorts。用户的截图里打开的是 **字幕** 页（多语字幕写着"这个页面不是视频播放页"），文字说的是"片段"：按文字做了片段，多语字幕没动（见"没做"）。
+- **红线**：没有变，没有停下来问。Shorts 是 YouTube 的页面，录制脚本本来就注入 `www.youtube.com/*`；读的东西和播放页一样（播放器状态、页面标题、烧录时显示的字幕文字），不插入元素、不点击、不发请求。没有新增权限和注入范围。CLAUDE.md §1 补了一句"Shorts 也能录、也能 Capture"。
+- **外部事实（2026-11-11 核实：这个会话里的无头 Chromium，Playwright 驱动，未登录，海外网络）**
+  - 页面里的播放器配置 `WEB_PLAYER_CONTEXT_CONFIG_ID_KEVLAR_SHORTS` 的 `rootElementId` 是 **`shorts-player`**（播放页的是 `movie_player`；同一份配置里还有首页悬停预览的 `inline-preview-player`、频道页的 `c4-player` 等）。
+  - Shorts 页面的结构：`ytd-shorts > #shorts-container > #shorts-inner-container` 里每条 Short 一格（`div#0`、`div#1`…，class `reel-video-in-sequence-new`）；**只有正在看的那一格里有 `ytd-reel-video-renderer`**，播放器装在它的 `#player-container > ytd-player#player > div#container` 里，别的格子只有缩略图。早先常见的 `ytd-reel-video-renderer[is-active]` 已经没有了。
+  - **直接打开 Shorts 页面时，页面里也有一个藏起来的 `ytd-watch-flexy[hidden]`**（播放页那一套）；三次打开里有一次它里面已经建好了 `#movie_player` 和它的 `<video>`（宽 0），另外两次还是空的。录制脚本原来在 YouTube 上只找 `#movie_player`——这正是 §60 说"Shorts 的播放器不读"的原因：从播放页站内跳到 Shorts 时，它里面还是上一个视频。
+  - 播放器脚本（`base.js`）在广告开始时给播放器根元素加 `ad-showing`、`ad-interrupting`（和播放页同一套代码）；配置里有 `html5_disable_loop_range_for_shorts_ads`、`html5_shorts_gapless_ad_*` 这类开关，说明 Shorts 的广告也在这个播放器里放。
+  - 播放器有"循环区间"（`setLoopRange`，类型 `shortsLoop` / `clips`）：放到区间终点时 `seekTo` 回起点。另有 `html5_seek_new_media_element_shorts_*` 这类开关，暗示换下一条时可能换一个 `<video>` 元素。
+  - **没能核实的**：YouTube 对这个会话的网络要求"登录以确认你不是机器人"（`playabilityStatus: LOGIN_REQUIRED`），Shorts 播放器没有建起来（`#shorts-player` 不存在）。所以下面这几件都没有实测：`#shorts-player` 里 `<video>` 的实际层级；放到结尾是靠 `loop` 属性还是播放器自己跳回开头；划到下一条时 `<video>` 换不换、页面标题跟不跟着换；Shorts 广告是不是带 `ad-showing`、划到广告那一条时网址变不变。做法对这几种情况都兜得住，留给手测清单（README 新增 8 条，另把原来"在 Shorts 上按快捷键 → 不录"那条改成在首页上按）。
+- **做法**
+  - **认播放器（`youtubePlayerId`，纯函数）**：`/shorts/<ID>` 用 `#shorts-player`，`/watch`、`/live/…` 用 `#movie_player`，别的页面不找。**Shorts 上只认 `#shorts-player`，找不到也不退回 `#movie_player`**：退回去就是录上一个视频（它停着，录制会一直"视频已暂停"）或截到上一个视频的画面；找不到时 **片段** 页写"没找到播放器里的视频"。
+  - **播放器里的 `<video>`**：播放页照旧取第一个；Shorts 播放器里万一不止一个（见上面的开关），取画面最大的那个（备着的不显示，面积是 0；和小红书笔记里有两个视频时的取法共用 `largestVideo`）。录制中播放器换了元素就算换了视频，这一段结束（沿用 §36）。
+  - **广告和字幕烧录都看"正在看的那个播放器"**（`playerEl()`）：Shorts 上看的是 `#shorts-player` 的 `ad-showing` 和它里面的原生字幕（`.caption-window`）；藏着的 `#movie_player` 带不带 `ad-showing` 都不管。TubeMuse 的自动字幕、多语字幕不在 Shorts 上显示，所以 Shorts 上烧录的只有原生字幕，侧边栏的勾选项说明写明。
+  - **放完一遍就结束**：Shorts 放到结尾会从头再放。沿用 Instagram 的 `loopedToStart`（§56）：上一轮离结尾不到半秒、这一轮回到了开头，就算放完了一遍。自由录制在这里结束（"视频播完了"）；按时间段截取时录到东西后也在这里结束——终点写在结尾或写过了头时，原来的判断永远等不到"到终点"，会等它从头放到起点再录一遍，现在不会。不管是 `loop` 属性还是播放器自己 `seekTo` 回去，看到的都是"从结尾跳回开头"；真的报"播完"（例如开着自动滚动）也照旧结束。开录前"已经播完了"的检查对 Shorts 不做（和 Instagram 一样：循环播放的视频停在结尾只是一瞬）。
+  - **划到下一条**：网址里的 ID 变了 → 这一段结束并保存（沿用 YouTube 站内跳转的判断，§36），侧边栏跟上下一条。
+  - **"有没有视频"**：Shorts 上按 Shorts 播放器里有没有 `<video>` 算；播放页沿用原来"视频元素几乎立刻就有、不因此挡住"的判断。
+  - **侧边栏**：`ClipTabState` 加 `shorts`。Shorts 上多一句"放到结尾会自己从头再放：这一段录到结尾就自动结束…划到下一条 Short 时这一段也结束"；字幕烧录的说明改成"录的是 Shorts 播放器里当时显示的 YouTube 原生字幕"。
+  - **记录与链接**：和播放页一样记成 YouTube 的视频（没有 `site`），点标题打开 `watch?v=<ID>&t=<秒>s`：Shorts 的网址不认时间参数，`watch` 网址能从录的那一段开始放同一个视频（在普通播放器里）。没有为 Shorts 另加字段，旧记录、导出格式不变。
+  - `ClipStartContext` 去掉了 `shorts`（原来只用来挡 Shorts）。
+- **放弃**
+  - 认 `ytd-reel-video-renderer[is-active]` 或"页面上正在播的那个 `<video>`"：前者实测已经没有了；后者在站内跳转的那一下可能挑到藏着的播放器，播放器 ID 是 YouTube 自己配置里写明的，更稳。
+  - 读 Shorts 上的标题栏、频道名（`yt-shorts-video-title-view-model` 等）来起文件名：多读页面内容，红线只允许页面标题。
+  - 为 Shorts 记 `/shorts/<ID>` 的链接：不能带时间，回不到"这一段"。
+- **没做 / 留给用户决定**
+  - **多语字幕、自动字幕在 Shorts 上仍不支持**（§33、§37 原样）。用户的截图是 **字幕** 页，但文字点名的是"片段"；多语字幕上 Shorts 要改 MAIN 世界里的助手（播放器换成 `#shorts-player`）、字幕层的位置和令牌复用，而这个会话里放不了 Shorts、无法核实，没有顺手做，汇报里问用户要不要。
+  - 「问 muse」在 Shorts 上的播放位置仍写「未知」：§60 的那个理由（读到藏着的播放器）这次的 `youtubePlayerId` 已经能解决，但「问 muse」取 YouTube 字幕走的是多语字幕脚本，在 Shorts 上不工作，要一起改；不在这次的要求里。
+  - 观看追踪在 Shorts 上判断广告仍只看 `#movie_player`（不在这次范围）。
+- **已知风险**：见"没能核实的"。最可能的表现：YouTube 改了 Shorts 播放器的 ID → **片段** 页写"没找到播放器里的视频"（不会录到别的视频）；Shorts 广告不带 `ad-showing` 又不换网址 → 广告时不会自动暂停，会录进去；划过来时页面标题晚于网址更新 → 立刻开录的话文件名用上一条的标题（ID 和链接是对的）。手动把进度从最后半秒拖回开头，也会被当成"放完一遍"而结束这一段。
+- **测试**
+  - 单测（`tests/unit/clips.test.ts`"YouTube Shorts"4 条；去掉了原来"Shorts 暂不支持"的两条断言）：`youtubePlayerId`（Shorts、带参数的 Shorts、播放页、直播、首页、没有 ID、别的页面、坏网址）；Shorts 能录能截、Shorts 播放器里还没有视频时的说法；从结尾跳回开头时自由录制和时间段（终点写过头）都结束、划到下一条结束、广告暂停；文件名与回到这一段的链接。
+  - e2e：仿 Shorts 页面 `tests/e2e/shorts-pages.mjs` 照上面的结构写（`ytd-shorts` 里只有当前一格有播放器，同一页面里藏着 `ytd-watch-flexy[hidden] > #movie_player`，里面的上一个视频停在 20 秒视频的第 9 秒；划到下一条是单页应用的跳转；放到结尾用 `loop` 从头再放）。`parts/clips.mjs` 最后一段：不再说"暂不支持"；总时长是 Shorts 的（选中的不是藏着的那个）；标题、说明文字、烧录说明；自由录制不点停止，放到结尾跳回开头时自动结束并保存，只录一遍、有声音；记录；页面原样、没点任何东西；时间段 0:05–0:07（终点就在结尾）到结尾就停；藏着的播放器带 `ad-showing` 时照常录、Shorts 播放器带上时暂停；录制中划到下一条时结束并保存，侧边栏跟上；Capture 竖屏 720×1280；页面上没有 TubeMuse 发出的请求。
+  - **真实页面上的手动核实（2026-11-11，不是自动测试）**：把正式版 `dist/` 加载进无头 Chromium，打开真实的 Shorts 页面，直接给录制脚本发侧边栏会发的消息：状态里 `shorts: true`、ID 对，写的是"没找到播放器里的视频，等视频开始播放后再试"（不再是"Shorts 暂不支持录制"）；Capture、开始录制都回同一句，没有退回去找别的播放器。因为上面说的"登录以确认不是机器人"，Shorts 播放器没有建起来，录不了、截不了真画面：完整流程只在仿 Shorts 页面的 e2e 里跑过，用户自己的 Chrome 留给手测清单。
+- **日后替换**：YouTube 改了 Shorts 播放器时看 `core/clips.ts` 的 `youtubePlayerId` 和 `content/clipper.ts` 的 `youtubeVideoEl`。要让多语字幕、「问 muse」的位置和字幕也支持 Shorts，从同一个 `youtubePlayerId` 出发改多语字幕的助手和内容脚本。
