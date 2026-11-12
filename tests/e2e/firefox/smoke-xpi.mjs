@@ -7,7 +7,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { FIREFOX_ADDON_ID, firefoxRedirectUrl } from '../../../scripts/firefox.mjs';
+import { FIREFOX_ADDON_ID, FIREFOX_DATA_COLLECTION, firefoxRedirectUrl } from '../../../scripts/firefox.mjs';
 import { Browser, Marionette, launchFirefox } from './marionette.mjs';
 import { findFirefox } from './find-firefox.mjs';
 
@@ -116,6 +116,11 @@ try {
   );
   check(JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['alarms', 'identity', 'storage', 'unlimitedStorage']), `权限最小化：${manifest.permissions.join(', ')}`);
   check(!manifest.web_accessible_resources, '没有向网页暴露任何扩展文件');
+  // Mozilla 签名必填的数据收集声明（DECISIONS §71）：Firefox 认得、原样保留在装好的扩展里
+  check(
+    JSON.stringify(manifest.browser_specific_settings?.gecko?.data_collection_permissions?.required) === JSON.stringify([...FIREFOX_DATA_COLLECTION.required]),
+    `数据收集声明在装好的扩展里：${manifest.browser_specific_settings?.gecko?.data_collection_permissions?.required?.join(', ')}`,
+  );
   const csp = String(manifest.content_security_policy?.extension_pages ?? '');
   const connect = /connect-src ([^;]+)/.exec(csp)?.[1]?.trim().split(/\s+/) ?? [];
   const expected = ['https://www.googleapis.com', 'https://oauth2.googleapis.com', 'https://api.anthropic.com', 'https://api.openai.com', 'https://api.x.com', 'https://www.douban.com'];

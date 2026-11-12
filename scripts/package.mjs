@@ -6,7 +6,7 @@
 // 产物都在 release/：
 //   tubemuse-<版本>-chrome.zip   Chrome：解压后"加载已解压的扩展程序"（Windows / macOS 上装 Chrome 版走这条）
 //   tubemuse-<版本>-chrome.crx   Chrome：同一个 zip，用 local/extension-key.pem 签名（CRX3）
-//   tubemuse-<版本>-firefox.xpi  Firefox：about:debugging 临时载入
+//   tubemuse-<版本>-firefox.xpi  Firefox：about:debugging 临时载入（发布后由 scripts/sign-firefox.mjs 另交 Mozilla 签名，追加 -signed.xpi，DECISIONS §71）
 //   release-notes.md             发布页上的安装说明（不是下载文件）
 // 需要 local/manifest-key.txt 与 local/extension-key.pem 是同一对密钥（npm run setup 生成；发布时由 scripts/release-key.mjs 从 Secret 写出）。
 import { execFileSync } from 'node:child_process';
@@ -128,7 +128,8 @@ const notes = [
   '|---|---|---|',
   `| **\`${zipName}\`** | Chrome 或其他 Chromium 内核浏览器（**推荐**） | 解压到一个固定的文件夹 → 打开 \`chrome://extensions\` → 右上角打开「开发者模式」→「加载已解压的扩展程序」→ 选解压出来的文件夹（里面直接就是 \`manifest.json\`）。装好后不要移动或删除这个文件夹 |`,
   `| \`${crxName}\` | Chrome（签过名的安装包） | **Windows / macOS 上的正式版 Chrome 不允许安装 Chrome 应用商店以外的 .crx**（拖进 \`chrome://extensions\` 会被拒绝或装上后被停用，常见报错 \`CRX_REQUIRED_PROOF_MISSING\`），请用上面的 .zip。用企业策略（ExtensionInstallForcelist）部署时可以用它（发布前的自动化测试走的就是这条路） |`,
-  `| **\`${xpiName}\`** | Firefox 149 及以上 | 打开 \`about:debugging#/runtime/this-firefox\` →「临时载入附加组件…」→ 选这个文件。重启 Firefox 后要重新载入一次（本机数据还在） |`,
+  `| **\`${xpiName.replace(/\.xpi$/, '-signed.xpi')}\`** | Firefox 149 及以上（**推荐**，永久安装） | Mozilla 签过名的版本，发布后几分钟内追加到这里（没有出现就是签名没成功，看这次 Release 工作流的运行摘要）。打开 \`about:addons\` → 齿轮 →「从文件安装附加组件…」选它，或者直接拖进 Firefox 窗口；装好后一直保留。以前临时载入过的，先在 \`about:debugging\` 里移除 |`,
+  `| \`${xpiName}\` | Firefox 149 及以上 | 未签名的同一份内容：只能在 \`about:debugging#/runtime/this-firefox\` →「临时载入附加组件…」载入，重启 Firefox 后要重新载入（本机数据还在） |`,
   '',
   '### 装好以后',
   '',
@@ -137,7 +138,8 @@ const notes = [
   clientId
     ? `- 安装包里带着 OAuth Client ID \`${clientId}\`。`
     : '- 安装包里**没有带 OAuth Client ID**：第一次装好后，在设置页「2. YouTube 账号」的 **OAuth Client ID** 框里填一次（和 Client Secret 一样只存在本机），再点"连接 YouTube"。',
-  '- **更新**：Chrome 把新的 .zip 解压**覆盖到同一个文件夹**，再在 `chrome://extensions` 点 TubeMuse 卡片上的刷新按钮，本机数据保留；Firefox 重新临时载入新的 .xpi。',
+  '- **Firefox 安装时会列出数据收集声明**（Mozilla 签名的要求）：搜索词、浏览活动、网站内容、个人通信——对应找片口令、观看记录、eMails 与自动字幕发给你选的大模型 / OpenAI / YouTube 的那些数据，见 README「隐私与数据」。',
+  '- **更新**：Chrome 把新的 .zip 解压**覆盖到同一个文件夹**，再在 `chrome://extensions` 点 TubeMuse 卡片上的刷新按钮，本机数据保留；Firefox 安装新版本的 signed .xpi，原地升级。',
   '',
   `完整说明见 README 的 [安装](${repo}#install) 与 [在 Firefox 里使用](${repo}#firefox)。`,
   '',

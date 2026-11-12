@@ -1,5 +1,6 @@
 // @ts-check
-// 发布流程（DECISIONS §70）里不依赖浏览器的部分：版本号、CRX3 打包与校验、zip 读回、仓库 Secret 里的签名密钥、两个工作流的关键约定。
+// 发布流程（DECISIONS §70、§71）里不依赖浏览器的部分：版本号、CRX3 打包与校验、zip 读回、仓库 Secret 里的签名密钥、
+// Firefox 版的数据收集声明与 Mozilla 签好的文件的核对、两个工作流的关键约定。
 // Chromium 真的认不认这个 .crx，由 tests/e2e/smoke-crx.mjs 在真的 Chromium 里验证（CI 的 package job 和发布前各跑一次）。
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,6 +11,8 @@ import { extensionIdOf, crxIdOf, manifestKeyOf, packCrx, readCrx } from '../../s
 import { extensionIdFromPublicKey } from '../../scripts/gen-key.mjs';
 import { SECRET_NAME, signingKeyFromSecret } from '../../scripts/release-key.mjs';
 import { isManifestVersion, releaseVersion } from '../../scripts/version.mjs';
+import { FIREFOX_ADDON_ID, FIREFOX_DATA_COLLECTION } from '../../scripts/firefox.mjs';
+import { approvalNotes, verifySignedXpi } from '../../scripts/sign-firefox.mjs';
 import { readZipEntry, zipDirectory } from '../../scripts/zip.mjs';
 
 /** @param {'pkcs8' | 'pkcs1'} type */
@@ -225,5 +228,99 @@ describe('发布工作流（.github/workflows/release.yml）', () => {
     const verify = ci.slice(ci.indexOf('\n  verify:'));
     expect(verify).toContain('[ "$PACKAGE" = "success" ]');
     expect(verify).toContain("needs.package.result == 'success'");
+  });
+});
+
+describe('Firefox 版的 Mozilla 签名（DECISIONS §71）', () => {
+  const root = new URL('../../', import.meta.url);
+  const release = readFileSync(new URL('.github/workflows/release.yml', root), 'utf8');
+  const ci = readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8');
+  const MOZILLA_TYPES = [
+    'personallyIdentifyingInfo',
+    'healthInfo',
+    'financialAndPaymentInfo',
+    'authenticationInfo',
+    'personalCommunications',
+    'locationInfo',
+    'browsingActivity',
+    'websiteContent',
+    'websiteActivity',
+    'searchTerms',
+    'bookmarksInfo',
+    'technicalAndInteraction',
+  ];
+
+  /** 用 zipDirectory 打一个"扩展"，再按需加上 META-INF 签名文件、改动内容 */
+  const makeXpi = (/** @type {{ version?: string; id?: string; extra?: Record<string, string>; jsBody?: string }} */ o = {}) => {
+    const base = mkdtempSync(join(tmpdir(), 'tubemuse-xpi-'));
+    const d = join(base, 'ext');
+    try {
+      mkdirSync(join(d, 'chunks'), { recursive: true });
+      writeFileSync(join(d, 'manifest.json'), JSON.stringify({ manifest_version: 3, version: o.version ?? '0.1.0.51', browser_specific_settings: { gecko: { id: o.id ?? FIREFOX_ADDON_ID } } }));
+      writeFileSync(join(d, 'chunks', 'a.js'), o.jsBody ?? 'console.log("ok");\n'.repeat(30));
+      for (const [name, body] of Object.entries(o.extra ?? {})) {
+        mkdirSync(join(d, name, '..'), { recursive: true });
+        writeFileSync(join(d, name), body);
+      }
+      zipDirectory(d, join(base, 'out.xpi'));
+      return readFileSync(join(base, 'out.xpi'));
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  };
+  const SIG = { 'META-INF/manifest.mf': 'x', 'META-INF/mozilla.sf': 'x', 'META-INF/mozilla.rsa': 'sig', 'META-INF/cose.manifest': 'x', 'META-INF/cose.sig': 'sig' };
+  const expected = { version: '0.1.0.51', id: FIREFOX_ADDON_ID };
+
+  it('数据收集声明：只用 Mozilla 定义的类别，如实声明（不是 none），technicalAndInteraction 不能是必需', () => {
+    expect(FIREFOX_DATA_COLLECTION.required.length).toBeGreaterThan(0);
+    for (const t of FIREFOX_DATA_COLLECTION.required) expect(MOZILLA_TYPES).toContain(t);
+    expect(FIREFOX_DATA_COLLECTION.required).not.toContain('none');
+    expect(FIREFOX_DATA_COLLECTION.required).not.toContain('technicalAndInteraction');
+    // 找片口令发给大模型 / YouTube：核心功能，少了它声明就不如实
+    expect(FIREFOX_DATA_COLLECTION.required).toContain('searchTerms');
+  });
+
+  it('Mozilla 签好的文件：有签名、其余文件逐个相同、ID 与版本对得上，才算通过', () => {
+    const unsigned = makeXpi();
+    expect(verifySignedXpi(makeXpi({ extra: SIG }), unsigned, expected).signatureFiles).toContain('META-INF/cose.sig');
+    expect(() => verifySignedXpi(makeXpi(), unsigned, expected)).toThrow(/没有 Mozilla 的签名/);
+    expect(() => verifySignedXpi(makeXpi({ extra: { ...SIG, 'evil.js': 'x' } }), unsigned, expected)).toThrow(/多了 evil\.js/);
+    expect(() => verifySignedXpi(makeXpi({ extra: SIG, jsBody: 'console.log("changed");' }), unsigned, expected)).toThrow(/chunks\/a\.js/);
+    expect(() => verifySignedXpi(makeXpi({ extra: SIG, version: '0.1.0.52' }), makeXpi({ version: '0.1.0.52' }), expected)).toThrow(/版本是 0\.1\.0\.52/);
+    expect(() => verifySignedXpi(makeXpi({ extra: SIG, id: 'other@x' }), makeXpi({ id: 'other@x' }), expected)).toThrow(/扩展 ID 是 other@x/);
+    const fewer = makeXpi({ extra: { ...SIG } });
+    expect(() => verifySignedXpi(fewer, makeXpi({ extra: { 'more.txt': 'y' } }), expected)).toThrow(/少了 more\.txt/);
+  });
+
+  it('给审核员的说明写明从源码构建出同一个包的命令', () => {
+    const notes = approvalNotes('0.1.0.51', 'abc123', 'https://github.com/o/r');
+    expect(notes).toContain('node scripts/build.mjs --firefox --version=0.1.0.51');
+    expect(notes).toContain('npm ci');
+    expect(notes).toContain('abc123');
+  });
+
+  it('发布之后才签名；AMO 凭据只交给签名那一步；已经有签好的文件就不重复提交；签好的追加到同一个 Release', () => {
+    expect(release.match(/secrets\.AMO_JWT_ISSUER/g)?.length).toBe(1);
+    expect(release.match(/secrets\.AMO_JWT_SECRET/g)?.length).toBe(1);
+    const sign = release.slice(release.indexOf('- name: Sign the Firefox package with Mozilla'));
+    expect(release.indexOf('gh release create')).toBeLessThan(release.indexOf('- name: Sign the Firefox package with Mozilla'));
+    expect(sign).toContain('AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}');
+    expect(sign).toContain('node scripts/sign-firefox.mjs --version="$VERSION"');
+    expect(sign).toContain('grep -qxF "$name"');
+    expect(sign).toContain('gh release upload "$tag" "release/$name"');
+    expect(release).toContain('npm ci --prefix tools/amo');
+  });
+
+  it('web-ext 单独放在 tools/amo、版本钉死、有锁文件；CI 的 package job 用它做 Mozilla 同款校验', () => {
+    const pkg = JSON.parse(readFileSync(new URL('tools/amo/package.json', root), 'utf8'));
+    expect(pkg.devDependencies['web-ext']).toMatch(/^\d+\.\d+\.\d+$/);
+    const lock = JSON.parse(readFileSync(new URL('tools/amo/package-lock.json', root), 'utf8'));
+    expect(lock.packages['node_modules/web-ext'].version).toBe(pkg.devDependencies['web-ext']);
+    const job = ci.slice(ci.indexOf('\n  package:'), ci.indexOf('\n  verify:'));
+    expect(job).toContain('run: npm run lint:firefox');
+    expect(job).toContain('run: npm run test:sign');
+    // 主项目不依赖它：扩展的 npm ci 不变
+    const main = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+    expect(main.devDependencies['web-ext']).toBeUndefined();
   });
 });

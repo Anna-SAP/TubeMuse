@@ -12,7 +12,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statS
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extensionIdFromPublicKey } from './gen-key.mjs';
-import { FIREFOX_ADDON_ID, FIREFOX_E2E_ADDON_ID, FIREFOX_MIN_VERSION, firefoxRedirectUrl } from './firefox.mjs';
+import { FIREFOX_ADDON_ID, FIREFOX_DATA_COLLECTION, FIREFOX_E2E_ADDON_ID, FIREFOX_MIN_VERSION, firefoxRedirectUrl } from './firefox.mjs';
 import { isManifestVersion } from './version.mjs';
 import { zipDirectory } from './zip.mjs';
 
@@ -165,7 +165,10 @@ const icons = { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/ico
  */
 const browserSpecific = firefox
   ? {
-      browser_specific_settings: { gecko: { id: geckoId, strict_min_version: FIREFOX_MIN_VERSION } },
+      // data_collection_permissions：Mozilla 签名必填的数据收集声明（DECISIONS §71），Firefox 安装时列给你看
+      browser_specific_settings: {
+        gecko: { id: geckoId, strict_min_version: FIREFOX_MIN_VERSION, data_collection_permissions: { required: [...FIREFOX_DATA_COLLECTION.required] } },
+      },
       permissions: ['storage', 'unlimitedStorage', 'identity', 'alarms'],
       background: { scripts: ['background.js'], type: 'module' },
       sidebar_action: { default_panel: 'sidepanel.html', default_title: 'TubeMuse', default_icon: icons, open_at_install: false },
@@ -418,6 +421,9 @@ if (firefox) {
   const chromeOnly = ['key', 'minimum_chrome_version', 'side_panel', 'options_page'].filter((k) => k in m);
   if (chromeOnly.length || m.permissions.includes('sidePanel') || m.background?.service_worker) fail(`Firefox 版 manifest 里混进了 Chrome 专有的项：${[...chromeOnly, 'sidePanel', 'service_worker'].join('、')}`);
   if (m.browser_specific_settings?.gecko?.id !== geckoId) fail('Firefox 版 manifest 没有固定的 gecko.id：授权回跳地址会每次都变');
+  // Mozilla 签名必填；不能写 "none"——TubeMuse 确实会把数据发给你选的服务（DECISIONS §71）
+  const dc = m.browser_specific_settings?.gecko?.data_collection_permissions;
+  if (!Array.isArray(dc?.required) || !dc.required.length || dc.required.includes('none')) fail('Firefox 版 manifest 缺少如实的 data_collection_permissions：Mozilla 签名会被拒');
 }
 
 console.log(`✔ 已构建 ${relative(root, outdir)}/（版本 ${version}）`);
