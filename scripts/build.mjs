@@ -1,17 +1,23 @@
 // @ts-check
 // 构建可直接"加载已解压的扩展程序"的目录。
-//   npm run build      → dist/       （正式版：真实 API 地址，manifest 含固定 key，代码里注入 OAuth Client ID）
-//   npm run build:e2e  → dist-e2e/   （测试版：所有外部服务与 Google 授权页都指向本机 mock）
+//   npm run build              → dist/                （正式版：真实 API 地址，manifest 含固定 key，代码里注入 OAuth Client ID）
+//   npm run build:e2e          → dist-e2e/            （测试版：所有外部服务与 Google 授权页都指向本机 mock）
+//   npm run build:firefox      → dist-firefox/ + release/tubemuse-<版本>-firefox.xpi（Firefox 版，DECISIONS §69）
+//   npm run build:firefox-e2e  → dist-firefox-e2e/    （Firefox 测试版，同样指向本机 mock）
+// 同一份源码，两个浏览器只差 manifest 与少数几处由 __BROWSER__ 区分的地方（src/platform.ts）。
 // manifest 的 host_permissions、CSP connect-src 与豆瓣图片的 img-src 都由 src/config/endpoints*.ts 生成，保证网络出口只有一个来源。
 import * as esbuild from 'esbuild';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extensionIdFromPublicKey } from './gen-key.mjs';
+import { FIREFOX_ADDON_ID, FIREFOX_E2E_ADDON_ID, FIREFOX_MIN_VERSION, firefoxRedirectUrl } from './firefox.mjs';
+import { zipDirectory } from './zip.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const e2e = process.argv.includes('--e2e');
-const outdir = join(root, e2e ? 'dist-e2e' : 'dist');
+const firefox = process.argv.includes('--firefox');
+const outdir = join(root, `${firefox ? 'dist-firefox' : 'dist'}${e2e ? '-e2e' : ''}`);
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 /** @param {string} msg @returns {never} */
@@ -21,12 +27,16 @@ function fail(msg) {
 }
 
 // ── 本地私有配置 ──
+// Chrome 用 manifest 的 key 固定扩展 ID；Firefox 用 gecko.id，不需要它
 const keyPath = join(root, 'local', 'manifest-key.txt');
-if (!existsSync(keyPath)) fail('缺少 local/manifest-key.txt。先运行 npm run setup 生成扩展密钥（用于固定扩展 ID）。');
-const manifestKey = readFileSync(keyPath, 'utf8').trim();
-const extensionId = extensionIdFromPublicKey(manifestKey);
-// OAuth Client ID（Google Cloud 里"Web 应用"类型的客户端）不是密钥，构建时注入代码；e2e 用假 ID
-let oauthClientId = e2e ? 'e2e-test-client.apps.googleusercontent.com' : '';
+if (!firefox && !existsSync(keyPath)) fail('缺少 local/manifest-key.txt。先运行 npm run setup 生成扩展密钥（用于固定扩展 ID）。');
+const manifestKey = firefox ? '' : readFileSync(keyPath, 'utf8').trim();
+const extensionId = firefox ? '' : extensionIdFromPublicKey(manifestKey);
+const geckoId = e2e ? FIREFOX_E2E_ADDON_ID : FIREFOX_ADDON_ID;
+const firefoxRedirect = firefoxRedirectUrl(geckoId);
+// OAuth Client ID（Google Cloud 里"Web 应用"类型的客户端）不是密钥，构建时注入代码；e2e 用假 ID。
+// Firefox 测试版故意不注入：走"在设置页填 Client ID"那条路（别处打好、没带 Client ID 的安装包就是这样用的）
+let oauthClientId = e2e && !firefox ? 'e2e-test-client.apps.googleusercontent.com' : '';
 const configPath = join(root, 'local', 'config.json');
 if (!e2e && existsSync(configPath)) {
   oauthClientId = String(JSON.parse(readFileSync(configPath, 'utf8')).oauthClientId ?? '').trim();
@@ -41,6 +51,13 @@ const compiled = await esbuild.build({ entryPoints: [endpointsFile], bundle: tru
 const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XHS_PAGES, EMAIL_PAGES, X_PAGES, KUBB_PAGES, IG_PAGES, DOUYIN_PAGES, BILI_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 /** @type {string[]} */
 const origins = [...new Set(Object.values(ENDPOINTS).map((u) => new URL(String(u)).origin))];
+/**
+ * manifest 里的网址匹配规则（host_permissions、内容脚本的 matches）。Firefox 的匹配规则不认端口：
+ * 写成 http://127.0.0.1:47321/* 永远匹配不上（161 实测），去掉端口才行。正式版的网址都没有端口，只有测试版的本机 mock 受影响；
+ * CSP 的 connect-src 认端口，照常写全。
+ * @param {string} pattern
+ */
+const match = (pattern) => (firefox ? pattern.replace(/^(\w+:\/\/[^/:]+):\d+\//, '$1/') : pattern);
 const imgOrigins = ['https://i.ytimg.com', ...DOUBAN_IMAGE_ORIGINS, ...(e2e ? origins.filter((o) => o.startsWith('http://127.0.0.1')) : [])];
 
 // ── 打包 ──
@@ -77,7 +94,7 @@ await esbuild.build({
   splitting: true,
   format: 'esm',
   platform: 'browser',
-  target: 'chrome116',
+  target: firefox ? `firefox${parseInt(FIREFOX_MIN_VERSION)}` : 'chrome116',
   jsx: 'automatic',
   jsxImportSource: 'preact',
   // 正式版不带 sourcemap（体积从 8MB 降到约 1.5MB）；e2e 版保留，便于排查测试失败
@@ -85,7 +102,7 @@ await esbuild.build({
   minify: false,
   legalComments: 'linked',
   chunkNames: 'chunks/[name]-[hash]',
-  define: { 'process.env.NODE_ENV': '"production"', __OAUTH_CLIENT_ID__: JSON.stringify(oauthClientId) },
+  define: { 'process.env.NODE_ENV': '"production"', __OAUTH_CLIENT_ID__: JSON.stringify(oauthClientId), __BROWSER__: JSON.stringify(firefox ? 'firefox' : 'chrome') },
   plugins: [swapPlugin],
   logLevel: 'warning',
 });
@@ -106,10 +123,11 @@ await esbuild.build({
   bundle: true,
   format: 'iife',
   platform: 'browser',
-  target: 'chrome116',
+  target: firefox ? `firefox${parseInt(FIREFOX_MIN_VERSION)}` : 'chrome116',
   sourcemap: e2e ? 'linked' : false,
   minify: false,
   legalComments: 'none',
+  define: { __BROWSER__: JSON.stringify(firefox ? 'firefox' : 'chrome') },
   plugins: [swapPlugin],
   logLevel: 'warning',
 });
@@ -131,20 +149,38 @@ const csp = [
 ].join('; ');
 
 const icons = { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png', 128: 'icons/icon-128.png' };
+/**
+ * 两个浏览器不同的那几项（DECISIONS §69）：
+ * - Chrome：key 固定扩展 ID；后台是 service worker；侧边栏是 side_panel（要 sidePanel 权限）；设置页 options_page。
+ * - Firefox：gecko.id 固定扩展 ID（不认 key）；后台是事件页（background.scripts，Firefox 不支持扩展的 service worker）；
+ *   侧边栏是 sidebar_action（不需要权限）；设置页 options_ui 在新标签页打开；不认 minimum_chrome_version。
+ * @type {Record<string, unknown>}
+ */
+const browserSpecific = firefox
+  ? {
+      browser_specific_settings: { gecko: { id: geckoId, strict_min_version: FIREFOX_MIN_VERSION } },
+      permissions: ['storage', 'unlimitedStorage', 'identity', 'alarms'],
+      background: { scripts: ['background.js'], type: 'module' },
+      sidebar_action: { default_panel: 'sidepanel.html', default_title: 'TubeMuse', default_icon: icons, open_at_install: false },
+      options_ui: { page: 'options.html', open_in_tab: true },
+    }
+  : {
+      // e2e 版不带 key：避免与正式版同 ID 冲突
+      ...(e2e ? {} : { key: manifestKey }),
+      minimum_chrome_version: '116',
+      permissions: ['storage', 'unlimitedStorage', 'sidePanel', 'identity', 'alarms'],
+      background: { service_worker: 'background.js', type: 'module' },
+      side_panel: { default_path: 'sidepanel.html' },
+      options_page: 'options.html',
+    };
 /** @type {Record<string, unknown>} */
 const manifest = {
   manifest_version: 3,
   name: e2e ? 'TubeMuse (E2E)' : 'TubeMuse',
   version: pkg.version,
   description: '按你的意图在 YouTube 找片：一句话找片、带理由的结果、打分让系统可见地变好。只读、本地优先。',
-  // e2e 版不带 key：避免与正式版同 ID 冲突
-  ...(e2e ? {} : { key: manifestKey }),
-  minimum_chrome_version: '116',
-  permissions: ['storage', 'unlimitedStorage', 'sidePanel', 'identity', 'alarms'],
-  host_permissions: origins.map((o) => `${o}/*`),
-  background: { service_worker: 'background.js', type: 'module' },
-  side_panel: { default_path: 'sidepanel.html' },
-  options_page: 'options.html',
+  ...browserSpecific,
+  host_permissions: [...new Set(origins.map((o) => match(`${o}/*`)))],
   // 观看追踪：只读取本地播放器状态。自动字幕：播放时采集该视频音频交给后台转写，并在播放器内叠加只读字幕层。
   // 片段录制：你开始录制后才把这个视频的画面与声音录进内存，保存时交给浏览器存进下载文件夹。
   // 2026-11-04 起也录小红书的视频笔记（DECISIONS §43），2026-11-06 起也录 X 帖子里的视频（DECISIONS §52）：
@@ -160,14 +196,14 @@ const manifest = {
   // 问 muse（DECISIONS §60、§63）：没有新脚本。片段录制脚本在你点「问 muse」时把当前这条视频 / 帖子读一次交给侧边栏；
   // 多语字幕脚本交出位置前后的字幕——已经读到的，或为这一次提问取一种语言（仍是下面检查的那唯一一处同源 /api/timedtext 请求）
   content_scripts: [
-    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-tracker.js'], run_at: 'document_idle' },
-    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-subtitles.js'], run_at: 'document_idle' },
-    { matches: [...new Set([...[...TRACKED_SITES].map((o) => `${o}/*`), ...[...XHS_PAGES, ...X_PAGES, ...KUBB_PAGES, ...IG_PAGES, ...DOUYIN_PAGES, ...BILI_PAGES].map((/** @type {string} */ p) => `${p}*`)])], js: ['content-clipper.js'], run_at: 'document_idle' },
-    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
-    { matches: [...TRACKED_SITES].map((o) => `${o}/*`), js: ['content-multicc.js'], run_at: 'document_idle' },
-    { matches: XHS_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
-    { matches: XHS_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-xhs.js'], run_at: 'document_idle' },
-    { matches: EMAIL_PAGES.map((/** @type {string} */ p) => `${p}*`), js: ['content-email.js'], run_at: 'document_idle' },
+    { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-tracker.js'], run_at: 'document_idle' },
+    { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-subtitles.js'], run_at: 'document_idle' },
+    { matches: [...new Set([...[...TRACKED_SITES].map((o) => match(`${o}/*`)), ...[...XHS_PAGES, ...X_PAGES, ...KUBB_PAGES, ...IG_PAGES, ...DOUYIN_PAGES, ...BILI_PAGES].map((/** @type {string} */ p) => match(`${p}*`))])], js: ['content-clipper.js'], run_at: 'document_idle' },
+    { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-multicc-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
+    { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-multicc.js'], run_at: 'document_idle' },
+    { matches: XHS_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
+    { matches: XHS_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xhs.js'], run_at: 'document_idle' },
+    { matches: EMAIL_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-email.js'], run_at: 'document_idle' },
   ],
   commands: {
     'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕' },
@@ -367,9 +403,33 @@ for (const file of walk(outdir)) {
   }
 }
 
+// Firefox 版的 manifest：不得带 Chrome 专有的项（Firefox 会报警告或直接拒绝），要带固定的 gecko.id（授权回跳地址靠它）
+if (firefox) {
+  const m = /** @type {any} */ (manifest);
+  const chromeOnly = ['key', 'minimum_chrome_version', 'side_panel', 'options_page'].filter((k) => k in m);
+  if (chromeOnly.length || m.permissions.includes('sidePanel') || m.background?.service_worker) fail(`Firefox 版 manifest 里混进了 Chrome 专有的项：${[...chromeOnly, 'sidePanel', 'service_worker'].join('、')}`);
+  if (m.browser_specific_settings?.gecko?.id !== geckoId) fail('Firefox 版 manifest 没有固定的 gecko.id：授权回跳地址会每次都变');
+}
+
 console.log(`✔ 已构建 ${relative(root, outdir)}/`);
 console.log(`  网络出口：${origins.join(', ')}`);
-if (!e2e) {
+if (firefox) {
+  console.log(`  Firefox 扩展 ID：${geckoId}`);
+  console.log(`  授权回跳地址：${firefoxRedirect}（加到 Google Cloud"Web 应用"客户端的"已获授权的重定向 URI"）`);
+}
+if (firefox && !e2e) {
+  // 打成 .xpi（就是 zip，manifest.json 在最上层）：about:debugging →「临时载入附加组件」可以直接选它
+  const xpi = join(root, 'release', `tubemuse-${pkg.version}-firefox.xpi`);
+  mkdirSync(dirname(xpi), { recursive: true });
+  const { files, bytes } = zipDirectory(outdir, xpi);
+  console.log(`  安装包：${relative(root, xpi)}（${files} 个文件，${(bytes / 1024).toFixed(0)} KB）`);
+  console.log(
+    oauthClientId
+      ? `  OAuth Client ID：${oauthClientId}`
+      : '  这个安装包没有带 OAuth Client ID：装好后在设置页「2. YouTube 账号」填，或写进 local/config.json 后重新构建。',
+  );
+}
+if (!e2e && !firefox) {
   console.log(`  扩展 ID：${extensionId}`);
   console.log(`  授权回跳地址：https://${extensionId}.chromiumapp.org/（填到 Google Cloud"Web 应用"客户端的"已获授权的重定向 URI"）`);
   console.log(

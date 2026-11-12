@@ -4,7 +4,7 @@
 
 <h1 align="center">TubeMuse</h1>
 
-<p align="center"><b>一句话找片，打分让它越来越懂你。</b><br/>只服务你一个人的 YouTube 学习助手（Chrome 扩展 · Manifest V3）</p>
+<p align="center"><b>一句话找片，打分让它越来越懂你。</b><br/>只服务你一个人的 YouTube 学习助手（Chrome / Firefox 扩展 · Manifest V3）</p>
 
 在侧边栏里用一句话（打字或语音，中英文）说出想看什么。TubeMuse 先把这句话拆成一条条要求给你确认，再结合你的订阅和喜好找视频，每条结果都写明"为什么推给你"。你打 1–10 分，它会告诉你"因为这次打分改了什么"。
 
@@ -18,7 +18,7 @@
 
 | 步骤 | 做什么 | 用时 |
 |:---:|---|:---:|
-| **1** | [**安装**](#install)：克隆代码 → `npm install` → `npm run setup` → 配置 Google Cloud → `npm run build` → 在 Chrome 加载 `dist` | 约 10 分钟 |
+| **1** | [**安装**](#install)：克隆代码 → `npm install` → `npm run setup` → 配置 Google Cloud → `npm run build` → 在 Chrome 加载 `dist`（用 Firefox 的话见 [1.5](#firefox)：`npm run build:firefox` → 在 `about:debugging` 临时载入 `.xpi`） | 约 10 分钟 |
 | **2** | [**首次配置**](#setup)：在设置页填大模型 API Key，点"连接 YouTube" | 约 5 分钟 |
 | **3** | [**跟着做一遍**](#tour)：画像 → 找片 → 打分 → 看视频 → 记录与总结 → 发现 | 约 15 分钟 |
 
@@ -39,13 +39,13 @@
 | **每周自省** | 本周低分推荐有什么共性，以及系统据你的打分自动改了什么 |
 | **X 热点**（可选） | 与你兴趣相关的 X 热点，每条附原文链接，一键转成找片；只在你点"刷新"时花钱，每日花费有上限，超出立即停止 |
 | **新博主** | 每周最多推荐 5 个你还没订阅、最近活跃的频道，每个附理由和最近 3 个视频；只能"打开频道"，不提供订阅 |
-| **自动字幕**（默认免费） | 给没有原生字幕的 YouTube 视频叠加双语字幕（上一行原文、下一行译文）。**默认关闭**，每个视频由你在侧边栏点一下或按 `Alt+Shift+S` 开启。默认用浏览器自带的语音识别（免费，边说边出字，只有 Google Chrome 能用），也可以改用 OpenAI 转写；回看或拖回去时精确对齐；每日花费有上限 |
+| **自动字幕**（默认免费） | 给没有原生字幕的 YouTube 视频叠加双语字幕（上一行原文、下一行译文）。**默认关闭**，每个视频由你在侧边栏点一下或按 `Alt+Shift+S` 开启。默认用浏览器自带的语音识别（免费，边说边出字；Chrome 能用，Firefox 只在下载了这个语言的本机语音模型后才能用），也可以改用 OpenAI 转写；回看或拖回去时精确对齐；每日花费有上限 |
 | **多语字幕**（免费） | 把视频自带的几种 YouTube 字幕同时叠在播放器底部，一种语言一行（默认：原声语言、English、简体中文；字幕里断开的行接成一行，太长时这一行自动缩小），每种语言按自己的时间轴对准播放进度；视频没有某种语言时用 YouTube 自带的自动翻译补上并标"机翻"。**默认关闭**，在侧边栏 **字幕** 页点一下或按 `Alt+Shift+C` 开启；全屏、剧场模式自动放大 |
 | **豆瓣评论** | 粘贴豆瓣条目链接即可订阅，侧边栏 **豆瓣** 页以图文卡片展示最新评论（作者、时间、评价星级、正文开头），点"读全文"到豆瓣看完整内容 |
 | **小红书** | 在小红书网页版（xiaohongshu.com / rednote.com）的笔记卡片上，作者那一行直接显示发布时间（精确到分钟）；在页面上把笔记或博主收进 TubeMuse、打自定义标签，在侧边栏 **小红书** 页筛选、改名、删除标签。只存在本机，不会在小红书上收藏或关注 |
 | **eMails** | 在 Gmail 里打开文章汇总邮件（如 Medium Daily Digest），侧边栏 **eMails** 页列出里面的文章：点 **评估** 给每篇打 0–10 分并写一句理由，再给这封邮件一段总体结论（一篇值得精读的都没有时说明原因），按"值得精读 / 一般 / 建议跳过"筛选，一键收藏、打标签。只读打开的这一封，不改动邮箱；评过的文章不再花钱 |
 | **问 muse** | 看到想问的地方，点侧边栏顶部的 **问 muse**（那个毛绒小人的图，鼠标停上去有说明）：记下这一刻的播放位置（视频不暂停），把平台、链接、标题、作者、播放位置、章节、简介、上下文（位置前后 30 秒的字幕：在 YouTube 上会自己去取视频自带的字幕；别的平台是这条帖子 / 笔记的正文）和你的问题整理成一段文字，你复制后粘贴到 Muse 聊天（muse.ai）里提问。YouTube、小红书、X、酷播、Instagram、抖音、B 站都能用。只生成文字：不替你发送，不调大模型，不花钱 |
-| **片段录制** | 边看边录下想要的一段（YouTube 视频（含 Shorts）、小红书笔记详情里的视频、X 帖子里的视频（帖子页，或首页信息流里正在播放、开着声音的那个）、酷播 `www.kubb.tv` 播放页里的视频、Instagram 首页信息流里正在播放、开着声音的视频、抖音精选页、搜索结果里点开的视频，或 B 站 `www.bilibili.com` 播放器里的视频——普通视频、番剧影视、课程、播放列表、活动页都行）：侧边栏 **片段** 页（或 `Alt+Shift+R`）自由录制，或填起点、终点按时间段截取；画面和声音都来自这个视频，YouTube 上可选把字幕烧进画面。广告（X 和 B 站的片头广告、酷播上认不出来的广告除外）、暂停时自动暂停；录完由浏览器存进下载文件夹（默认 MP4）。**Capture** 一键把当前这一帧按视频真实尺寸存成无损 PNG，同时放进系统剪贴板（切到别的应用直接粘贴）。不经过网络，仅供个人学习 |
+| **片段录制** | 边看边录下想要的一段（YouTube 视频（含 Shorts）、小红书笔记详情里的视频、X 帖子里的视频（帖子页，或首页信息流里正在播放、开着声音的那个）、酷播 `www.kubb.tv` 播放页里的视频、Instagram 首页信息流里正在播放、开着声音的视频、抖音精选页、搜索结果里点开的视频，或 B 站 `www.bilibili.com` 播放器里的视频——普通视频、番剧影视、课程、播放列表、活动页都行）：侧边栏 **片段** 页（或 `Alt+Shift+R`）自由录制，或填起点、终点按时间段截取；画面和声音都来自这个视频，YouTube 上可选把字幕烧进画面。广告（X 和 B 站的片头广告、酷播上认不出来的广告除外）、暂停时自动暂停；录完由浏览器存进下载文件夹（Chrome 默认 MP4，Firefox 是 WebM）。**Capture** 一键把当前这一帧按视频真实尺寸存成无损 PNG，同时放进系统剪贴板（切到别的应用直接粘贴）。不经过网络，仅供个人学习 |
 
 ---
 
@@ -59,7 +59,7 @@
 
 | 需要什么 | 用来做什么 | 备注 |
 |---|---|---|
-| **Chrome 或其他 Chromium 内核浏览器**（如 Comet） | 运行扩展 | **不需要登录浏览器本身**。连接 YouTube 时会弹出 Google 登录窗口，在窗口里登录你看 YouTube 用的 Google 账号即可，TubeMuse 用这个账号只读访问你的订阅 |
+| **Chrome 或其他 Chromium 内核浏览器**（如 Comet），或 **Firefox 149 及以上**（在 161.0b2 上测过，见 [1.5](#firefox)） | 运行扩展 | **不需要登录浏览器本身**。连接 YouTube 时会弹出 Google 登录窗口，在窗口里登录你看 YouTube 用的 Google 账号即可，TubeMuse 用这个账号只读访问你的订阅 |
 | **Node.js 20 或更新版本** | 构建扩展 | 在终端运行 `node -v` 确认 |
 | **Git** | 下载代码 | 也可以在 GitHub 页面点 Code → Download ZIP |
 | **Anthropic 或 OpenAI 的 API Key**（二选一） | 理解你的口令、归纳兴趣、写总结 | 按调用量付费，见 [💰 费用与配额](#cost) |
@@ -147,6 +147,49 @@ npm run build
 5. 点工具栏的拼图图标 → 把 **TubeMuse** 固定到工具栏，以后点它就能打开侧边栏。
 
 > 💡 装好后**不要移动或删除项目文件夹**，Chrome 每次都从这里加载。Chrome 有时会提示"停用开发者模式扩展程序"，选择保留即可。
+
+<a id="firefox"></a>
+
+#### 1.5（可选）在 Firefox 里使用
+
+TubeMuse 也有 Firefox 版（Firefox **149 及以上**，在 **161.0b2 Beta** 上实测过）。功能、权限、网络出口和 Chrome 版一样，用的是同一个 Google Cloud 客户端。Firefox Beta / 正式版只能"临时载入"未签名的扩展，所以每次重启 Firefox 后要重新载入一次（实测本机数据还在）。
+
+1. **构建安装包**（Client ID 已写在 `local/config.json` 里的话会一起打进去；Firefox 版不需要 `npm run setup` 生成的密钥）：
+
+   ```bash
+   npm run build:firefox
+   ```
+
+   终端会打印 **安装包** `release/tubemuse-0.1.0-firefox.xpi`、**Firefox 扩展 ID** `tubemuse@tubemuse.local` 和 Firefox 的 **授权回跳地址**：
+
+   ```
+   https://bd64894190509c2a091730e87fc55c691c06b55d.extensions.allizom.org/
+   ```
+
+   这个地址由扩展 ID 算出，固定不变。
+
+2. **把 Firefox 的回跳地址加到 Google Cloud**：Google Auth Platform → **客户端（Clients）** → 打开第 1.2 步建的那个"Web 应用"客户端 → **已获授权的重定向 URI** → **添加 URI**，粘贴上面这个地址（含结尾的 `/`）→ **保存**。Chrome 的那条（`…chromiumapp.org/`）留着不用删。保存后可能要等几分钟才生效。
+
+3. **载入**：在 Firefox 地址栏打开 `about:debugging#/runtime/this-firefox` → **临时载入附加组件…（Load Temporary Add-on…）** → 选 `release/tubemuse-0.1.0-firefox.xpi`（也可以选 `dist-firefox/` 里的 `manifest.json`）。Firefox 会自动打开 TubeMuse 的设置页。
+
+4. **首次配置**：和 [第 2 步](#setup) 一样。另外：如果设置页「2. YouTube 账号」里 **OAuth Client ID** 显示"未配置"（安装包构建时没带 Client ID，例如别人替你打的包），在下面的 **OAuth Client ID** 框里粘贴客户端 ID → 保存，再填 Client Secret、点"连接 YouTube"。
+
+5. **打开侧边栏**：Firefox 把新扩展的按钮收在工具栏右侧的 **扩展（拼图）** 面板里：点拼图 → TubeMuse 旁的齿轮 → **固定到工具栏**。之后点工具栏上的 TubeMuse 图标开 / 关侧边栏。
+
+6. **语音输入**（可选）：Firefox 的语音识别**只在本机**进行（Mozilla 的语音模型，没有云端服务）。设置页「4. 语音」会显示这个语言的本机模型状态，能下载时点 **下载** 即可（几百 MB，Firefox 可能先问你一次）；没有这个语言的模型时，语音输入用不了，直接打字。麦克风授权和 Chrome 一样先在授权页授权一次，Firefox 弹窗里勾上 **记住此决定**。
+
+**Firefox 版与 Chrome 版的不同**
+
+| | Chrome | Firefox |
+|---|---|---|
+| 安装方式 | 加载已解压的扩展程序（`dist`），一直保留 | 临时载入附加组件（`.xpi`），重启 Firefox 后要重新载入 |
+| 授权回跳地址 | `https://<扩展ID>.chromiumapp.org/` | `https://bd64894190509c2a091730e87fc55c691c06b55d.extensions.allizom.org/` |
+| 侧边栏 | 点工具栏图标打开（Chrome 侧边栏） | 点工具栏图标开 / 关（Firefox 侧边栏） |
+| 语音输入、自动字幕的"浏览器识别" | 有本地语音包时在本机识别，否则发往 Google 的云端服务（界面明示） | 只在本机识别；这个语言没有本机模型时用不了（界面写明原因，自动字幕可改用 OpenAI 转写） |
+| 自动字幕第二行的"本地翻译" | Chrome 138+ 的本地翻译 | Firefox 没有给扩展用的本地翻译接口：改用大模型翻译 |
+| 片段录制的文件格式 | MP4（H.264 + AAC） | WebM（VP8 + Opus） |
+| 改快捷键 | `chrome://extensions/shortcuts` | `about:addons` → 齿轮 → 管理扩展快捷键 |
+| 网站权限 | 安装时就给了 | 安装时默认给，但可以在 `about:addons` → TubeMuse →「权限」里收回；收回后侧边栏和设置页顶部会写明缺哪些，点"授权访问这些网站"即可恢复 |
 
 <a id="setup"></a>
 
@@ -574,7 +617,7 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 
 ## 🔒 隐私与数据
 
-- **只存本机**：所有数据都在这台电脑的 Chrome 里（`chrome.storage.local`），没有服务器，也没有账号体系。
+- **只存本机**：所有数据都在这台电脑的浏览器里（Chrome / Firefox 的扩展本地存储 `storage.local`），没有服务器，也没有账号体系。
 - **只连官方接口**：网络出口由内容安全策略（CSP）强制限制为下面这些地址（设置页底部"网络出口"也有列表）：
   - `https://www.googleapis.com`（YouTube Data API v3，只读）
   - `https://oauth2.googleapis.com`（Google 令牌端点：连接时用授权码换令牌、之后用刷新令牌续期，Client Secret 与刷新令牌只发往这里、只放在请求体里；断开连接时吊销授权）
@@ -584,7 +627,7 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
   - `https://i.ytimg.com`（结果卡缩略图）
   - `https://img1.doubanio.com` … `https://img9.doubanio.com`（豆瓣条目海报，只能作为图片加载，不能发其他请求）
   - 另外，**多语字幕**（你在 2026-11-02 同意的红线变更）由注入 YouTube 页面的脚本以页面自己的身份向同源的 `https://www.youtube.com/api/timedtext` 取字幕（见下面"注入 YouTube 页面的脚本"）。这不是扩展页面的网络出口，CSP 白名单不变。
-- **Google 登录窗口**：只在你点"连接 YouTube"或"重新授权"时，浏览器打开 Google 官方的登录 / 授权页（`accounts.google.com`，只申请 `youtube.readonly`）。授权码回跳到 `https://<扩展ID>.chromiumapp.org/`，这个地址由浏览器直接截获，不会真的访问网络；授权码用 PKCE 绑定这一次请求，再由扩展连同 Client Secret 一起发往 `oauth2.googleapis.com/token` 换成访问令牌与刷新令牌。自动续期只发这一个请求（Client ID、Client Secret、刷新令牌），不再打开任何窗口。访问令牌、刷新令牌、Client Secret 只存在本机，不进导出文件；"清空"时先向 Google 吊销再删除。
+- **Google 登录窗口**：只在你点"连接 YouTube"或"重新授权"时，浏览器打开 Google 官方的登录 / 授权页（`accounts.google.com`，只申请 `youtube.readonly`）。授权码回跳到 `https://<扩展ID>.chromiumapp.org/`（Firefox 版是 `https://<扩展 ID 的 SHA-1>.extensions.allizom.org/`），这个地址由浏览器直接截获，不会真的访问网络；授权码用 PKCE 绑定这一次请求，再由扩展连同 Client Secret 一起发往 `oauth2.googleapis.com/token` 换成访问令牌与刷新令牌。自动续期只发这一个请求（Client ID、Client Secret、刷新令牌），不再打开任何窗口。访问令牌、刷新令牌、Client Secret 只存在本机，不进导出文件；"清空"时先向 Google 吊销再删除。
 - **注入 YouTube 页面的脚本**（只匹配 `https://www.youtube.com/*`）有四组：
   - **观看追踪**只读取播放器状态：播放进度、时长、暂停、倍速、是否广告、标签页是否在前台。它不读取页面文字、不改动页面、不发任何网络请求，构建时会自动检查。
   - **自动字幕**（你在 2026-11-01 同意的红线变更）：只在视频播放时用 `captureStream()` 拿到**这个视频**的声音（不是麦克风，也不是整个标签页；广告、暂停、拖动时不识别），交给你选的转写方式（见下一条）；在播放器里加**一层**只读字幕（不改动、不隐藏 YouTube 自己的任何元素）；读取字幕按钮的提示文字判断有没有原生字幕。它自己不发任何网络请求、不用 HTML 字符串写页面、不碰 Cookie、不触发下载，构建时会自动检查。
@@ -595,9 +638,10 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
     - **取字幕与画字幕层的脚本**：YouTube 的字幕接口要带播放器生成的令牌（`pot`），所以它复用播放器自己发出的那个字幕请求（从浏览器的资源计时记录里看到地址），**只换语言参数**（`lang`、`kind`、YouTube 自动翻译的 `tlang`），向同源的 `www.youtube.com/api/timedtext` 取你选的语言——和你在播放器字幕菜单里换语言时播放器发的请求相同。YouTube 的字幕接口出错（5xx、限流）、60 秒不回或连不上时，隔 5 / 15 / 30 秒最多重试 3 次，之后停下并说明。字幕只存在这个标签页的内存里，换视频即丢，不经过扩展后台、不发给大模型、不进导出。它在播放器里加**一层**只读字幕（不改动、不隐藏 YouTube 自己的任何元素），自身只有这一处网络请求，不用 HTML 字符串写页面、不碰 Cookie、不触发下载，构建时会自动检查。
     - 偏好里有"视频原声语言"、而视频没有自动生成的字幕时，后台用官方 YouTube Data API 查一次视频的语言（`videos.list`，1 unit，与自动字幕、观看记录共用缓存）。
 - **自动字幕的声音去向**（设置页 **12.** 选，侧边栏 **字幕** 页和播放器里都写明）：
-  - **浏览器识别（默认）**：声音交给浏览器自带的语音识别。装了本地语音包时**在本机识别，声音不离开电脑**；没装时由 Chrome 自己发往 Google 的语音服务（和你在地址栏用语音搜索一样，扩展自己不发送音频）。识别出的文字一行一行交给扩展后台存下、翻译。
+  - **浏览器识别（默认）**：声音交给浏览器自带的语音识别。装了本地语音包时**在本机识别，声音不离开电脑**；没装时由 Chrome 自己发往 Google 的语音服务（和你在地址栏用语音搜索一样，扩展自己不发送音频）。**Firefox 版只在本机识别**，没有云端：这个语言没有本机模型时停下说明，不会把声音发到任何地方。识别出的文字一行一行交给扩展后台存下、翻译。
   - **OpenAI 转写**：声音按停顿切成几秒一段，由扩展后台发往 OpenAI（`api.openai.com/v1/audio/transcriptions`），**用完即丢、不保存、不进导出**；请求里只有这段音频、模型名和前几句已转写的文字，没有视频 ID、标题或你的账号信息。
   - 两种方式转写出的文字默认由 Chrome 本地翻译（不发送）；你改选大模型翻译时才发给大模型（见下表）。生成的字幕文字存在本机（最多 100 个视频），随"导出全部数据"导出。"自动"识别语言时，扩展用官方 YouTube Data API 查一次视频的语言（`videos.list`，1 unit，和观看记录共用缓存）。
+- **Firefox 版**（2026-11-12 起，[DECISIONS.md](DECISIONS.md) §69）：权限、网络出口、注入的站点和脚本与 Chrome 版逐字相同（自动化冒烟测试核对），只是不需要 `sidePanel` 权限。语音输入和自动字幕的"浏览器识别"在 Firefox 里只在本机进行（Mozilla 的语音模型）；查询或下载本机模型时，Firefox **自己**会连 Mozilla 的模型服务（`model-hub.mozilla.org`，不发送音频）——这是浏览器的行为，不是扩展发出的请求。
 - **注入小红书网页版的脚本**（只匹配 `https://www.xiaohongshu.com/*` 与 `https://www.rednote.com/*`，你在 2026-11-03 要求新增）有三个，**都不发任何网络请求**，扩展的网络出口白名单不变：
   - **页面内助手**跑在小红书页面自己的环境里（只有那里能看到页面数据），只读页面数据里各笔记的 ID、在列表里的位置、标题和发布时间，交给另一个脚本。它不碰页面元素、不碰 Cookie 和本地存储，构建时会自动检查。
   - **时间与收藏按钮**：在笔记卡片作者那一行、笔记详情的日期旁写上发布时间，在封面左下角、博主名字旁、"关注"旁放 **收藏** 按钮和弹窗。它只用文字写入（不用 HTML 字符串），不改动、不隐藏小红书自己的元素，不点击（也不模拟点击）小红书的任何按钮，不碰 Cookie；你点收藏时，它把笔记标题、链接（只留 `xsec_token` 与 `xsec_source` 两个参数，从外面打开笔记要用到）、作者名与 ID、发布时间交给扩展后台，后台校验后存进本机。这些都随"导出全部数据"导出，不发给大模型。侧边栏不加载小红书的图片（封面、头像），所以也没有新的图片域名。
@@ -668,6 +712,13 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 | "今天的 search 次数已用完" | 今日 100 次搜索已用完 | 等配额重置（提示里有你本地的重置时间）；同一句话可以走缓存 |
 | 点 🎤 提示"侧边栏无法直接弹出麦克风授权框" | 还没授权麦克风 | 点 **打开授权页**，按 [首次配置 ④](#setup) 操作 |
 | 语音提示"云端语音服务连不上" | 无法访问 Google 的语音服务 | 检查网络，或改用打字 |
+| （Firefox）授权窗口显示 "Error 400: redirect_uri_mismatch" | 没把 Firefox 的回跳地址加进客户端，或刚加还没生效 | 按 [1.5](#firefox) 第 2 小步把设置页 **2.** 显示的 `https://….extensions.allizom.org/` 加进同一个"Web 应用"客户端；刚保存的话等几分钟再试 |
+| （Firefox）设置页 **2.** 的 OAuth Client ID 显示"未配置" | 安装包构建时没带 Client ID（`local/config.json` 没填，或别人替你打的包） | 在下面的 **OAuth Client ID** 框里粘贴客户端 ID → 保存；或填好 `local/config.json` 后重新 `npm run build:firefox` |
+| （Firefox）侧边栏或设置页顶部写着"Firefox 现在不让 TubeMuse 访问这些网站" | 你在 `about:addons` 里收回了 TubeMuse 的网站权限 | 点 **授权访问这些网站**，在 Firefox 弹窗里允许；或在 `about:addons` → TubeMuse →「权限」里打开 |
+| （Firefox）麦克风旁写着"本机没有可用的语音模型" | Firefox 的语音识别只在本机进行，这个语言还没下载模型，或 Firefox 没有这个语言的模型 | 能下载时点 **下载本机语音模型**（设置页「4. 语音」也有）；没有这个语言的话改用另一种识别语言，或打字 |
+| （Firefox）片段页提示"浏览器还没允许这个页面处理声音" | Firefox 只让被点过的页面处理声音（视频是自动播放起来的、页面还没被点过） | 在视频画面上点一下（暂停再播放也行），再开始录制 |
+| （Firefox）点工具栏上找不到 TubeMuse 图标 | Firefox 把新扩展的按钮收在"扩展"（拼图）面板里 | 点拼图 → TubeMuse 旁的齿轮 → **固定到工具栏** |
+| （Firefox）重启 Firefox 后 TubeMuse 不见了 | 临时载入的附加组件在 Firefox 关闭时会被移除 | 重新在 `about:debugging` 临时载入 `.xpi`（扩展 ID 固定，本机数据还在）；想一直装着可以用 Firefox Developer Edition / Nightly 关掉签名检查后正式安装 |
 | **记录** 页没有任何记录 | 扩展装好或更新后没有刷新 YouTube 标签页；或"观看追踪"被关掉了 | 刷新 YouTube 页面；检查设置页 **6.**；只支持桌面版 `www.youtube.com` |
 | 记录显示"还没取到标题" | 还没连接 YouTube，或元数据还没补上 | 连接 YouTube；稍后会自动补，或点"现在生成今天的总结"时补上 |
 | 23:00 后没出现总结 | 那天没有观看记录（不会生成），或生成失败 | 看 **记录** 页有没有列出失败原因；浏览器那时没开的话，下次打开会补上 |
@@ -778,6 +829,20 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 - [ ] 连接后第二天（24 小时以上）再找片 → 期望：同上，全程没点过"重新授权"
 - [ ] 在扩展管理页点 TubeMuse 的 **重新加载（刷新）**，再打开设置页 → 期望：仍是"已连接，自动续期已开启"；找片正常、不弹窗
 - [ ] 在 Google 账号「安全 → 第三方应用和服务」里移除 TubeMuse，再找片 → 期望：侧边栏顶部"YouTube 授权已过期"，原因写着 `invalid_grant`；点 **重新授权**，登录窗口打开后先把侧边栏关掉，再在窗口里完成授权 → 重新打开侧边栏，横幅消失
+
+**Firefox 版**（用 Firefox 的话；[1.5](#firefox)）
+
+- [ ] `npm run build:firefox` → 期望：显示 `✔ 已构建 dist-firefox/`、Firefox 扩展 ID `tubemuse@tubemuse.local`、授权回跳地址 `https://bd64894190509c2a091730e87fc55c691c06b55d.extensions.allizom.org/` 和安装包 `release/tubemuse-0.1.0-firefox.xpi`
+- [ ] 把这个回跳地址加进 Google Cloud 同一个"Web 应用"客户端 → 期望：保存成功；Chrome 那条仍在
+- [ ] `about:debugging#/runtime/this-firefox` → **临时载入附加组件…** → 选 `.xpi` → 期望：列出 TubeMuse（没有红色错误），自动打开设置页
+- [ ] 设置页「2. YouTube 账号」→ 期望：授权回跳地址与上面一致；Client ID 已配置，或出现填 Client ID 的输入框（填好保存后状态不再是"未配置"）
+- [ ] 填 Key、Client Secret → **连接 YouTube** → 期望：弹出 Google 登录窗口；授权后状态变为"已连接，自动续期已开启"
+- [ ] 把 TubeMuse 固定到工具栏，点一下 → 期望：Firefox 侧边栏打开 TubeMuse；再点一下关上
+- [ ] 找片、打分 → 期望：与 Chrome 版相同
+- [ ] 在 YouTube 播放页点过视频后录一段 → 期望：下载文件夹里多一个 `.webm`，有画面有声音；录的时候你一直听得到视频的声音
+- [ ] **Capture** → 期望：下载文件夹里多一张 PNG；切到别的应用能直接粘贴出这张图
+- [ ] 侧边栏「找片」的麦克风旁 → 期望：写着"本地识别"或"本机没有可用的语音模型"及原因，**不出现**"音频发往 Google"
+- [ ] 关掉 Firefox 再打开，重新临时载入同一个 `.xpi` → 期望：Key、YouTube 授权、记录都还在
 
 **找片与打分**
 
@@ -1012,6 +1077,8 @@ npm run typecheck   # tsc 严格模式（扩展代码 + 构建/测试脚本）
 npm test            # Vitest 单元 + 服务层测试，全部用 mock，不出网
 npm run e2e:install # 首次运行 e2e 前下载 Playwright 的 Chromium
 npm run e2e         # 构建 dist-e2e/ 并在真实 Chromium 中分组跑通各功能；再构建 dist/ 做冒烟测试
+npm run build:firefox  # Firefox 版：dist-firefox/ + release/tubemuse-<版本>-firefox.xpi
+npm run e2e:firefox    # 构建 dist-firefox-e2e/ 在真实 Firefox 里跑一遍；再把正式版 .xpi 装进去冒烟（要一个 Firefox 149+，见下）
 npm run verify      # 以上全部
 
 # 只跑 e2e 的一组（core / subtitles / clips，见 tests/e2e/shards.json）：
@@ -1020,9 +1087,10 @@ node tests/e2e/run-e2e.mjs --shard=clips
 ```
 
 - **测试不出网**：单测把全局 `fetch` 换成直接报错的函数，所有外部服务都用注入的假实现；e2e 把所有外部服务指向本机 mock（127.0.0.1:47321），其他任何请求都会被拦截并判失败。
-- **CI**：指向 `main` 的 PR 和 `main` 上的 push 都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上跑和 `npm run verify` 同一套检查：类型检查、单元测试、e2e、正式版冒烟。为了快，CI 把它们拆成几个 job 同时跑（类型检查 + 单测 + 冒烟一个，e2e 每组一个），最后由 `verify` 汇总，全部通过才算过。合并进 `main` 后的那一次：文件树和 PR 里验过的一模一样时不重跑，运行摘要里写明是哪一次运行验过的；不一样（例如验完以后 `main` 又进了别的改动）就照常全跑。不需要任何 Secret，扩展密钥在 runner 上临时生成。`main` 有分支保护：`verify` 不通过不能合并，也不能直接 push，管理员不例外。提交前先在本地跑 `npm run verify`。失败时的截图在这次运行的 Artifacts 里（每组一份），保留 7 天。分组与取舍见 DECISIONS §61。
-- `dist-e2e/` 是测试专用构建（Google 授权页与所有接口都指向本机 mock），**不要**在日常浏览器里加载它。e2e 会真实调用 `launchWebAuthFlow`，走完"弹窗 → mock 授权页 → 回跳授权码 → mock 令牌端点换令牌（校验 Client Secret 与 PKCE）"的整条链路，并验证访问令牌过期 24 小时后、浏览器重启后都能用刷新令牌自动续期。正式构建 `dist/` 的构建脚本会自检：产物里出现疑似 Key、令牌或测试地址就构建失败。
-- 技术栈：TypeScript（strict）· esbuild · Preact · Vitest · Playwright；大模型用 Anthropic / OpenAI 官方 SDK。
+- **CI**：指向 `main` 的 PR 和 `main` 上的 push 都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上跑和 `npm run verify` 同一套检查：类型检查、单元测试、e2e、正式版冒烟，以及 Firefox 版的 e2e 与安装包冒烟（这一个 job 在 Ubuntu 上跑）。为了快，CI 把它们拆成几个 job 同时跑（类型检查 + 单测 + 冒烟一个，e2e 每组一个，Firefox 一个），最后由 `verify` 汇总，全部通过才算过。合并进 `main` 后的那一次：文件树和 PR 里验过的一模一样时不重跑，运行摘要里写明是哪一次运行验过的；不一样（例如验完以后 `main` 又进了别的改动）就照常全跑。不需要任何 Secret，扩展密钥在 runner 上临时生成。`main` 有分支保护：`verify` 不通过不能合并，也不能直接 push，管理员不例外。提交前先在本地跑 `npm run verify`。失败时的截图在这次运行的 Artifacts 里（每组一份），保留 7 天。分组与取舍见 DECISIONS §61。
+- **Firefox 的 e2e**（[DECISIONS.md](DECISIONS.md) §69）：用 Firefox 自带的 Marionette 协议驱动（`tests/e2e/firefox/marionette.mjs`，不需要 geckodriver），以临时附加组件装上 `dist-firefox-e2e/`，同样用本机 mock，Firefox 的代理指向一个不存在的端口，除本机外的请求一律出不去。要一个 Firefox 149 或更新：环境变量 `FIREFOX_BIN` 指向它，或装在常见位置（Windows 的 `C:\Program Files\Mozilla Firefox\`、macOS 的 `/Applications/Firefox.app`、Linux 的 `/usr/bin/firefox`）；它另开一个临时配置的无头 Firefox，不碰你平时用的那个。Linux 上没有声音设备时无头 Firefox 的 AudioContext 起不来（录制、自动字幕要用），先起一个 PulseAudio 空设备（CI 里就是这么做的，见 ci.yml 的 `firefox` job）。CI 上 Firefox 版本钉在 161.0b2。
+- `dist-e2e/` 是测试专用构建（Google 授权页与所有接口都指向本机 mock），**不要**在日常浏览器里加载它。`dist-firefox-e2e/` 同理。e2e 会真实调用 `launchWebAuthFlow`，走完"弹窗 → mock 授权页 → 回跳授权码 → mock 令牌端点换令牌（校验 Client Secret 与 PKCE）"的整条链路，并验证访问令牌过期 24 小时后、浏览器重启后都能用刷新令牌自动续期。正式构建 `dist/` 的构建脚本会自检：产物里出现疑似 Key、令牌或测试地址就构建失败。
+- 技术栈：TypeScript（strict）· esbuild · Preact · Vitest · Playwright（Chromium）· Firefox 自带的 Marionette；大模型用 Anthropic / OpenAI 官方 SDK。
 - 关键设计与取舍（为什么这样选、放弃了什么、以后怎么替换）见 [DECISIONS.md](DECISIONS.md)；产品规格见 [CLAUDE.md](CLAUDE.md)。
 
 ```
@@ -1048,10 +1116,12 @@ src/content/       注入 YouTube 的脚本：观看追踪（只读播放器状�
                    注入小红书网页版的脚本：xhs-bridge.ts 跑在页面环境里，只读页面数据里的发布时间；
                    email.ts：注入 Gmail 的脚本，只在被问到时读打开的这封邮件（不发请求、不写页面）
                    xhs.ts 在笔记卡片上写发布时间、放收藏按钮和弹窗（都不发网络请求）
-src/background.ts  service worker：闹钟、补算、接收观看上报、自动字幕的转写与翻译、片段录制记录与图标 REC 标记、快捷键
-scripts/           构建、生成扩展密钥、生成图标
+src/background.ts  service worker（Firefox 版是事件页）：闹钟、补算、接收观看上报、自动字幕的转写与翻译、片段录制记录与图标 REC 标记、快捷键、开侧边栏
+src/platform.ts    这份构建是 Chrome 版还是 Firefox 版（构建时注入），以及两边不同的说法
+scripts/           构建（含 Firefox 版与 .xpi 打包：firefox.mjs、zip.mjs）、生成扩展密钥、生成图标
 tests/unit/        单元与服务层测试
 tests/e2e/         mock 服务（含可播放的 mock 播放页、"说话"音频与 mock 语音转写、仿小红书网页版页面 xhs-pages.mjs、仿 X 页面 x-pages.mjs、仿酷播页面 kubb-pages.mjs、仿 Instagram 页面 ig-pages.mjs、仿抖音页面 douyin-pages.mjs、仿 B 站页面 bili-pages.mjs）、e2e 主流程、正式版冒烟测试
+tests/e2e/firefox/ Firefox 版的 e2e 与安装包冒烟（Marionette 客户端、主流程、正式版 .xpi 冒烟）
 tests/fixtures/    单测与 e2e 共用的夹具（豆瓣评论 RSS，结构照抄真实订阅源，用户名与正文为虚构）
 ```
 
@@ -1060,6 +1130,7 @@ tests/fixtures/    单测与 e2e 共用的夹具（豆瓣评论 RSS，结构照�
 ## ⚠️ 已知限制
 
 - 画像只来自订阅、喜欢的视频、本扩展记录的观看，以及可选导入的 Takeout 历史（YouTube API 不提供观看历史）。
+- **Firefox 版**（[DECISIONS.md](DECISIONS.md) §69）：Firefox Beta / 正式版只能临时载入未签名的扩展，重启后要重新载入；语音只能本机识别（这个语言没有本机模型时语音输入用不了，可以打字；自动字幕可改用 OpenAI 转写）；没有本地翻译（自动字幕第二行请用大模型翻译）；片段录成 WebM。自动化测试在 Firefox 161.0b2 里跑过安装、设置、授权（mock）、找片打分、录制、Capture、剪贴板、多语字幕、问 muse、小红书、eMails、自动字幕和侧边栏，但都是在仿页面上；真实的 YouTube、Google 登录页、各站页面，以及 Firefox 本机语音模型下载成功后的识别，以你的实测为准。
 - YouTube 授权靠刷新令牌自动续期。Google 应用处于"测试中"时，刷新令牌 **7 天**后失效，要点一次"重新授权"；发布为正式版可去掉这个期限（见 [可选：发布为正式版](#oauth-production)）。后台定时任务（如 23:00 的总结补元数据）在续期失败时会记录原因并提示，不会静默跳过。
 - 换授权码、续期都要带 Client Secret（Google"Web 应用"客户端的要求），所以要在设置页填一次。它只存在本机，只发往 `oauth2.googleapis.com/token`。
 - 自动化测试只在 Playwright 自带的 Chromium 里跑过；Comet 等其他 Chromium 浏览器没有自动化验证（`launchWebAuthFlow` 是标准扩展 API，按理可用，以你的实测为准）。

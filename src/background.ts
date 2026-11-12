@@ -1,4 +1,4 @@
-// MV3 service worker：点图标开侧边栏；接收观看上报；自动字幕（转写、翻译、记账）；定时任务（每日总结、周报、补元数据、导师提醒）。
+// MV3 service worker（Firefox 版是事件页，见 DECISIONS §69）：点图标开侧边栏；接收观看上报；自动字幕（转写、翻译、记账）；定时任务（每日总结、周报、补元数据、导师提醒）。
 // service worker 会休眠、浏览器可能在到点时没开：闹钟设为跨会话保留，并且每次醒来都检查闹钟是否还在、按"应该已完成但还没有"补算。
 
 import { GOOGLE_OAUTH, SUMMARY } from './config/defaults';
@@ -18,12 +18,19 @@ import { multiCcVideoLanguage } from './services/multi-captions-service';
 import { BILI_PAGES, DOUYIN_PAGES, IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } from './config/endpoints';
 import { XHS_MSG } from './core/xhs';
 import { applyXhsFromPage, type XhsReply } from './services/xhs-service';
+import { IS_FIREFOX } from './platform';
 
 const ctx = createBrowserContext();
 const TICK = 'tubemuse-tick';
 const DAILY = 'tubemuse-daily';
 
-chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
+// 点工具栏图标打开侧边栏：Chrome 是 side_panel；Firefox 是 sidebar_action，点图标时开 / 关它（必须在点击的那一刻调用，DECISIONS §69）
+if (IS_FIREFOX) {
+  const sidebar = (chrome as unknown as { sidebarAction?: { toggle(): Promise<void> } }).sidebarAction;
+  chrome.action.onClicked.addListener(() => void sidebar?.toggle().catch((e: unknown) => console.warn('[TubeMuse] 没能打开侧边栏', e instanceof Error ? e.message : e)));
+} else {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => undefined);
+}
 
 /** 长任务期间每 20 秒调一次扩展 API，避免 service worker 在等待 LLM 响应时被回收；给了 maxMs 就最多保活这么久 */
 async function keepAlive<T>(fn: () => Promise<T>, maxMs?: number): Promise<T> {
@@ -37,14 +44,20 @@ async function keepAlive<T>(fn: () => Promise<T>, maxMs?: number): Promise<T> {
   }
 }
 
+/**
+ * Chrome 的闹钟可以设成跨浏览器会话保留；Firefox 不认这个参数，带上会直接报错、闹钟建不起来（161 实测），
+ * 它的闹钟本来也不跨会话——浏览器启动时 onStartup 会重建，"到点时浏览器没开"由补算兜住。
+ */
+const PERSIST: { persistAcrossSessions?: boolean } = IS_FIREFOX ? {} : { persistAcrossSessions: true };
+
 async function ensureAlarms(force = false): Promise<void> {
   const settings = await stores.settings.read(ctx.kv);
   if (force || !(await chrome.alarms.get(TICK))) {
-    await chrome.alarms.create(TICK, { delayInMinutes: 1, periodInMinutes: SUMMARY.tickMinutes, persistAcrossSessions: true });
+    await chrome.alarms.create(TICK, { delayInMinutes: 1, periodInMinutes: SUMMARY.tickMinutes, ...PERSIST });
   }
   if (force || !(await chrome.alarms.get(DAILY))) {
     // 一次性闹钟，到点后重新计算下一次（这样能正确跨过夏令时切换）
-    await chrome.alarms.create(DAILY, { when: nextDailyRun(Date.now(), settings.summary.time, ctx.timeZone), persistAcrossSessions: true });
+    await chrome.alarms.create(DAILY, { when: nextDailyRun(Date.now(), settings.summary.time, ctx.timeZone), ...PERSIST });
   }
 }
 

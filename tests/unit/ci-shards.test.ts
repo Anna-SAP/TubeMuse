@@ -36,7 +36,15 @@ describe('e2e 分组与 CI 一致', () => {
 
   it('verify 仍是汇总结果的那个 job，前面的 job 失败或取消时也会跑', () => {
     const verify = ci.slice(ci.indexOf('\n  verify:'));
-    expect(verify).toMatch(/needs: \[gate, checks, e2e\]/);
+    expect(verify).toMatch(/needs: \[gate, checks, e2e, firefox\]/);
     expect(verify).toMatch(/if: \$\{\{ always\(\) \}\}/);
+  });
+
+  it('Firefox 版（DECISIONS §69）：有自己的 job 跑 npm run e2e:firefox，verify 要它也通过才算过', () => {
+    const job = ci.slice(ci.indexOf('\n  firefox:'), ci.indexOf('\n  verify:'));
+    expect(job).toContain('run: npm run e2e:firefox');
+    const verify = ci.slice(ci.indexOf('\n  verify:'));
+    expect(verify).toContain('[ "$FIREFOX" = "success" ]');
+    expect(verify).toContain("needs.firefox.result == 'success'");
   });
 });

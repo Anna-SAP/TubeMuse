@@ -45,6 +45,11 @@ export interface Secrets {
    * 和其他 Key 一样只存本机、不进导出，只随请求体发往 oauth2.googleapis.com/token。
    */
   googleClientSecret?: string;
+  /**
+   * 同一个客户端的 Client ID：不是机密，通常在构建时从 local/config.json 注入；没注入的构建（例如别处打好的 Firefox 安装包）
+   * 在设置页填这里（DECISIONS §69）。和 Client Secret 放在一起，不进导出。
+   */
+  googleClientId?: string;
 }
 
 /** 旧版的"无字幕时自动开始"（autoStart，默认开）：改为默认关闭后换了新键，旧值丢弃，大家都从"关"开始 */

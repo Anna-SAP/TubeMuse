@@ -171,10 +171,61 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # Firefox 版（DECISIONS §69）：在真的 Firefox 里以临时附加组件装上测试版、用本机 mock 把两边不同的地方跑一遍，
+  # 再把正式版安装包（.xpi）装进去冒烟。版本钉在用户在用的 161.0b2（Mozilla 的归档里一直留着）。
+  # 无头 Firefox 没有声音设备时 AudioContext 起不来（录制、自动字幕要用）：装一个 PulseAudio 的空设备。
+  firefox:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.verified != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      FIREFOX_VERSION: 161.0b2
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Firefox ${{ env.FIREFOX_VERSION }}
+        run: |
+          mkdir -p .cache/firefox
+          curl -fsSL "https://archive.mozilla.org/pub/firefox/releases/${FIREFOX_VERSION}/linux-x86_64/en-US/firefox-${FIREFOX_VERSION}.tar.xz" | tar -xJ -C .cache/firefox
+          .cache/firefox/firefox/firefox --version
+
+      - name: Start a virtual sound device
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pulseaudio
+          pulseaudio -D --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=ci_null
+          pactl set-default-sink ci_null
+
+      - name: Firefox end-to-end tests and package smoke test
+        run: npm run e2e:firefox
+
+      - name: Upload diagnostic results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results-firefox-${{ github.run_number }}-${{ github.run_attempt }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
   # 必过项。always()：前面的 job 失败或被取消时这一步也要跑出一个"失败"，
   # 否则它会被跳过，而被跳过的必过项在分支保护里算通过。
   verify:
-    needs: [gate, checks, e2e]
+    needs: [gate, checks, e2e, firefox]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -185,6 +236,7 @@ jobs:
           VERIFIED: ${{ needs.gate.outputs.verified }}
           CHECKS: ${{ needs.checks.result }}
           E2E: ${{ needs.e2e.result }}
+          FIREFOX: ${{ needs.firefox.result }}
         run: |
           if [ "$VERIFIED" = "true" ]; then
             echo "这棵文件树已经完整验证过（见 gate 的说明），这次没有重跑。"
@@ -192,15 +244,16 @@ jobs:
           fi
           echo "checks（类型检查、单元测试、正式版冒烟）：$CHECKS"
           echo "e2e（各组）：$E2E"
-          if [ "$CHECKS" = "success" ] && [ "$E2E" = "success" ]; then
+          echo "firefox（Firefox 版 e2e 与安装包冒烟）：$FIREFOX"
+          if [ "$CHECKS" = "success" ] && [ "$E2E" = "success" ] && [ "$FIREFOX" = "success" ]; then
             exit 0
           fi
-          echo "::error::没有全部通过：checks=$CHECKS，e2e=$E2E"
+          echo "::error::没有全部通过：checks=$CHECKS，e2e=$E2E，firefox=$FIREFOX"
           exit 1
 
       # 全部通过后留一个以文件树命名的标记：之后同一棵文件树（典型情况：这个 PR 合并进 main）不用再跑一遍
       - name: Write the verified-tree marker
-        if: ${{ needs.checks.result == 'success' && needs.e2e.result == 'success' && needs.checks.outputs.tree != '' }}
+        if: ${{ needs.checks.result == 'success' && needs.e2e.result == 'success' && needs.firefox.result == 'success' && needs.checks.outputs.tree != '' }}
         shell: bash
         env:
           TREE: ${{ needs.checks.outputs.tree }}
@@ -208,7 +261,7 @@ jobs:
           printf 'tree=%s\nrun=%s\nattempt=%s\nevent=%s\nsha=%s\n' "$TREE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME" "$GITHUB_SHA" > verified-tree.txt
 
       - name: Upload the verified-tree marker
-        if: ${{ needs.checks.result == 'success' && needs.e2e.result == 'success' && needs.checks.outputs.tree != '' }}
+        if: ${{ needs.checks.result == 'success' && needs.e2e.result == 'success' && needs.firefox.result == 'success' && needs.checks.outputs.tree != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: verified-tree-${{ needs.checks.outputs.tree }}

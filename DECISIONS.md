@@ -1548,3 +1548,46 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 单测（`tests/unit/muse.test.ts`）：新增 1 条——Shorts 的快照带位置时照常请字幕脚本取字幕（`t` 是冻结的位置）、没有"Shorts"的说明，咨询包里链接是 `/shorts/<ID>`、播放位置是 `00:03 / 00:12`、带字幕；改了 2 条——旧的 `gap: 'shorts'` 当作没有，`no-video` 照留。
   - e2e（`parts/muse.mjs`，在 core 组里）：在 §67 的仿 Shorts 页面（`/shorts/ccShorts0008`，同一页面里藏着另一个视频的 `#movie_player`，被调用会记下来）播到第 3 秒点「问 muse」：链接是 Shorts 网址、不带时间；标题来自页面标题、作者来自官方接口；播放位置 `00:03 / 00:12`（不是「未知」），面板里没有"Shorts"的说明；上下文是这条 Short 的字幕；请 Shorts 播放器取一次、复用请求取一种语言、取完把原生字幕关回去、不显示字幕层、页面别处没动；**藏着的播放器 0 次调用**。红线检查里"注入的脚本只在 YouTube 播放页上取字幕"放宽为"播放页和 Shorts"，其余不变；咨询包里没有 Key / 令牌的检查加上了 Shorts 的这一份。
 - **日后替换**：Shorts 播放器的 ID 变了，改 `youtubePlayerId` / `playerRootId`（§66、§67），这里不用动。想让 Shorts 的链接也带时间，只能换成 `watch?v=…&t=…`，改 `core/muse.ts` 的 `museLink`。
+
+## 69. Firefox 版：同一份源码另出一个 Firefox 安装包（2026-11-12，用户要求）
+
+- **需求**：用户要在 Firefox 161.0b2（Beta）上用 TubeMuse，在 `about:debugging#/runtime/this-firefox` 用"临时载入附加组件…"加载测试；交付一个 `.xpi`；Chrome 上的功能保持正常。
+- **红线**：没有停下来问。CLAUDE.md §2 的"Chrome Extension Manifest V3、以加载已解压的扩展程序安装"描述的是 Chrome 版，这次是用户明确要求**另加**一个浏览器，Chrome 版的产物、行为、测试都不变。Firefox 版不新增权限（反而少一个 `sidePanel`），网络出口白名单与 Chrome 版逐字相同（冒烟测试核对），注入的站点、注入的脚本、构建时的红线自检（不发请求、不改页面、不点击……）完全相同；Key、令牌只存本机。语音的去向仍对你透明：Firefox 的浏览器识别只在本机进行（没有云端），界面照实写。CLAUDE.md §2 第一条后注明了这次新增（照以往的做法，只记用户要求的事实，别的红线一字没动）。
+- **做法：一份源码、两个构建目标**
+  - `npm run build:firefox` → `dist-firefox/`（未打包目录）+ `release/tubemuse-<版本>-firefox.xpi`（就是 zip，`scripts/zip.mjs` 用 Node 自带的 zlib 打，不加依赖，字节可重复）；`npm run build:firefox-e2e` → `dist-firefox-e2e/`。`npm run build` / `build:e2e` 照旧产出 Chrome 版。
+  - 两边只在 manifest 和少数几处由构建时注入的 `__BROWSER__` 区分（`src/platform.ts`）；能按"有没有这个接口"判断的仍按接口判断。
+  - **manifest**：Firefox 版不带 `key` / `minimum_chrome_version` / `side_panel` / `sidePanel` 权限 / `options_page`（构建自检会拦）；改为 `browser_specific_settings.gecko`（固定 ID `tubemuse@tubemuse.local`，最低版本 149）、`background.scripts`（事件页，ES 模块；Firefox 不支持扩展的 service worker）、`sidebar_action`、`options_ui`（新标签页打开）。
+  - **扩展 ID 与授权回跳**：Firefox 的 `identity.getRedirectURL()` 是 `https://<扩展 ID 的 SHA-1>.extensions.allizom.org/`，ID 固定所以地址固定：正式版是 `https://bd64894190509c2a091730e87fc55c691c06b55d.extensions.allizom.org/`。把它**加到同一个"Web 应用"客户端**的已获授权重定向 URI 里即可，Chrome 的那条不用删（`scripts/firefox.mjs`，构建时打印）。授权流程（授权码 + PKCE + 刷新令牌，§53）不变；Firefox 用户取消授权时报的 "User cancelled or denied access." 已经能被认成"授权没有完成"，另把它探不通授权页时报的 "Invalid request" 认成"打不开 Google 授权页"。
+  - **Client ID 也能在设置页填**：Client ID 原来只在构建时从 `local/config.json` 注入。别处打好的安装包（比如这次在云端打的 `.xpi`）里没有它，YouTube 就连不上。所以：构建时没注入时，设置页「2. YouTube 账号」多一个 Client ID 输入框（校验 `xxxx.apps.googleusercontent.com` 格式），存在本机 `secrets` 里（和 Client Secret 一起，不进导出）；构建时注入了的话这个框不出现、存的值也不起作用——Chrome 版照旧。没有放进 settings：它和 Client Secret 是同一个客户端的一对，放一起清楚；也不该跟着导出走。
+  - **侧边栏**：Chrome 用 `sidePanel.setPanelBehavior`；Firefox 点工具栏图标时在 `action.onClicked` 里调用 `sidebarAction.toggle()`（必须在点击的那一刻调用；失败时写日志，不再静默）。Firefox 新装的扩展按钮默认收在"扩展"（拼图）面板里，固定到工具栏更顺手；也可以从侧边栏的扩展图标打开。侧边栏页面本身一行没改：`tabs.query` / `windows.getCurrent` / 向内容脚本发消息在 Firefox 侧边栏里行为一样（e2e 核对）。
+  - **闹钟**：Firefox 不认 `alarms.create` 的 `persistAcrossSessions`，带上直接抛 "Unexpected property"，闹钟建不起来（161 实测）。Firefox 版不带它；Firefox 的闹钟本来不跨会话，`onStartup` 时重建、到点没开浏览器由补算兜住（§12 的机制原样适用）。
+  - **后台休眠**：Firefox 事件页 30 秒空闲会挂起；查了 Firefox 源码，后台里调用扩展 API（`parentapicall`）会重置空闲计时，所以原来"每 20 秒调一次 `runtime.getPlatformInfo` 保活"的做法照样有效；`launchWebAuthFlow` 期间 Firefox 自己也会保活。不用改。
+  - **取视频的流**：Firefox 149 起有标准的 `HTMLMediaElement.captureStream()`（取流不影响播放的声音）；更早只有 `mozCaptureStream()`，它会把视频的声音"改道"进流里，你就听不到了（Mozilla bug 1541471）。所以只用标准接口（`src/content/capture-stream.ts`）：没有时明说"浏览器版本太旧"，不悄悄换成会让视频变哑的办法；最低版本也定在 149。e2e 里核对录制、采声音期间视频没被静音、音量没变。
+  - **只能录 WebM**：Firefox 的 MediaRecorder 不出 MP4（161 实测：VP8 + Opus 支持，VP9、MP4 都不支持）。格式本来就是按优先级选浏览器支持的第一个（§36），自动落到 WebM（VP8 + Opus），文件名后缀、"最近录过的片段"里的格式都对得上。README 写明 Firefox 下是 WebM。
+  - **内容脚本的跨环境包装**（Firefox 特有，161 实测）：注入页面的脚本拿到的 DOM 接口返回值属于页面那一侧，脚本拿到的是包装过的对象。踩到三处：
+    1. Capture：`new Uint8Array(await blob.arrayBuffer())` 之后 `subarray()` 报 "Permission denied to access property constructor"，截图传不回侧边栏。改为先整块拷进脚本自己的数组（`ownBytes`），MP4 文件头检查同样处理。
+    2. 自动字幕（OpenAI 转写）：`getChannelData(0)` 给的 Float32Array 后面切段时同样被拒。改用 `copyFromChannel` 拷进自己的数组。
+    3. eMails：`[...url.searchParams.keys()]` 报 "not iterable"（页面那一侧的迭代器不能直接展开）。改用 `searchParams.forEach` 收集参数名（`core/email.ts`），两边都适用。
+    其余内容脚本（观看追踪、多语字幕与它的页面内助手、小红书与它的页面内助手、片段录制、问 muse）在 Firefox 里原样可用：`world: MAIN`（Firefox 128 起）、`window.postMessage` 通话、`PerformanceObserver` 看播放器的字幕请求、内容脚本的同源 `fetch`（Firefox MV3 里按页面自己的请求发出）都在 e2e 里跑通。
+  - **下载与剪贴板**：片段由录制脚本自己的下载链接存、Capture 由侧边栏存，都不需要 `downloads` 权限，Firefox 里照样存进下载文件夹；Capture 放进剪贴板用的 `ClipboardItem`（Firefox 127 起）在点击的那一刻登记，不需要 `clipboardWrite` 权限。
+  - **语音（Firefox 只能本机识别）**：Firefox 161 有 `SpeechRecognition`，但只在本机用 Mozilla 的语音模型（Parakeet），没有云端服务；模型要先下载，`available()` 说没有时 `start()` 会一声不响地结束或干等。所以：
+    - 语音输入：模型可用就本机识别（"优先本地"关着也一样）；不可用时按钮旁写明"本机没有可用的语音模型"和原因（这个语言没有本机模型 / 还没下载），能下载时给"下载本机语音模型"按钮（设置页「4. 语音」也有）；识别一声不响结束时说"没有识别出文字"。不再出现"云端识别（音频发往 Google）"这类在 Firefox 上不实的说法。
+    - 自动字幕的"浏览器识别"：同理只走本机；没有可用模型时停下说明（下载模型或改用 OpenAI 转写），不进入"一声不响、反复重试"的状态；本机识别出错时不再说"改用 Chrome 云端识别"，而是停下说明。
+    - 没有做"Firefox 下语音输入改用 OpenAI 转写"：那是一条新的音频去向（麦克风的声音发往 OpenAI），属于产品决定，留给用户（见下面"留给用户"）。
+    - 实测发现：Firefox 查询本机模型时，Firefox 自己会去 `model-hub.mozilla.org` 问有没有这个语言的模型（不发送音频）。这是浏览器自己的行为，README 隐私一节写明。
+  - **本地翻译**：Chrome 的 Translator 接口 Firefox 没有。原来的代码就按"有没有"判断，这次把说法改成"Firefox 没有给扩展用的本地翻译接口，第二行不会显示（可改大模型翻译）"，不再写"需要 Chrome 138"。默认值没改（两边共用一份默认设置；改默认等于替你选了收费的翻译）。
+  - **网站权限**：Firefox 的 MV3 扩展，"访问网站数据"的权限可以在附加组件管理器里收回（127 起安装时默认给，e2e 核对装上时全都给了）。收回后 API 请求被挡、注入的脚本不运行——功能会一声不响地坏掉。所以 Firefox 版在侧边栏和设置页顶部检查 manifest 要的网站，缺了就写明缺哪些、影响什么，给一个"授权访问这些网站"按钮（浏览器弹窗确认）（`ui/shared/host-access.tsx`）。Chrome 版不显示。
+  - **界面上的说法**：改快捷键的地方（`about:addons` → 齿轮 → 管理扩展快捷键）、"每次自己选保存位置"的设置路径、麦克风授权页（Firefox 弹窗里要勾"记住此决定"）、网络说明里的回跳域名（extensions.allizom.org）按浏览器写。
+- **测试**
+  - 单测：语音方式选择与说明（没有云端时 none、模型能下载 / 不能下载怎么说、一声不响结束时替它说、Chrome 照旧不多说）、自动字幕识别出错时（没有云端就停下）、Client ID 运行时配置（没注入时用设置页的、续期也用它、删了就是未配置、注入了的优先）、网站权限要查的列表。
+  - **Firefox e2e**（`tests/e2e/firefox/run.mjs`，`npm run e2e:firefox`）：Playwright 驱动的 Firefox 打不开 `moz-extension://` 页面（导航不触发 load，BiDi 下也一样），geckodriver 在 GitHub 上、这里下不到；改用 Firefox 自带的 **Marionette** 协议写了一个很小的客户端（`tests/e2e/firefox/marionette.mjs`），环境变量 `MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1` 允许它操作扩展页面。用 `Addon:Install`（temporary）装——和 about:debugging 的"临时载入附加组件"是同一条路。复用 Chrome e2e 的本机 mock 服务，Firefox 的代理指向一个不存在的端口，除本机外一个请求都出不去。覆盖：首次安装打开设置页、manifest、闹钟建好、网站权限齐全 / 收回后横幅出现 / 加回后消失、填 Key / Client ID / Client Secret、Firefox 的授权回跳换令牌、侧边栏画像 → 找片 → 回显 → 3 分 / 10 分、片段录制（页面没被点过时说明原因；点过后录出 WebM、有声音、视频没被静音）、Capture（按真实尺寸存 PNG、剪贴板里是这张图）、多语字幕三行、问 muse、小红书时间与收藏按钮、eMails 列文章、自动字幕两种转写方式、点工具栏图标开 / 关 Firefox 的侧边栏、扩展没有报错、mock 只收到预期的请求。共 63 项，约 30 秒。
+  - **Firefox 正式版冒烟**（`tests/e2e/firefox/smoke-xpi.mjs`）：把 `release/*.xpi` 装进去，核对内容脚本、权限、CSP、host_permissions 与 Chrome 版一致，各页面渲染，没有报错；代理换成只记录、不转发的本机端口——打开页面时扩展没有任何出网尝试（Firefox 自己连 mozilla 的服务不算）。
+  - 无头 Firefox 在没有声音设备的 Linux 上 AudioContext 起不来（录制、自动字幕要用；实测一直 suspended）：CI 装一个 PulseAudio 的空设备。真实电脑上没有这个问题。
+  - 版本钉在 161.0b2（用户在用的版本；Mozilla 的归档一直保留）。match pattern：Firefox 不认带端口的匹配规则（`http://127.0.0.1:47321/*` 永远匹配不上，161 实测），测试版的本机 mock 在 manifest 里写成不带端口的 `http://127.0.0.1/*`；正式版的网址都没有端口，不受影响。
+  - CI 加一个 `firefox` job（ubuntu-24.04），`verify` 要它也通过（`tests/unit/ci-shards.test.ts` 守着，免得哪天被悄悄去掉）；`npm run verify` 同步加上 `npm run e2e:firefox`。本地跑需要一个 Firefox（149 或更新）：环境变量 `FIREFOX_BIN`，或按常见安装位置找。
+- **放弃了什么**：WebExtension polyfill（Firefox 的 `chrome.*` 在 MV3 里本来就返回 Promise，161 实测，`chrome === browser`）；`web-ext` 作为依赖（只在开发时用它 lint 过一次：0 错误，3 条警告——缺 AMO 上架才要的 `data_collection_permissions`、Chrome 分支里留着的 `sidePanel` 字样、Preact 内部的 innerHTML，都不影响临时载入）；签名上架 AMO（个人自用，CLAUDE.md 不上架）。
+- **已知限制 / 风险**
+  - 临时附加组件：Firefox 重启后要重新"临时载入"一次。实测 161：同一个配置文件里重新载入同一个安装包，本机数据还在（扩展 ID 固定）。Firefox Beta / 正式版不允许永久安装未签名的扩展；想永久安装可以用 Developer Edition / Nightly（`xpinstall.signatures.required` 设为 false）。
+  - 真实的 YouTube、Google 登录页、各站页面在这个环境里打不开，Firefox 下这些只在仿页面上跑过；Firefox 本机语音模型在这个环境里是"不可用"，下载 / 识别成功的那条路没有实测。
+- **留给用户**：Firefox 下语音输入要不要提供"改用 OpenAI 转写"（麦克风的声音发往 api.openai.com，按量计费）。
+- **日后替换**：Firefox 支持扩展的 service worker 后，可以让两边的 background 写法一致；Firefox 支持带端口的匹配规则后，`scripts/build.mjs` 的 `match()` 可以删；最低版本随 `captureStream` 的情况调整 `scripts/firefox.mjs`。

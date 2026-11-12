@@ -22,7 +22,7 @@ export interface AuthProvider {
   status(): Promise<AuthStatus>;
   /** 断开：删除本地令牌，并向 Google 吊销（有刷新令牌时吊销它，连带它换出的访问令牌）。返回是否吊销成功 */
   disconnect(): Promise<{ revoked: boolean }>;
-  /** 是否在构建时配置了 OAuth Client ID */
+  /** 是否在构建时注入了 OAuth Client ID（没注入时可在设置页填写，见 storedClientId） */
   configured(): boolean;
 }
 
@@ -38,12 +38,18 @@ export function oauthClientId(): string | undefined {
   return id || undefined;
 }
 
-/** Google Cloud 里"已获授权的重定向 URI"要填的地址：https://<扩展ID>.chromiumapp.org/ */
+/** Google Cloud 里"已获授权的重定向 URI"要填的地址：Chrome 是 https://<扩展ID>.chromiumapp.org/，Firefox 是 https://<扩展 ID 的 SHA-1>.extensions.allizom.org/ */
 export function oauthRedirectUrl(): string {
   return chrome.identity.getRedirectURL();
 }
 
 const NOT_CONNECTED = () => new AppError('auth', '尚未连接 YouTube 账号', '在设置页点"连接 YouTube"');
+const notConfigured = () =>
+  new AppError(
+    'oauth_config',
+    '还没有配置 Google OAuth 客户端',
+    '按 README「Google Cloud 配置」创建"Web 应用"类型的 OAuth 客户端，把 Client ID 写进 local/config.json 后重新构建，或直接填在设置页「2. YouTube 账号」',
+  );
 
 /** 旧版（隐式授权）记录没有刷新令牌：过期后只能重新授权一次 */
 export const LEGACY_REASON = '这是旧版授权，没有刷新令牌，访问令牌过期后不能自动续期。在设置页填好 Client Secret 后点"重新授权"一次，之后会一直自动续期';
@@ -95,7 +101,8 @@ export function authError(msg: string): AppError {
       '看授权窗口里的提示：显示"Access blocked"或"Error 403: access_denied"→ 到 Google Cloud → Google Auth Platform →「目标对象 / Audience」把这个 Gmail 加进测试用户；显示"redirect_uri_mismatch"→ 客户端的"已获授权的重定向 URI"必须与设置页显示的回跳地址完全一致（含结尾的 /）；显示"invalid_client"或"OAuth client was not found"→ 核对 Client ID，客户端类型须为"Web 应用"。如果是你自己关掉了窗口，再点一次"连接 YouTube"即可',
     );
   }
-  if (/could not be loaded|load/i.test(msg)) {
+  // Firefox 打开授权页前先探一次这个地址，探不通时报 Invalid request
+  if (/could not be loaded|load|invalid request/i.test(msg)) {
     return new AppError('network', '打不开 Google 授权页', '检查网络能否访问 accounts.google.com 后重试');
   }
   return new AppError('auth', `YouTube 授权失败：${msg.slice(0, 200)}`, '重新点"连接 YouTube"；反复出现请按 README「故障排查」核对 Google Cloud 配置');
@@ -134,7 +141,10 @@ function exchangeError(code: string): AppError {
 export interface WebAuthDeps {
   kv: KV;
   locker: Locker;
+  /** 构建时注入的 Client ID */
   clientId: string | undefined;
+  /** 构建时没注入时，你在设置页填的 Client ID（每次用时现读；DECISIONS §69） */
+  storedClientId?: () => Promise<string | undefined>;
   /** 设置页里填的 Client Secret（每次用时现读，改了立刻生效） */
   clientSecret: () => Promise<string | undefined>;
   authorizeUrl: string;
@@ -155,6 +165,8 @@ const FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
 export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
   const store = stores.youtubeAuth;
   const configured = () => !!d.clientId;
+  /** 这一刻用哪个 Client ID：构建时注入的优先，没有就用设置页填的 */
+  const clientIdNow = async (): Promise<string | undefined> => d.clientId ?? ((await d.storedClientId?.())?.trim() || undefined);
   /** 同一页面里多个请求同时发现令牌过期时，只续期一次 */
   let renewing: Promise<string> | undefined;
   /** 交互授权同一时间只开一个窗口：重复点击等同一个结果 */
@@ -173,6 +185,7 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
 
   /** 交互授权：弹窗 → 授权码 → 换访问令牌与刷新令牌 → 存下 */
   async function connect(): Promise<string> {
+    const clientId = (await clientIdNow())!;
     const secret = (await d.clientSecret())?.trim();
     if (!secret) {
       throw new AppError(
@@ -184,7 +197,7 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
     const state = d.randomState();
     const verifier = d.randomVerifier();
     const redirectUri = d.redirectUrl();
-    const url = buildAuthUrl({ authorizeUrl: d.authorizeUrl, clientId: d.clientId!, redirectUri, scope: GOOGLE_OAUTH_SCOPE, state, codeChallenge: await pkceChallenge(verifier) });
+    const url = buildAuthUrl({ authorizeUrl: d.authorizeUrl, clientId, redirectUri, scope: GOOGLE_OAUTH_SCOPE, state, codeChallenge: await pkceChallenge(verifier) });
     let redirect: string | undefined;
     try {
       redirect = await d.launch(url);
@@ -195,7 +208,7 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
     const r = parseCodeRedirect(redirect, state);
     if (!r.ok) throw redirectError(r.error);
     const res = await postToken(
-      { code: r.code, client_id: d.clientId!, client_secret: secret, redirect_uri: redirectUri, grant_type: 'authorization_code', code_verifier: verifier },
+      { code: r.code, client_id: clientId, client_secret: secret, redirect_uri: redirectUri, grant_type: 'authorization_code', code_verifier: verifier },
       () => new AppError('network', '连不上 Google 换取令牌（网络错误或超时）', '检查网络能否访问 oauth2.googleapis.com 后重新点"连接 YouTube"'),
     );
     if (!res.ok) throw exchangeError(tokenErrorCode(res.status, res.body));
@@ -248,8 +261,10 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
         await markFailed(rt, NO_SECRET_REASON, { fix: 'secret' });
         throw expiredError(NO_SECRET_REASON, 'secret');
       }
+      const clientId = await clientIdNow();
+      if (!clientId) throw notConfigured();
       const res = await postToken(
-        { client_id: d.clientId!, client_secret: secret, refresh_token: rt, grant_type: 'refresh_token' },
+        { client_id: clientId, client_secret: secret, refresh_token: rt, grant_type: 'refresh_token' },
         () => new AppError('network', '自动续期 YouTube 授权时连不上 Google（网络错误或超时）', '检查网络后重试。授权本身没有失效，联网后会自动续上'),
       );
       if (res.ok) {
@@ -293,13 +308,7 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
   return {
     configured,
     async getToken(interactive) {
-      if (!configured()) {
-        throw new AppError(
-          'oauth_config',
-          '还没有配置 Google OAuth 客户端',
-          '按 README「Google Cloud 配置」创建"Web 应用"类型的 OAuth 客户端，把 Client ID 写进 local/config.json 后重新构建',
-        );
-      }
+      if (!(await clientIdNow())) throw notConfigured();
       if (interactive) {
         connecting ??= connect().finally(() => {
           connecting = undefined;
@@ -324,7 +333,7 @@ export function webAuthFlowAuth(d: WebAuthDeps): AuthProvider {
       });
     },
     async status() {
-      if (!configured()) return 'not_configured';
+      if (!(await clientIdNow())) return 'not_configured';
       const st = await store.read(d.kv);
       if (!st) return 'disconnected';
       if (tokenUsable(st, d.now())) return 'connected';
@@ -369,6 +378,7 @@ export function chromeAuth(kv: KV, locker: Locker): AuthProvider {
     kv,
     locker,
     clientId: oauthClientId(),
+    storedClientId: async () => (await stores.secrets.read(kv)).googleClientId,
     clientSecret: async () => (await stores.secrets.read(kv)).googleClientSecret,
     authorizeUrl: GOOGLE_OAUTH_AUTHORIZE_URL,
     tokenUrl: ENDPOINTS.googleOAuthToken,

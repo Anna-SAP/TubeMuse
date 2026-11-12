@@ -2,19 +2,22 @@
   "name": "tubemuse",
   "version": "0.1.0",
   "private": true,
-  "description": "TubeMuse — 按意图找片的个人 Chrome 扩展（MV3，本地优先）",
+  "description": "TubeMuse — 按意图找片的个人浏览器扩展（Chrome 与 Firefox，MV3，本地优先）",
   "type": "module",
   "scripts": {
     "setup": "node scripts/gen-key.mjs",
     "build": "node scripts/build.mjs",
     "build:e2e": "node scripts/build.mjs --e2e",
+    "build:firefox": "node scripts/build.mjs --firefox",
+    "build:firefox-e2e": "node scripts/build.mjs --firefox --e2e",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e:install": "playwright install chromium --no-shell",
     "smoke": "node scripts/build.mjs && node tests/e2e/smoke-prod.mjs",
     "e2e": "node scripts/build.mjs --e2e && node tests/e2e/run-e2e.mjs && node scripts/build.mjs && node tests/e2e/smoke-prod.mjs",
-    "verify": "npm run typecheck && npm run test && npm run e2e"
+    "e2e:firefox": "node scripts/build.mjs --firefox --e2e && node tests/e2e/firefox/run.mjs && node scripts/build.mjs --firefox && node tests/e2e/firefox/smoke-xpi.mjs",
+    "verify": "npm run typecheck && npm run test && npm run e2e && npm run e2e:firefox"
   },
   "engines": {
     "node": ">=20"

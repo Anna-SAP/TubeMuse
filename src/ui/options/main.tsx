@@ -9,6 +9,7 @@ import { asrPrice, hourlyEstimateUsd, llmPrice, localPreparePairs } from '../../
 import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { browserSpeechEnv, detectLocal, installLocal, type LocalAvailability } from '../../services/speech';
 import { ENDPOINTS } from '../../config/endpoints';
+import { BROWSER_NAME, IS_FIREFOX, SHORTCUTS_PAGE, SPEECH_PLATFORM } from '../../platform';
 import { authProblem, clearSecretFailure, oauthClientId, oauthRedirectUrl, type AuthStatus } from '../../services/auth';
 import { attemptView } from '../../services/auth-service';
 import { clearAll, exportAll } from '../../services/data-service';
@@ -21,6 +22,7 @@ import { stores, type Secrets, type Settings } from '../../services/repo';
 import type { LlmProvider } from '../../services/llm';
 import { appCtx, asAppError, requestYouTubeConnect, useLlmSpend, useQuota, useStore } from '../shared/app';
 import { AuthAttemptNote, ErrorBox, Notice, QuotaMeter } from '../shared/components';
+import { HostAccessBanner } from '../shared/host-access';
 
 function Section({ title, children, id }: { title: string; children: ComponentChildren; id?: string }) {
   return (
@@ -129,6 +131,44 @@ function WorkspaceField({ saved, onSave, onClear }: { saved?: string; onSave: (v
   );
 }
 
+/** Google OAuth 客户端的形如 xxxx.apps.googleusercontent.com 的 Client ID（与构建脚本的校验一致） */
+const CLIENT_ID_RE = /^[\w.-]+\.apps\.googleusercontent\.com$/;
+
+/**
+ * 构建时没注入 Client ID 的安装包（例如别处打好的 Firefox 安装包）：在这里填（DECISIONS §69）。
+ * Client ID 不是机密，保存后照常显示；和 Client Secret 一起只存本机、不进导出。
+ */
+function ClientIdField({ saved, onSave, onClear }: { saved?: string; onSave: (v: string) => void; onClear: () => void }) {
+  const [draft, setDraft] = useState('');
+  const value = draft.trim();
+  const invalid = !!value && !CLIENT_ID_RE.test(value);
+  return (
+    <div class="field">
+      <span>OAuth Client ID</span>
+      <div class="row">
+        <input class="input" autocomplete="off" data-testid="google-client-id" placeholder={saved ?? 'xxxx.apps.googleusercontent.com'} value={draft} onInput={(e) => setDraft(e.currentTarget.value)} />
+        <button
+          class="btn"
+          disabled={!value || invalid}
+          onClick={() => {
+            onSave(value);
+            setDraft('');
+          }}
+        >
+          保存
+        </button>
+        {saved && (
+          <button class="btn link" onClick={onClear}>
+            删除
+          </button>
+        )}
+      </div>
+      {invalid && <span class="warn-text small">应形如 xxxx.apps.googleusercontent.com：从 Google Cloud 里那个"Web 应用"客户端的页面整段复制</span>}
+      <span class="muted small">这个安装包构建时没有带上 Client ID，在这里填同一个客户端的 Client ID 即可（不是机密，只存本机）。</span>
+    </div>
+  );
+}
+
 function App() {
   const ctx = appCtx();
   const settings = useStore(stores.settings);
@@ -145,7 +185,7 @@ function App() {
   const [clearText, setClearText] = useState('');
 
   const refreshAuth = () => void ctx.auth.status().then(setAuth);
-  useEffect(refreshAuth, [ytAuth]);
+  useEffect(refreshAuth, [ytAuth, secrets?.googleClientId]);
 
   if (!settings || !secrets) return null;
 
@@ -188,7 +228,8 @@ function App() {
   };
 
   const extId = chrome.runtime.id;
-  const clientId = oauthClientId();
+  const builtInClientId = oauthClientId();
+  const clientId = builtInClientId ?? secrets.googleClientId;
   const redirectUrl = oauthRedirectUrl();
   const hhmm = (t: number) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const day = (t: number) => new Date(t).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -221,6 +262,7 @@ function App() {
         </div>
         <QuotaMeter snap={quota} />
       </header>
+      <HostAccessBanner />
       {error && <ErrorBox error={error} onClose={() => setError(undefined)} />}
       {ok && (
         <Notice kind="ok" onClose={() => setOk(undefined)}>
@@ -279,7 +321,10 @@ function App() {
             <code data-testid="redirect-url">{redirectUrl}</code>
           </dd>
           <dt>OAuth Client ID</dt>
-          <dd>{clientId ? <code>{clientId}</code> : <span class="warn-text">未配置（见 README「Google Cloud 配置」）</span>}</dd>
+          <dd data-testid="client-id">
+            {clientId ? <code>{clientId}</code> : <span class="warn-text">未配置（见 README「Google Cloud 配置」；可以填在下面）</span>}
+            {!builtInClientId && clientId && <span class="muted small">（在本页填写）</span>}
+          </dd>
           <dt>申请的权限</dt>
           <dd>
             <code>{GOOGLE_OAUTH_SCOPE}</code>（只读：订阅、喜欢的视频、搜索）
@@ -294,6 +339,7 @@ function App() {
             )}
           </dd>
         </dl>
+        {!builtInClientId && <ClientIdField saved={secrets.googleClientId} onSave={(v) => updateSecrets({ googleClientId: v })} onClear={() => updateSecrets({ googleClientId: '' })} />}
         <KeyField
           label="OAuth Client Secret"
           testid="google-client-secret"
@@ -369,10 +415,19 @@ function App() {
             <option value="en-US">English（en-US）</option>
           </select>
         </label>
-        <label class="inline">
-          <input type="checkbox" checked={settings.voice.preferLocal} onChange={(e) => updateSection('voice', { preferLocal: e.currentTarget.checked })} />
-          优先本地识别（浏览器支持且已下载语音包时，音频不离开本机；否则使用浏览器的云端语音服务，侧边栏会明示）
-        </label>
+        {SPEECH_PLATFORM.hasCloud ? (
+          <label class="inline">
+            <input type="checkbox" checked={settings.voice.preferLocal} onChange={(e) => updateSection('voice', { preferLocal: e.currentTarget.checked })} />
+            优先本地识别（浏览器支持且已下载语音包时，音频不离开本机；否则使用浏览器的云端语音服务，侧边栏会明示）
+          </label>
+        ) : (
+          <>
+            <p class="muted small" data-testid="voice-local-only">
+              {BROWSER_NAME} 的语音识别只在本机进行（用 {SPEECH_PLATFORM.packSource} 的语音模型，音频不离开这台电脑），没有云端识别：这个语言的本机模型下载好之前，语音输入用不了，可以打字。
+            </p>
+            <LocalSpeechPack lang={settings.voice.lang} />
+          </>
+        )}
         <p class="muted small">
           侧边栏无法直接弹出麦克风授权框。第一次使用语音前，请
           <button class="btn link small" onClick={() => void chrome.tabs.create({ url: chrome.runtime.getURL('mic-permission.html') })}>
@@ -748,10 +803,13 @@ function App() {
             <code>https://img1–9.doubanio.com</code>（豆瓣条目海报，只作图片加载，地址来自 RSS）
           </li>
         </ul>
-        <p class="muted small">Google 登录 / 授权窗口（accounts.google.com）由浏览器自己打开，授权结果回跳到 chromiumapp.org 由浏览器直接截获；云端语音识别由浏览器自己连接 Google 语音服务（侧边栏会明示）。</p>
+        <p class="muted small">
+          Google 登录 / 授权窗口（accounts.google.com）由浏览器自己打开，授权结果回跳到 {new URL(redirectUrl).hostname.split('.').slice(1).join('.')} 由浏览器直接截获；
+          {SPEECH_PLATFORM.hasCloud ? '云端语音识别由浏览器自己连接 Google 语音服务（侧边栏会明示）。' : `${BROWSER_NAME} 的语音识别只在本机进行，本机语音模型由浏览器从 ${SPEECH_PLATFORM.packSource} 下载（只在你点下载时）。`}
+        </p>
         <p class="muted small">注入 youtube.com 的观看追踪脚本只读取本地播放器状态（进度、时长、暂停、倍速、是否广告、标签页是否可见），不读取页面内容、不改动页面、不发任何网络请求。</p>
         <p class="muted small">
-          注入 youtube.com 的自动字幕脚本在视频播放时拿到这个视频的声音（不下载、不保存）：转写方式是"浏览器识别"时交给浏览器自带的语音识别（装了本地语音包时在本机识别，否则由 Chrome 自己连接 Google 的语音服务）；是"OpenAI"时交给扩展后台发往 <code>{new URL(ENDPOINTS.openai).host}</code>。它在播放器里加一层只读字幕，不改动 YouTube 自己的元素，本身不发任何网络请求。
+          注入 youtube.com 的自动字幕脚本在视频播放时拿到这个视频的声音（不下载、不保存）：转写方式是"浏览器识别"时交给浏览器自带的语音识别（{SPEECH_PLATFORM.hasCloud ? '装了本地语音包时在本机识别，否则由 Chrome 自己连接 Google 的语音服务' : `只在本机用 ${SPEECH_PLATFORM.packSource} 的语音模型识别`}）；是"OpenAI"时交给扩展后台发往 <code>{new URL(ENDPOINTS.openai).host}</code>。它在播放器里加一层只读字幕，不改动 YouTube 自己的元素，本身不发任何网络请求。
         </p>
         <p class="muted small">
           注入 youtube.com 的多语字幕脚本只在你开启后工作：页面内助手读取播放器的字幕轨列表、开关播放器自己的字幕（为拿到播放器的字幕请求短暂打开一次；显示期间关掉原生字幕，关闭时恢复）；另一个脚本复用播放器自己的字幕请求，只换语言，向同源的 <code>www.youtube.com/api/timedtext</code> 取你选的语言（与你在字幕菜单里换语言时播放器发的请求相同），字幕只存在这个标签页的内存里。它在播放器里加一层只读字幕，不改动 YouTube 自己的元素。偏好里有"视频原声语言"而字幕轨看不出时，后台用 YouTube Data API 查一次视频语言（1 unit，有缓存）。
@@ -789,6 +847,8 @@ function LocalSpeechPack({ lang }: { lang: string }) {
     setState(await detectLocal(env, lang));
     setBusy(false);
   };
+  // 没装时会怎样：Chrome 改用云端（声音发往 Google）；Firefox 没有云端，识别不了（DECISIONS §69）
+  const fallback = SPEECH_PLATFORM.hasCloud ? '会用 Chrome 云端识别（声音发往 Google）' : `${BROWSER_NAME} 没有云端识别，这个语言暂时识别不了`;
   let text: string;
   switch (state) {
     case 'checking':
@@ -798,16 +858,16 @@ function LocalSpeechPack({ lang }: { lang: string }) {
       text = `「${name}」本地语音包已安装：在本机识别，声音不离开电脑`;
       break;
     case 'downloadable':
-      text = `「${name}」本地语音包还没安装，现在会用 Chrome 云端识别（声音发往 Google）`;
+      text = SPEECH_PLATFORM.hasCloud ? `「${name}」本地语音包还没安装，现在${fallback}` : `「${name}」本机语音模型还没下载：${fallback}`;
       break;
     case 'downloading':
       text = `「${name}」本地语音包正在下载…`;
       break;
     case 'unavailable':
-      text = `这个浏览器没有「${name}」的本地语音包，会用 Chrome 云端识别（声音发往 Google）`;
+      text = `这个浏览器没有「${name}」的本地语音包，${fallback}`;
       break;
     default:
-      text = '这个浏览器不支持本地识别，会用 Chrome 云端识别（声音发往 Google）';
+      text = `这个浏览器不支持本地识别，${fallback}`;
   }
   return (
     <div class="field" data-testid="local-speech-pack">
@@ -818,10 +878,10 @@ function LocalSpeechPack({ lang }: { lang: string }) {
           <button class="btn" disabled={busy} onClick={() => void install()}>
             {busy ? '下载中…' : `下载「${name}」本地语音包`}
           </button>
-          <span class="muted small">由浏览器从 Google 下载一次（约几十 MB），之后识别在本机完成</span>
+          <span class="muted small">由浏览器从 {SPEECH_PLATFORM.packSource} 下载一次（{SPEECH_PLATFORM.hasCloud ? '约几十 MB' : '几百 MB，浏览器可能先问你一次'}），之后识别在本机完成</span>
         </div>
       )}
-      {failed && <span class="warn-text small">没能下载本地语音包（浏览器拒绝或网络问题），仍会用 Chrome 云端识别</span>}
+      {failed && <span class="warn-text small">没能下载本地语音包（浏览器拒绝或网络问题），{SPEECH_PLATFORM.hasCloud ? '仍会用 Chrome 云端识别' : '语音识别暂时用不了'}</span>}
     </div>
   );
 }
@@ -884,7 +944,12 @@ function LlmCostSection({ settings, update }: { settings: Settings; update: (fn:
 function LocalTranslateSetup({ settings }: { settings: Settings }) {
   const translator = appCtx().translator;
   const [status, setStatus] = useState<string>();
-  if (!translator) return <p class="warn-text small">这个浏览器没有本地翻译（需要 Chrome 138 或更新版本）：第二行不会显示。想要译文的话改用大模型翻译。</p>;
+  if (!translator)
+    return (
+      <p class="warn-text small" data-testid="local-translate-missing">
+        {IS_FIREFOX ? 'Firefox 没有给扩展用的本地翻译接口' : '这个浏览器没有本地翻译（需要 Chrome 138 或更新版本）'}：第二行不会显示。想要译文的话改用大模型翻译。
+      </p>
+    );
   const s = settings.subtitles;
   const prepare = () => {
     setStatus('正在下载语言包，由 Chrome 存到本机…');
@@ -934,7 +999,7 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
       </p>
       <label class="inline">
         <input type="radio" name="asr-engine" checked={!openai} onChange={() => set({ asrEngine: 'browser' })} />
-        浏览器识别（免费；边说边出字；只有 Google Chrome 能用）
+        {SPEECH_PLATFORM.hasCloud ? '浏览器识别（免费；边说边出字；只有 Google Chrome 能用）' : `浏览器识别（免费；边说边出字；${BROWSER_NAME} 只在本机识别，要先下载这个语言的本机语音模型，没有的语言用不了）`}
       </label>
       <label class="inline">
         <input type="radio" name="asr-engine" checked={openai} onChange={() => set({ asrEngine: 'openai' })} />
@@ -952,11 +1017,13 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
             </select>
             <span class="muted small">浏览器识别不能自动判断语言。"自动"时按视频的语言（YouTube 数据，每个新视频查一次，1 unit），中文按简体字识别；判断不了时用简体中文。在侧边栏"字幕"页可以给单个视频换语言。</span>
           </label>
-          <label class="inline">
-            <input type="checkbox" checked={s.browserPreferLocal} onChange={(e) => set({ browserPreferLocal: e.currentTarget.checked })} />
-            装了本地语音包时在本机识别（声音不离开电脑）；没装时用 Chrome 云端识别（声音由 Chrome 发往 Google）
-          </label>
-          {s.browserPreferLocal && <LocalSpeechPack lang={s.browserLang === 'auto' ? 'zh-CN' : s.browserLang} />}
+          {SPEECH_PLATFORM.hasCloud && (
+            <label class="inline">
+              <input type="checkbox" checked={s.browserPreferLocal} onChange={(e) => set({ browserPreferLocal: e.currentTarget.checked })} />
+              装了本地语音包时在本机识别（声音不离开电脑）；没装时用 Chrome 云端识别（声音由 Chrome 发往 Google）
+            </label>
+          )}
+          {(s.browserPreferLocal || !SPEECH_PLATFORM.hasCloud) && <LocalSpeechPack lang={s.browserLang === 'auto' ? 'zh-CN' : s.browserLang} />}
         </>
       )}
       <div class="grid">
@@ -1004,7 +1071,7 @@ function SubtitleSection({ settings, hasOpenAiKey, update }: { settings: Setting
       </p>
       <label class="inline">
         <input type="radio" name="translate-engine" data-testid="subtitle-engine-local" checked={s.translationEngine === 'local'} onChange={() => set({ translationEngine: 'local' })} />
-        Chrome 本地翻译（免费；字幕文字不离开电脑；质量一般，语言包由 Chrome 下载）
+        {IS_FIREFOX ? '浏览器本地翻译（只有 Chrome 有；Firefox 没有给扩展用的接口，选了第二行也不会显示）' : 'Chrome 本地翻译（免费；字幕文字不离开电脑；质量一般，语言包由 Chrome 下载）'}
       </label>
       <label class="inline">
         <input type="radio" name="translate-engine" data-testid="subtitle-engine-llm" checked={s.translationEngine === 'llm'} onChange={() => set({ translationEngine: 'llm' })} />

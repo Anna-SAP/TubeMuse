@@ -39,7 +39,10 @@ export function canonicalArticleUrl(href: unknown): { url: string; site: string 
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return undefined;
   const segments = u.pathname.split('/').filter(Boolean);
   if (!segments.length || BOILERPLATE_HOST.test(u.hostname) || segments.some((s) => BOILERPLATE_SEGMENT.test(s))) return undefined;
-  for (const k of [...u.searchParams.keys()]) if (TRACKING_PARAM.test(k)) u.searchParams.delete(k);
+  // 用 forEach 收集参数名，不展开 keys() 的迭代器：Firefox 的内容脚本里它是页面那一侧的对象，不能直接展开（DECISIONS §69）
+  const keys: string[] = [];
+  u.searchParams.forEach((_v, k) => keys.push(k));
+  for (const k of keys) if (TRACKING_PARAM.test(k)) u.searchParams.delete(k);
   u.hash = '';
   u.username = '';
   u.password = '';

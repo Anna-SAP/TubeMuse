@@ -28,6 +28,10 @@ import { copyPngToClipboard } from '../shared/clipboard';
 import { Notice } from '../shared/components';
 import { downloadBlob } from '../shared/download';
 import { useActiveTabState } from '../shared/tab-state';
+import { IS_FIREFOX, SHORTCUTS_PAGE } from '../../platform';
+
+/** 想每次自己选保存位置时去哪里改 */
+const DOWNLOAD_ASK_HINT = IS_FIREFOX ? 'Firefox 设置 → 常规 → 下载 → "总是询问您要将文件存到何处"' : 'Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"';
 
 const NO_RESPONSE = '这个标签页没有响应：刷新一下那个页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）';
 
@@ -381,7 +385,7 @@ export function ClipsView() {
             当前标签页不是 YouTube 视频页（含 Shorts）、小红书网页版、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版或 B 站网页版（www.bilibili.com）。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有录制脚本）。
           </p>
         )}
-        <p class="muted small">快捷键 Alt+Shift+R 开始 / 停止（可在 chrome://extensions/shortcuts 修改）；录制中工具栏图标上显示 REC。</p>
+        <p class="muted small">快捷键 Alt+Shift+R 开始 / 停止（可在 {SHORTCUTS_PAGE} 修改）；录制中工具栏图标上显示 REC。</p>
       </section>
 
       {log && log.length > 0 && (
@@ -413,7 +417,7 @@ export function ClipsView() {
 
       <section class="panel">
         <p class="muted small">
-          可以录 YouTube 播放页和 Shorts、小红书笔记详情、X 帖子（帖子页，或首页信息流里正在播放、开着声音的那个）、酷播（www.kubb.tv）播放页、Instagram 首页信息流里正在播放、开着声音的视频，抖音精选页（www.douyin.com/jingxuan）、抖音搜索结果里点开的视频，以及 B 站（www.bilibili.com）播放器里的视频（普通视频、番剧影视、课程、播放列表、活动页）。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告（X 和 B 站的片头广告、酷播上认不出来的广告除外）、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：Chrome 设置 → 下载内容 → "下载前询问每个文件的保存位置"），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
+          可以录 YouTube 播放页和 Shorts、小红书笔记详情、X 帖子（帖子页，或首页信息流里正在播放、开着声音的那个）、酷播（www.kubb.tv）播放页、Instagram 首页信息流里正在播放、开着声音的视频，抖音精选页（www.douyin.com/jingxuan）、抖音搜索结果里点开的视频，以及 B 站（www.bilibili.com）播放器里的视频（普通视频、番剧影视、课程、播放列表、活动页）。录制只在本机进行：画面和声音来自正在播放的这个视频（不是麦克风，也不是整个屏幕），不经过网络；广告（X 和 B 站的片头广告、酷播上认不出来的广告除外）、暂停、缓冲、切到别的标签页时自动暂停，换视频时自动结束。按当前倍速录。片段由浏览器存进下载文件夹（想每次自己选位置：{DOWNLOAD_ASK_HINT}），TubeMuse 只记文件名、时间段和大小。受版权保护（DRM）的视频浏览器不允许录。录下的片段和截图仅供个人学习，请勿传播。
         </p>
       </section>
     </div>
