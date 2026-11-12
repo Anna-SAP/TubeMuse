@@ -99,8 +99,17 @@ try {
   check(served.includes('/tubemuse.crx'), 'Chromium 下载了这个 .crx');
   check(existsSync(installed) && readdirSync(installed).includes(`${manifest.version}_0`), `Chromium 校验通过并安装了它（版本 ${manifest.version}）`);
   if (existsSync(installed)) {
-    // 首次安装时扩展自己会打开设置页；等它出现，免得和下面打开的页面抢
-    await context.waitForEvent('page', { predicate: (p) => p.url().startsWith(`chrome-extension://${crx.id}/`), timeout: 15_000 }).catch(() => undefined);
+    // 首次安装时扩展的后台（service worker）会调用 runtime.openOptionsPage()，Chromium 用它替换当前的空白标签页：
+    // 原来那个页面对象被关掉、换成设置页。后台什么时候起来不固定（本机 1–2 秒，GitHub 的 runner 上可能十几秒），
+    // 要是先开了自己的页面，被替换掉的就是它（CI 上实际碰到过："Target page, context or browser has been closed"）。
+    // 所以先等设置页出现——这也说明装上的扩展后台确实跑起来了——再开下面的页面。
+    const optionsUrl = `chrome-extension://${crx.id}/options.html`;
+    const optionsDeadline = Date.now() + 60_000;
+    while (!context.pages().some((p) => p.url() === optionsUrl) && Date.now() < optionsDeadline) await new Promise((r) => setTimeout(r, 250));
+    check(
+      context.pages().some((p) => p.url() === optionsUrl),
+      `扩展的后台跑起来了：首次安装时自己打开了设置页${context.pages().some((p) => p.url() === optionsUrl) ? '' : `（60 秒内没有出现；现在的页面：${context.pages().map((p) => p.url()).join(', ')}）`}`,
+    );
     for (const page of ['sidepanel.html', 'options.html']) {
       const p = await context.newPage();
       p.on('console', (m) => m.type() === 'error' && errors.push(`${page}: ${m.text()}`));
