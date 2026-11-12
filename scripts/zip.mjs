@@ -1,9 +1,9 @@
 // @ts-check
-// 把一个目录打成 zip（Firefox 的 .xpi 就是 zip，manifest.json 在最上层）。不引入依赖：Node 自带的 zlib 做 deflate，CRC-32 自己算。
+// 把一个目录打成 zip（Firefox 的 .xpi 就是 zip，manifest.json 在最上层；Chrome 的 .zip 与 .crx 里也是它，DECISIONS §70），以及从中取出一个文件。不引入依赖：Node 自带的 zlib 做 deflate，CRC-32 自己算。
 // 输出可重复：文件按路径排序，时间戳固定为 2026-01-01 00:00，同样的内容得到一模一样的字节。
 import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { deflateRawSync } from 'node:zlib';
+import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -95,4 +95,45 @@ export function zipDirectory(dir, out) {
   const all = Buffer.concat([...chunks, ...central, end]);
   writeFileSync(out, all);
   return { files: files.length, bytes: all.length };
+}
+
+/**
+ * 从 zip（本项目的 zipDirectory 打的，或 .crx 里的那一段）里取出一个文件。找不到时返回 undefined。
+ * 只认"存储"和"deflate"两种方式（zipDirectory 只用这两种）。
+ * @param {Buffer} zip
+ * @param {string} name zip 里的路径，例如 manifest.json
+ * @returns {Buffer | undefined}
+ */
+export function readZipEntry(zip, name) {
+  // 末尾的"中央目录结束记录"（没有注释时就在最后 22 字节；保险起见往前找）
+  let end = -1;
+  for (let i = zip.length - 22; i >= Math.max(0, zip.length - 22 - 0xffff); i--) {
+    if (zip.readUInt32LE(i) === 0x06054b50) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) throw new Error('不是 zip：找不到中央目录');
+  const count = zip.readUInt16LE(end + 10);
+  let p = zip.readUInt32LE(end + 16);
+  for (let n = 0; n < count; n++) {
+    if (zip.readUInt32LE(p) !== 0x02014b50) throw new Error('zip 的中央目录损坏');
+    const method = zip.readUInt16LE(p + 10);
+    const size = zip.readUInt32LE(p + 20);
+    const nameLen = zip.readUInt16LE(p + 28);
+    const extraLen = zip.readUInt16LE(p + 30);
+    const commentLen = zip.readUInt16LE(p + 32);
+    const local = zip.readUInt32LE(p + 42);
+    const entry = zip.toString('utf8', p + 46, p + 46 + nameLen);
+    if (entry === name) {
+      if (zip.readUInt32LE(local) !== 0x04034b50) throw new Error(`zip 里 ${name} 的本地文件头损坏`);
+      const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+      const body = zip.subarray(start, start + size);
+      if (method === 0) return Buffer.from(body);
+      if (method === 8) return inflateRawSync(body);
+      throw new Error(`zip 里 ${name} 的压缩方式 ${method} 不认识`);
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return undefined;
 }

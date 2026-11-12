@@ -36,7 +36,7 @@ describe('e2e 分组与 CI 一致', () => {
 
   it('verify 仍是汇总结果的那个 job，前面的 job 失败或取消时也会跑', () => {
     const verify = ci.slice(ci.indexOf('\n  verify:'));
-    expect(verify).toMatch(/needs: \[gate, checks, e2e, firefox\]/);
+    expect(verify).toMatch(/needs: \[gate, checks, e2e, firefox, package\]/);
     expect(verify).toMatch(/if: \$\{\{ always\(\) \}\}/);
   });
 

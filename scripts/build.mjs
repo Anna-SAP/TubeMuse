@@ -4,6 +4,7 @@
 //   npm run build:e2e          → dist-e2e/            （测试版：所有外部服务与 Google 授权页都指向本机 mock）
 //   npm run build:firefox      → dist-firefox/ + release/tubemuse-<版本>-firefox.xpi（Firefox 版，DECISIONS §69）
 //   npm run build:firefox-e2e  → dist-firefox-e2e/    （Firefox 测试版，同样指向本机 mock）
+//   --version=0.1.0.42         manifest 与安装包文件名用这个版本号，不用 package.json 的（发布用，DECISIONS §70）
 // 同一份源码，两个浏览器只差 manifest 与少数几处由 __BROWSER__ 区分的地方（src/platform.ts）。
 // manifest 的 host_permissions、CSP connect-src 与豆瓣图片的 img-src 都由 src/config/endpoints*.ts 生成，保证网络出口只有一个来源。
 import * as esbuild from 'esbuild';
@@ -12,6 +13,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extensionIdFromPublicKey } from './gen-key.mjs';
 import { FIREFOX_ADDON_ID, FIREFOX_E2E_ADDON_ID, FIREFOX_MIN_VERSION, firefoxRedirectUrl } from './firefox.mjs';
+import { isManifestVersion } from './version.mjs';
 import { zipDirectory } from './zip.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -19,12 +21,17 @@ const e2e = process.argv.includes('--e2e');
 const firefox = process.argv.includes('--firefox');
 const outdir = join(root, `${firefox ? 'dist-firefox' : 'dist'}${e2e ? '-e2e' : ''}`);
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+const versionArg = process.argv.find((a) => a.startsWith('--version='))?.slice('--version='.length);
+/** manifest 的版本号：Chrome 与 Firefox 都要求 1–4 段、每段 0–65535 的整数、不带前导 0 */
+const version = versionArg ?? String(pkg.version);
 
 /** @param {string} msg @returns {never} */
 function fail(msg) {
   console.error(`\n构建失败：${msg}\n`);
   process.exit(1);
 }
+
+if (!isManifestVersion(version)) fail(`版本号 ${version} 不能用作扩展版本：要 1–4 段用点隔开的整数，每段 0–65535，不带前导 0（例如 0.1.0.42）。`);
 
 // ── 本地私有配置 ──
 // Chrome 用 manifest 的 key 固定扩展 ID；Firefox 用 gecko.id，不需要它
@@ -177,7 +184,7 @@ const browserSpecific = firefox
 const manifest = {
   manifest_version: 3,
   name: e2e ? 'TubeMuse (E2E)' : 'TubeMuse',
-  version: pkg.version,
+  version,
   description: '按你的意图在 YouTube 找片：一句话找片、带理由的结果、打分让系统可见地变好。只读、本地优先。',
   ...browserSpecific,
   host_permissions: [...new Set(origins.map((o) => match(`${o}/*`)))],
@@ -232,6 +239,8 @@ const forbidden = [
   { re: /GOCSPX-[0-9A-Za-z_-]{20,}/, what: 'Google OAuth Client Secret' },
   { re: /\b1\/\/0[0-9A-Za-z_-]{30,}/, what: 'Google 刷新令牌' },
   { re: /AAAAAAAAAAAAAAAAAAAA[A-Za-z0-9%]{30,}/, what: 'X Bearer Token' },
+  // 给 .crx 签名的私钥（local/extension-key.pem，发布时来自仓库 Secret，DECISIONS §70）只该用来签名，绝不能进安装包
+  { re: /-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----/, what: '私钥' },
 ];
 if (!e2e) {
   // 只查本项目自己的 mock 地址（SDK 内部有"仅允许 https 或 localhost"之类的无害字符串，不算）
@@ -411,7 +420,7 @@ if (firefox) {
   if (m.browser_specific_settings?.gecko?.id !== geckoId) fail('Firefox 版 manifest 没有固定的 gecko.id：授权回跳地址会每次都变');
 }
 
-console.log(`✔ 已构建 ${relative(root, outdir)}/`);
+console.log(`✔ 已构建 ${relative(root, outdir)}/（版本 ${version}）`);
 console.log(`  网络出口：${origins.join(', ')}`);
 if (firefox) {
   console.log(`  Firefox 扩展 ID：${geckoId}`);
@@ -419,7 +428,7 @@ if (firefox) {
 }
 if (firefox && !e2e) {
   // 打成 .xpi（就是 zip，manifest.json 在最上层）：about:debugging →「临时载入附加组件」可以直接选它
-  const xpi = join(root, 'release', `tubemuse-${pkg.version}-firefox.xpi`);
+  const xpi = join(root, 'release', `tubemuse-${version}-firefox.xpi`);
   mkdirSync(dirname(xpi), { recursive: true });
   const { files, bytes } = zipDirectory(outdir, xpi);
   console.log(`  安装包：${relative(root, xpi)}（${files} 个文件，${(bytes / 1024).toFixed(0)} KB）`);

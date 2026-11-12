@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["scripts/**/*.mjs", "tests/e2e/**/*.mjs"]
+  "include": ["scripts/**/*.mjs", "tests/e2e/**/*.mjs", "tests/unit/**/*.mjs"]
 }

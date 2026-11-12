@@ -1,0 +1,110 @@
+# 自动发布（DECISIONS §70）：每次有改动合并进 main，main 上的 CI 一通过，就打出 Chrome 的 .crx / .zip 和 Firefox 的 .xpi，
+# 发布到仓库的 Releases 页。合并后 CI 通常十几秒就结束（这棵文件树在 PR 里已经验过，见 ci.yml 的 gate），所以几乎是立即发布。
+# 也能在 Actions → Release → Run workflow（分支选 main）手动发布当前的 main。
+#
+# 签名密钥来自仓库 Secret CRX_PRIVATE_KEY：你电脑上 local/extension-key.pem 的全文。用它签名，.crx / .zip 装上后的扩展 ID
+# 就和你本机 npm run setup 得到的一样，Google Cloud 里登记的授权回跳地址照样能用。没配这个 Secret 时这次发布失败，并写明要怎么配。
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 一次只发一个，按顺序来；不取消正在发布的那一次（发到一半停下会留下草稿）
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # 只发 main 上 push 触发、全部通过的那次 CI（PR 的 CI、fork 来的运行都不算）；手动运行只认 main
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      # 建标签、建 Release、上传安装包
+      contents: write
+    env:
+      # 发布 CI 验过的那个提交（这期间 main 又进了别的改动也不混进来）
+      RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - name: Check out the commit to release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          # 版本号的第四段是这个提交在 main 上的提交数，要完整的历史才数得出来
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 私钥只交给这一步；写成 local/extension-key.pem 与 local/manifest-key.txt，只在这台 runner 上，job 结束就没了
+      - name: Load the signing key
+        env:
+          CRX_PRIVATE_KEY: ${{ secrets.CRX_PRIVATE_KEY }}
+        run: node scripts/release-key.mjs
+
+      # 版本号 = package.json 的版本 + 提交数，例如 0.1.0.137：只增不减，Chrome 才肯用新的 .crx 覆盖旧的
+      - name: Build and package
+        id: package
+        run: npm run package -- --build="$(git rev-list --count "$RELEASE_SHA")"
+
+      - name: Install Chromium
+        run: npm run e2e:install
+
+      - name: Let the smoke test write a Chromium policy
+        run: |
+          sudo mkdir -p /etc/opt/chrome_for_testing/policies/managed
+          sudo chown "$USER" /etc/opt/chrome_for_testing/policies/managed
+
+      # 发布前让真的 Chromium 下载、校验、安装这个 .crx：签名或扩展 ID 有一点不对，它都会拒装，这次就不发布
+      - name: Chrome installs the .crx
+        run: node tests/e2e/smoke-crx.mjs
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          files=("release/tubemuse-$VERSION-chrome.zip" "release/tubemuse-$VERSION-chrome.crx" "release/tubemuse-$VERSION-firefox.xpi")
+          state=$(gh release view "$tag" --json isDraft --jq 'if .isDraft then "draft" else "published" end' 2>/dev/null || echo none)
+          if [ "$state" = "published" ]; then
+            echo "$tag 已经发布过（例如重新运行了这次发布），不再重复发布。" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$state" = "draft" ]; then
+            # 上一次发到一半停下留下的草稿：删掉重来
+            gh release delete "$tag" --yes
+          fi
+          # 只有比已发布的都新时才标成"最新"：重新运行一次旧的 CI 不会把旧版本顶上去
+          newest=$( { gh release list --limit 100 --json tagName --jq '.[].tagName' | sed -n 's/^v//p'; echo "$VERSION"; } | sort -V | tail -n 1)
+          latest=false
+          if [ "$newest" = "$VERSION" ]; then latest=true; fi
+          gh release create "$tag" "${files[@]}" \
+            --target "$RELEASE_SHA" \
+            --title "TubeMuse $VERSION" \
+            --notes-file release/release-notes.md \
+            --generate-notes \
+            --latest="$latest"
+          echo "已发布 [$tag]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag)：${files[*]##*/}" >> "$GITHUB_STEP_SUMMARY"

@@ -735,7 +735,7 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
 - **密钥**：构建需要 `local/manifest-key.txt`，CI 用 `npm run setup` 现场生成，只活在这台 runner 上，不需要任何 Secret。这个密钥对应的扩展 ID 与本机的不同，所以 CI 只验证，不产出可安装的包。
 - **放弃**
   - 路径过滤（IPCountryWatcher 有）：设成必过项后，被过滤掉的 PR 不产生 `verify`，会一直等下去。
-  - 发布 job（IPCountryWatcher 有）：CI 的包用临时密钥，扩展 ID 不对，OAuth 也走不通，发布出来没用。
+  - 发布 job（IPCountryWatcher 有）：CI 的包用临时密钥，扩展 ID 不对，OAuth 也走不通，发布出来没用。（2026-11-12 起另有发布工作流，签名密钥来自仓库 Secret，见 §70。）
   - `ubuntu-latest`：快一些，但公开仓库两种 runner 都免费，e2e 也没在 Linux 上验证过，日常开发又不用 Linux。
   - 用 `npm run verify` 一步跑完：内容一样，但红了看不出是哪一段。
 - **日后如何替换**：换系统只改 `runs-on`（Linux 需加 `playwright install --with-deps`）。改 job 名要同时改分支保护的必过项，否则所有 PR 都会卡住。不想要这道挡板时，在仓库 Settings → Branches 删掉 `main` 的规则，工作流照常运行。
@@ -1591,3 +1591,42 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 真实的 YouTube、Google 登录页、各站页面在这个环境里打不开，Firefox 下这些只在仿页面上跑过；Firefox 本机语音模型在这个环境里是"不可用"，下载 / 识别成功的那条路没有实测。
 - **留给用户**：Firefox 下语音输入要不要提供"改用 OpenAI 转写"（麦克风的声音发往 api.openai.com，按量计费）。
 - **日后替换**：Firefox 支持扩展的 service worker 后，可以让两边的 background 写法一致；Firefox 支持带端口的匹配规则后，`scripts/build.mjs` 的 `match()` 可以删；最低版本随 `captureStream` 的情况调整 `scripts/firefox.mjs`。
+
+## 70. 自动发布：每次合并进 main 后打出 .crx / .zip / .xpi，发布到 Releases（2026-11-12，用户要求）
+
+- **需求**：每当有新的合并进入 `main`，立即构建 Firefox 能用的 `.xpi` 和 Chrome 能用的 `.crx`，发布到仓库的 Release 页供下载。
+- **先核实的事实**
+  - **Windows / macOS 上的正式版 Chrome 不允许安装 Chrome 应用商店以外的 `.crx`**：拖进 `chrome://extensions` 会被拒绝（常见报错 `CRX_REQUIRED_PROOF_MISSING`）或装上后被停用；Linux、Dev / Canary 渠道或企业策略才行。这是 Google 的规定，扩展这边绕不开（Chromium 扩展论坛、Plasmo 对这个错误的分析、Stack Overflow 上 Chrome 73 以来的同类报告）。拖入安装在 Chromium 里具体走哪种校验，源码里没能确认，所以本项目只验证、只承诺企业策略这条路（见下面的冒烟测试）。用户的日常系统是 Windows（§46）。所以只发 `.crx` 的话，用户在自己的电脑上装不上。
+  - **扩展 ID 取决于签名的私钥**：Chrome 装 `.crx` 时用 CRX 头部里签名的那把公钥算扩展 ID。OAuth 的授权回跳地址 `https://<扩展ID>.chromiumapp.org/` 登记在用户的 Google Cloud 客户端里（§53），所以发布的包必须用用户本机 `local/extension-key.pem` 那把私钥签名，否则装上后连不上 YouTube。§46 当初没做发布 job 就是因为 CI 只有临时密钥；这把私钥只能由用户放进仓库 Secret。
+  - **Firefox**：`about:debugging` 的"临时载入附加组件"不要求 Mozilla 签名（§69 实测），`.xpi` 的扩展 ID 由 `gecko.id` 固定，不需要任何密钥。
+  - 仓库是**公开**的：Releases 上的文件谁都能下载。
+- **选了什么**
+  - **三个文件**：`tubemuse-<版本>-chrome.crx`（要求的）、`tubemuse-<版本>-firefox.xpi`（要求的），另附 `tubemuse-<版本>-chrome.zip`（**规格外的补充，为上面那条事实**）——就是 `.crx` 里的那个 zip，解压后"加载已解压的扩展程序"，正是 CLAUDE.md 规定的 Chrome 安装方式，Windows / macOS 上装 Chrome 版靠它。两个 Chrome 文件的内容逐字节相同（打包时核对），manifest 里的 key 与签名公钥是同一把，所以两种装法得到同一个扩展 ID。
+  - **`.crx` 自己打（`scripts/crx.mjs`）**：CRX3 格式就是 `Cr24` + 版本 3 + protobuf 头部（RSA-SHA256 签名、公钥、声明的 crx_id）+ zip，只用 Node 自带的 crypto，约 150 行，不加依赖。打完按 Chrome 的规则读回来再校验一遍（签名、声明的 ID 有对应的签名、ID 与 manifest 的 key 一致、里面就是那个 zip）。
+  - **发布前让真的 Chromium 装一遍（`tests/e2e/smoke-crx.mjs`）**：自己写的校验和打包共用同一份理解，校验通过不能证明 Chrome 认。所以走企业部署的那条路——策略 `ExtensionInstallForcelist` 指向本机的小服务器（`updates.xml` + 这个 `.crx`），Chromium 自己下载、校验、安装；再核对装上后的扩展 ID、版本号、manifest 的 key、页面能渲染、没有报错。实测：
+    - Playwright 的 Chromium 是 Chrome for Testing，读的策略目录是 `/etc/opt/chrome_for_testing/policies`（二进制里只有这一个策略路径），不是 `/etc/chromium/policies`。
+    - Playwright 默认的 `--disable-extensions` 会连策略装的扩展一起禁掉，`--disable-background-networking` 会让 Chromium 不去取更新清单，两个都要去掉。为了不出网，给 Chromium 指一个不存在的代理（`--proxy-server=http://127.0.0.1:9`）：回环地址默认不走代理，本机服务器照常访问，别的请求一个都出不去。不能用 Playwright 的 `proxy` 选项——它会加 `<-loopback>`，连本机也走代理。
+    - **反向验证**：把签名改坏一个字节、换一把钥匙签同一个 zip（声明的 ID 还是原来的），Chromium 都是"下载了、拒装"。所以这项冒烟通过是有意义的。
+  - **触发：`main` 上 push 触发的那次 CI 全部通过后**（`workflow_run`），不是直接挂在 push 上。合并后的 CI 通常十几秒结束（这棵文件树在 PR 里验过，`gate` 直接放行，§61），所以对用户来说几乎是立即发布；而万一 `main` 上的结果没验过（两个 PR 先后合并、合并结果变了），会等它真的跑完全套检查、通过了才发布，不会把没验过的东西放上 Releases。只认 `event == push`、`head_branch == main`、本仓库自己的运行（PR 的 CI、fork 都不算）。另留 `workflow_dispatch`，只认 `main`，用来手动发布当前的 `main`（例如刚配好 Secret 时）。
+  - **发布哪个提交**：CI 验过的那个（`workflow_run.head_sha`），不是此刻 `main` 的最新提交。
+  - **版本号**：`package.json` 的三段 + 这个提交在 `main` 上的提交数，例如 `0.1.0.137`（`scripts/version.mjs`）。Chrome 只肯用更高的版本覆盖已装的 `.crx`，所以每次发布都必须更高；`main` 有分支保护、不能强推，提交数只增不减，同一个提交永远得到同一个版本号（重新运行不会变）。`build.mjs` 新增 `--version=`，manifest 与 `.xpi` 文件名都用它；不带时照旧用 `package.json` 的。标签 `v<版本>`。
+  - **签名密钥**：仓库 Secret `CRX_PRIVATE_KEY` = 用户本机 `local/extension-key.pem` 的全文。只交给工作流里载入它的那一步（`scripts/release-key.mjs`：容忍 Windows 的 `\r\n`；没配、填成公钥、复制不全、不是 RSA 时说明怎么改，不回显内容），写成 `local/extension-key.pem` 与 `local/manifest-key.txt`，只在那台 runner 上。构建脚本的产物自检新增"私钥"一项：安装包里出现 `BEGIN … PRIVATE KEY` 就构建失败。没配 Secret 时这次发布失败，运行摘要里写明去哪里配、配好后点 Re-run 或手动运行——不静默跳过，也不拿临时密钥签一个扩展 ID 不对的包冒充。
+  - **OAuth Client ID 不打进发布的包**：Releases 公开，Client ID 本身不是密钥，但没必要公开；§69 已经让两个浏览器在构建时没注入时都能在设置页填。发布说明和 README 写明装好后去设置页填一次。
+  - **发布**：`gh release create`（runner 自带），标题 `TubeMuse <版本>`，说明 = `npm run package` 生成的 `release/release-notes.md`（三个文件各给谁用、怎么装、Windows / macOS 不能装 `.crx`、扩展 ID 与授权回跳地址、要在设置页填 Client ID、怎么更新）+ GitHub 自动生成的"自上一版以来合并的 PR"。`gh` 先建草稿、传完文件再发布，不会出现缺文件的版本。同一个版本已经发布过就跳过；上一次发到一半留下的草稿删掉重来；只有比已发布的都新时才标成 Latest（重新运行一次旧的 CI 不会把旧版本顶上去）。发布 job 一次只跑一个、不中途取消（`concurrency: release`）。
+  - **权限**：工作流默认只读，只有发布那个 job 有 `contents: write`。
+  - **PR 上就把打包这条路走一遍**：CI 新增 `package` job（ubuntu），用 runner 上临时生成的密钥跑 `npm run package` 和 `.crx` 安装冒烟，`verify` 要它也通过（`tests/unit/ci-shards.test.ts`、`tests/unit/release.test.mjs` 守着）。这样打包坏了在合并前就红，而不是合并后才发现发不出来。它和别的 job 并行，不拉长 CI 的总时间。
+  - **`npm run package`**：本机也能跑（Windows 上同样可用，只是 `.crx` 冒烟要 Linux），产物都在 `release/`。`npm run verify` 末尾加上了它，和 CI 的 `package` job 对齐；`.crx` 的安装冒烟要 Linux 和能写的策略目录，只在 CI 上跑（README 写明）。
+  - **单测**（`tests/unit/release.test.mjs`，`.mjs` 是为了直接测 `scripts/` 下的模块，由 `tsconfig.scripts.json` 做类型检查）：版本号规则；zip 读回；CRX3 往返、字节确定、protobuf 编码（10000 号字段的标签 `82 F1 04`，另用手工拼的包逐字节对照）、PKCS#1 私钥、各种篡改与"声明的 ID 没有对应签名"（`CRX_REQUIRED_PROOF_MISSING`）、非 RSA；Secret 的各种填法；两个工作流的关键约定（触发条件、Secret 只出现一次、冒烟在发布之前、三个文件、权限）。
+  - 两个工作流都用 actionlint（含 shellcheck）检查过；发布那一步的 shell 用一个假的 `gh` 跑过四种情形（首次发布、比已有的旧、残留草稿、已发布过）。
+- **放弃了什么**
+  - **直接挂在 `main` 的 push 上**：最贴近字面的"立即"，但可能把没验过的合并结果发布出去；`workflow_run` 只多等十几秒。
+  - **用 Chrome 自己的 `--pack-extension` 打包**：权威，但要在 runner 上找 Chrome、无头模式下能不能用没把握，本机（Windows）也得找 Chrome；自己打 + 真 Chromium 安装验证，同样可靠，还能单测。
+  - **`crx3` 等 npm 包**：功能一样，多一个依赖（项目的选型标准是依赖少）。
+  - **Mozilla 签名（`web-ext sign`，unlisted）**：签过的 `.xpi` 能永久安装，但要用户在 addons.mozilla.org 申请 API Key 放进 Secret，CLAUDE.md 也写明 Firefox 版用临时载入、不上架。需要时再加。
+  - **把 Client ID 放进仓库变量、打进发布的包**：省去设置页填一次，代价是公开 Client ID；留给用户决定。
+  - **每次合并都一定有一个独立的版本**：`concurrency` 下排队等候的发布会被更新的那次顶替（GitHub 的规定），连续合并时中间那次可能没有自己的版本，但它的改动包含在下一版里；而且 `main` 上的 CI 本来就会取消被顶替的旧运行（§61）。
+- **已知限制 / 风险**
+  - `.crx` 在 Windows / macOS 的正式版 Chrome 上装不上（见上），只能用 `.zip`。`.crx` 只在 Linux 的 Chromium（Chrome for Testing）里按企业策略实际装过；拖入安装没有自动化验证。
+  - 第一次发布要等用户配好 `CRX_PRIVATE_KEY`；在那之前合并进 `main` 的话，发布那次会失败（有说明），配好后 Re-run 即可。
+  - 发布工作流本身（`workflow_run` 触发、`gh release create` 真的建出 Release）要等这个 PR 合并后才第一次真正跑；合并前能验证的是打包与安装（CI 的 `package` job）和发布那一步的 shell 逻辑（假的 `gh`）。
+- **日后如何替换**：改 CI 的名字（`name: CI`）要同时改 `release.yml` 的 `workflows: [CI]`（单测守着）。想要 Mozilla 签名：在发布 job 里加 `web-ext sign --channel=unlisted`，Secret 加 AMO 的 JWT。想换版本号规则：只改 `scripts/version.mjs` 和 `release.yml` 里 `--build=` 那一行，但必须保证只增不减。不想自动发布：删掉 `release.yml`，CI 的 `package` job 可以留着当打包检查。
