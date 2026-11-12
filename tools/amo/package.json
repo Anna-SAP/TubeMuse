@@ -1,0 +1,12 @@
+{
+  "name": "tubemuse-amo-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "只给发布流程和 CI 用的 Mozilla 工具（web-ext：签名与校验 Firefox 版，DECISIONS §71）。单独放、单独锁版本，不进扩展、不影响 npm ci。",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "web-ext": "10.8.0"
+  }
+}

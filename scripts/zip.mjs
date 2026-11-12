@@ -137,3 +137,30 @@ export function readZipEntry(zip, name) {
   }
   return undefined;
 }
+
+/**
+ * 列出 zip 里所有文件的路径（按中央目录的顺序）。
+ * @param {Buffer} zip
+ * @returns {string[]}
+ */
+export function listZipEntries(zip) {
+  let end = -1;
+  for (let i = zip.length - 22; i >= Math.max(0, zip.length - 22 - 0xffff); i--) {
+    if (zip.readUInt32LE(i) === 0x06054b50) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) throw new Error('不是 zip：找不到中央目录');
+  const count = zip.readUInt16LE(end + 10);
+  let p = zip.readUInt32LE(end + 16);
+  /** @type {string[]} */
+  const names = [];
+  for (let n = 0; n < count; n++) {
+    if (zip.readUInt32LE(p) !== 0x02014b50) throw new Error('zip 的中央目录损坏');
+    const nameLen = zip.readUInt16LE(p + 28);
+    names.push(zip.toString('utf8', p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + zip.readUInt16LE(p + 30) + zip.readUInt16LE(p + 32);
+  }
+  return names;
+}

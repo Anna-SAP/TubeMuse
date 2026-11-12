@@ -81,13 +81,14 @@
 |---|---|---|
 | `tubemuse-<版本>-chrome.zip` | Chrome 或其他 Chromium 内核浏览器（**推荐**） | 解压到一个固定的文件夹（以后不要移动、删除它）→ 按 [1.4](#load-extension) 加载这个文件夹（里面直接就是 `manifest.json`） |
 | `tubemuse-<版本>-chrome.crx` | Chrome（签过名的安装包） | **Windows / macOS 上的正式版 Chrome 不允许安装 Chrome 应用商店以外的 .crx**（拖进 `chrome://extensions` 会被拒绝或装上后被停用，常见报错 `CRX_REQUIRED_PROOF_MISSING`），这两个系统请用上面的 .zip。用企业策略（`ExtensionInstallForcelist`）部署时可以用它（发布前的自动化测试走的就是这条路） |
-| `tubemuse-<版本>-firefox.xpi` | Firefox 149 及以上 | 按 [1.5](#firefox) 第 3 步临时载入（第 1 步的构建跳过） |
+| `tubemuse-<版本>-firefox-signed.xpi` | Firefox 149 及以上（**推荐**） | Mozilla 签过名，**永久安装**：`about:addons` → 齿轮 →「从文件安装附加组件…」选它，或直接拖进 Firefox 窗口。发布后几分钟内才出现（要等 Mozilla 签名）。安装时 Firefox 会列出[数据收集声明](#data-consent) |
+| `tubemuse-<版本>-firefox.xpi` | Firefox 149 及以上 | 未签名的同一份内容：按 [1.5](#firefox) 第 3 步临时载入（第 1 步的构建跳过），重启 Firefox 后要重新载入 |
 
 装好以后：
 
 - **Google Cloud**：照 [1.2](#google-cloud) 配置。"已获授权的重定向 URI"填 Releases 页上写的 **授权回跳地址**（Chrome 版是 `https://<扩展ID>.chromiumapp.org/`，装好后设置页「2. YouTube 账号」里也显示；Firefox 版固定不变，见 [1.5](#firefox)）。Chrome 版的扩展 ID 由发布用的签名密钥决定，每一版都一样，所以更新版本时 Google Cloud 里不用改。
 - **OAuth Client ID**：发布的安装包里**不带** Client ID（仓库是公开的），装好后在设置页「2. YouTube 账号」的 **OAuth Client ID** 框里填一次（和 Client Secret 一样只存在本机），然后照 [第 2 步](#setup) 继续。
-- **更新**：Chrome 下载新版本的 .zip，解压**覆盖到原来那个文件夹**，在 `chrome://extensions` 点 TubeMuse 卡片上的刷新按钮，本机数据保留；Firefox 临时载入新的 .xpi。
+- **更新**：Chrome 下载新版本的 .zip，解压**覆盖到原来那个文件夹**，在 `chrome://extensions` 点 TubeMuse 卡片上的刷新按钮，本机数据保留；Firefox 安装新版本的 `-signed.xpi`，原地升级（临时载入的则重新载入新的 `.xpi`）。
 
 #### 1.1 下载代码、安装依赖、生成扩展 ID
 
@@ -174,7 +175,7 @@ npm run build
 
 #### 1.5（可选）在 Firefox 里使用
 
-TubeMuse 也有 Firefox 版（Firefox **149 及以上**，在 **161.0b2 Beta** 上实测过）。功能、权限、网络出口和 Chrome 版一样，用的是同一个 Google Cloud 客户端。Firefox Beta / 正式版只能"临时载入"未签名的扩展，所以每次重启 Firefox 后要重新载入一次（实测本机数据还在）。
+TubeMuse 也有 Firefox 版（Firefox **149 及以上**，在 **161.0b2 Beta** 上实测过）。功能、权限、网络出口和 Chrome 版一样，用的是同一个 Google Cloud 客户端。Firefox Beta / 正式版只能"临时载入"未签名的扩展，所以自己构建的 `.xpi` 每次重启 Firefox 后要重新载入一次（实测本机数据还在）；想**永久安装**，用 [Releases](https://github.com/Anna-SAP/TubeMuse/releases) 上 Mozilla 签过名的 `tubemuse-<版本>-firefox-signed.xpi`（见 [1.0](#download)，安装后从下面第 4 步接着做）。
 
 1. **构建安装包**（Client ID 已写在 `local/config.json` 里的话会一起打进去；Firefox 版不需要 `npm run setup` 生成的密钥）：
 
@@ -204,7 +205,7 @@ TubeMuse 也有 Firefox 版（Firefox **149 及以上**，在 **161.0b2 Beta** �
 
 | | Chrome | Firefox |
 |---|---|---|
-| 安装方式 | 加载已解压的扩展程序（`dist`），一直保留 | 临时载入附加组件（`.xpi`），重启 Firefox 后要重新载入 |
+| 安装方式 | 加载已解压的扩展程序（`dist`），一直保留 | Releases 上签过名的 `-signed.xpi` 从文件安装，一直保留；自己构建的 `.xpi` 只能临时载入，重启 Firefox 后要重新载入 |
 | 授权回跳地址 | `https://<扩展ID>.chromiumapp.org/` | `https://bd64894190509c2a091730e87fc55c691c06b55d.extensions.allizom.org/` |
 | 侧边栏 | 点工具栏图标打开（Chrome 侧边栏） | 点工具栏图标开 / 关（Firefox 侧边栏） |
 | 语音输入、自动字幕的"浏览器识别" | 有本地语音包时在本机识别，否则发往 Google 的云端服务（界面明示） | 只在本机识别；这个语言没有本机模型时用不了（界面写明原因，自动字幕可改用 OpenAI 转写） |
@@ -664,6 +665,8 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
   - **OpenAI 转写**：声音按停顿切成几秒一段，由扩展后台发往 OpenAI（`api.openai.com/v1/audio/transcriptions`），**用完即丢、不保存、不进导出**；请求里只有这段音频、模型名和前几句已转写的文字，没有视频 ID、标题或你的账号信息。
   - 两种方式转写出的文字默认由 Chrome 本地翻译（不发送）；你改选大模型翻译时才发给大模型（见下表）。生成的字幕文字存在本机（最多 100 个视频），随"导出全部数据"导出。"自动"识别语言时，扩展用官方 YouTube Data API 查一次视频的语言（`videos.list`，1 unit，和观看记录共用缓存）。
 - **Firefox 版**（2026-11-12 起，[DECISIONS.md](DECISIONS.md) §69）：权限、网络出口、注入的站点和脚本与 Chrome 版逐字相同（自动化冒烟测试核对），只是不需要 `sidePanel` 权限。语音输入和自动字幕的"浏览器识别"在 Firefox 里只在本机进行（Mozilla 的语音模型）；查询或下载本机模型时，Firefox **自己**会连 Mozilla 的模型服务（`model-hub.mozilla.org`，不发送音频）——这是浏览器的行为，不是扩展发出的请求。
+- <a id="data-consent"></a>**Firefox 安装时的数据收集声明**（2026-11-12 起，[DECISIONS.md](DECISIONS.md) §71）：交 Mozilla 签名的扩展必须在 manifest 里声明会把哪些数据发出浏览器，Firefox 安装时列给你看。TubeMuse 如实声明四类（都是"必需"）：**搜索词**（找片口令发给你选的大模型、搜索词发给 YouTube Data API）、**浏览活动**（每日总结、兴趣簇把看过 / 喜欢的视频标题、频道、看了多少发给大模型）、**网站内容**（eMails 的文章标题和摘要发给大模型；自动字幕选 OpenAI 转写时视频声音发给 OpenAI）、**个人通信**（eMails 读的是你的邮件，只发文章标题和摘要）。发到哪里、发什么，仍以上面这张网络出口清单和下面"发给大模型的数据"为准，声明不改变扩展的任何行为。没有声明的：身份凭据（Key 和令牌只发往各自的服务）、位置（只发时区）、技术与使用数据（没有遥测）、个人身份信息。Chrome 版没有这个机制，行为相同。
+- **Mozilla 签名**（[DECISIONS.md](DECISIONS.md) §71）：发布工作流把每一版的 Firefox 包和这个提交的源码交给 addons.mozilla.org 签名（自行分发，不公开上架）。交上去的只有扩展本身和公开仓库里的源码，没有你的任何数据；扩展本身不会因此连 Mozilla（Firefox 自己会像对待所有附加组件一样，定期向 Mozilla 查更新和屏蔽列表，这是浏览器的行为）。
 - **注入小红书网页版的脚本**（只匹配 `https://www.xiaohongshu.com/*` 与 `https://www.rednote.com/*`，你在 2026-11-03 要求新增）有三个，**都不发任何网络请求**，扩展的网络出口白名单不变：
   - **页面内助手**跑在小红书页面自己的环境里（只有那里能看到页面数据），只读页面数据里各笔记的 ID、在列表里的位置、标题和发布时间，交给另一个脚本。它不碰页面元素、不碰 Cookie 和本地存储，构建时会自动检查。
   - **时间与收藏按钮**：在笔记卡片作者那一行、笔记详情的日期旁写上发布时间，在封面左下角、博主名字旁、"关注"旁放 **收藏** 按钮和弹窗。它只用文字写入（不用 HTML 字符串），不改动、不隐藏小红书自己的元素，不点击（也不模拟点击）小红书的任何按钮，不碰 Cookie；你点收藏时，它把笔记标题、链接（只留 `xsec_token` 与 `xsec_source` 两个参数，从外面打开笔记要用到）、作者名与 ID、发布时间交给扩展后台，后台校验后存进本机。这些都随"导出全部数据"导出，不发给大模型。侧边栏不加载小红书的图片（封面、头像），所以也没有新的图片域名。
@@ -740,7 +743,7 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 | （Firefox）麦克风旁写着"本机没有可用的语音模型" | Firefox 的语音识别只在本机进行，这个语言还没下载模型，或 Firefox 没有这个语言的模型 | 能下载时点 **下载本机语音模型**（设置页「4. 语音」也有）；没有这个语言的话改用另一种识别语言，或打字 |
 | （Firefox）片段页提示"浏览器还没允许这个页面处理声音" | Firefox 只让被点过的页面处理声音（视频是自动播放起来的、页面还没被点过） | 在视频画面上点一下（暂停再播放也行），再开始录制 |
 | （Firefox）点工具栏上找不到 TubeMuse 图标 | Firefox 把新扩展的按钮收在"扩展"（拼图）面板里 | 点拼图 → TubeMuse 旁的齿轮 → **固定到工具栏** |
-| （Firefox）重启 Firefox 后 TubeMuse 不见了 | 临时载入的附加组件在 Firefox 关闭时会被移除 | 重新在 `about:debugging` 临时载入 `.xpi`（扩展 ID 固定，本机数据还在）；想一直装着可以用 Firefox Developer Edition / Nightly 关掉签名检查后正式安装 |
+| （Firefox）重启 Firefox 后 TubeMuse 不见了 | 临时载入的附加组件在 Firefox 关闭时会被移除 | 重新在 `about:debugging` 临时载入 `.xpi`（扩展 ID 固定，本机数据还在）；想一直装着，改用 [Releases](https://github.com/Anna-SAP/TubeMuse/releases) 上 Mozilla 签过名的 `-signed.xpi`（[1.0](#download)） |
 | **记录** 页没有任何记录 | 扩展装好或更新后没有刷新 YouTube 标签页；或"观看追踪"被关掉了 | 刷新 YouTube 页面；检查设置页 **6.**；只支持桌面版 `www.youtube.com` |
 | 记录显示"还没取到标题" | 还没连接 YouTube，或元数据还没补上 | 连接 YouTube；稍后会自动补，或点"现在生成今天的总结"时补上 |
 | 23:00 后没出现总结 | 那天没有观看记录（不会生成），或生成失败 | 看 **记录** 页有没有列出失败原因；浏览器那时没开的话，下次打开会补上 |
@@ -866,6 +869,7 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
 - [ ] **Capture** → 期望：下载文件夹里多一张 PNG；切到别的应用能直接粘贴出这张图
 - [ ] 侧边栏「找片」的麦克风旁 → 期望：写着"本地识别"或"本机没有可用的语音模型"及原因，**不出现**"音频发往 Google"
 - [ ] 关掉 Firefox 再打开，重新临时载入同一个 `.xpi` → 期望：Key、YouTube 授权、记录都还在
+- [ ] （永久安装）先在 `about:debugging` 移除临时载入的 TubeMuse → `about:addons` → 齿轮 →「从文件安装附加组件…」选 Releases 上的 `-signed.xpi` → 期望：确认框里列出数据收集声明（搜索词、浏览活动、网站内容、个人通信），装好后 TubeMuse 出现在 `about:addons` 的扩展列表里；重启 Firefox 后仍在，Key、授权、记录都还在
 
 **找片与打分**
 
@@ -1103,6 +1107,8 @@ npm run e2e         # 构建 dist-e2e/ 并在真实 Chromium 中分组跑通各�
 npm run build:firefox  # Firefox 版：dist-firefox/ + release/tubemuse-<版本>-firefox.xpi
 npm run e2e:firefox    # 构建 dist-firefox-e2e/ 在真实 Firefox 里跑一遍；再把正式版 .xpi 装进去冒烟（要一个 Firefox 149+，见下）
 npm run package     # 发布用的安装包：release/ 下的 Chrome .zip 与 .crx（用 local/extension-key.pem 签名）、Firefox .xpi
+npm run lint:firefox   # 用 Mozilla 签名前的同一套校验（web-ext lint）检查 dist-firefox/（首次会装 tools/amo）
+npm run test:sign      # Firefox 签名流程：真的 web-ext 对着本机的假 AMO 走一遍（不连 Mozilla）
 npm run verify      # 以上全部（.crx 的安装冒烟只在 CI 的 Linux 上跑，见下面"自动发布"）
 
 # 只跑 e2e 的一组（core / subtitles / clips，见 tests/e2e/shards.json）：
@@ -1115,6 +1121,7 @@ node tests/e2e/run-e2e.mjs --shard=clips
 - **自动发布**（[.github/workflows/release.yml](.github/workflows/release.yml)，[DECISIONS.md](DECISIONS.md) §70）：每次有改动合并进 `main`，`main` 上的 CI 一通过（这棵文件树在 PR 里验过时只要十几秒），就跑 `npm run package` 打出 Chrome 的 `.zip` / `.crx` 和 Firefox 的 `.xpi`，让真的 Chromium 按策略下载、校验、安装一遍这个 `.crx`，然后发布到 [Releases](https://github.com/Anna-SAP/TubeMuse/releases)：标签 `v<版本>`，版本号是 `package.json` 的版本加上这个提交在 `main` 上的提交数（例如 `0.1.0.137`，只增不减）。说明里写着扩展 ID、授权回跳地址和安装方法，后面附上自上一版以来合并的 PR。也可以在 Actions → **Release** → **Run workflow**（分支选 `main`）手动发布当前的 `main`；同一个版本发布过就不再重复。
   - **要先配一个 Secret**：`.crx` 要用私钥签名，`.zip` 里 manifest 的 key 也来自它；用你本机 `local/extension-key.pem` 签，装上后的扩展 ID 就和你自己构建的一样，Google Cloud 不用改。到仓库 **Settings → Secrets and variables → Actions → New repository secret**，名字 `CRX_PRIVATE_KEY`，值粘贴 `local/extension-key.pem` 的全文（`-----BEGIN PRIVATE KEY-----` 到 `-----END PRIVATE KEY-----`）。没配时发布失败，运行摘要里写明要怎么做；配好后对那次运行点 **Re-run jobs**，或手动运行一次。私钥只交给发布工作流里载入它的那一步，只写在那台 runner 上；构建脚本会检查安装包里没有私钥。
   - PR 上的 CI 多一个 `package` job：用 runner 上临时生成的密钥把同一条打包路走一遍（包括 Chromium 安装 `.crx`），`verify` 要它也通过，免得合并后才发现发布不出来。本地跑这个冒烟要 Linux：`node tests/e2e/smoke-crx.mjs`，策略目录 `/etc/opt/chrome_for_testing/policies/managed` 要能写。
+  - **Firefox 版交给 Mozilla 签名**（[DECISIONS.md](DECISIONS.md) §71）：发布之后，`scripts/sign-firefox.mjs` 用 Mozilla 官方的 `web-ext sign --channel=unlisted` 把这一版交给 addons.mozilla.org 签名（**自行分发，不公开上架**），连同这个提交的源码包和给审核员的构建说明（代码是 esbuild 打包过的，Mozilla 要求附源码）。签好后核对（有 Mozilla 的签名文件、其余文件和我们打的 `.xpi` 逐个相同、ID 与版本对得上），以 `tubemuse-<版本>-firefox-signed.xpi` 追加到同一个 Release，Firefox 正式版 / Beta 能永久安装。凭据是 Secret `AMO_JWT_ISSUER` / `AMO_JWT_SECRET`（在 addons.mozilla.org → Developer Hub → [Manage API Keys](https://addons.mozilla.org/developers/addon/api/key/) 拿），只交给签名那一步。签名一般几分钟，最多等 25 分钟；失败或超时这一步变红并写明原因，已经发布的文件不受影响。同一个版本号在 Mozilla 那边只能提交一次：等不到的那一版，签好后到 [AMO 开发者中心](https://addons.mozilla.org/developers/addons) 下载。`web-ext` 单独放在 `tools/amo`（自己的锁文件，不进扩展、不影响主项目的 `npm ci`）。PR 上的 `package` job 还会用它跑一遍 Mozilla 的校验（`npm run lint:firefox`），并对着本机的假 AMO 把签名流程走一遍（`npm run test:sign`，不连 Mozilla）。
 - **Firefox 的 e2e**（[DECISIONS.md](DECISIONS.md) §69）：用 Firefox 自带的 Marionette 协议驱动（`tests/e2e/firefox/marionette.mjs`，不需要 geckodriver），以临时附加组件装上 `dist-firefox-e2e/`，同样用本机 mock，Firefox 的代理指向一个不存在的端口，除本机外的请求一律出不去。要一个 Firefox 149 或更新：环境变量 `FIREFOX_BIN` 指向它，或装在常见位置（Windows 的 `C:\Program Files\Mozilla Firefox\`、macOS 的 `/Applications/Firefox.app`、Linux 的 `/usr/bin/firefox`）；它另开一个临时配置的无头 Firefox，不碰你平时用的那个。Linux 上没有声音设备时无头 Firefox 的 AudioContext 起不来（录制、自动字幕要用），先起一个 PulseAudio 空设备（CI 里就是这么做的，见 ci.yml 的 `firefox` job）。CI 上 Firefox 版本钉在 161.0b2。
 - `dist-e2e/` 是测试专用构建（Google 授权页与所有接口都指向本机 mock），**不要**在日常浏览器里加载它。`dist-firefox-e2e/` 同理。e2e 会真实调用 `launchWebAuthFlow`，走完"弹窗 → mock 授权页 → 回跳授权码 → mock 令牌端点换令牌（校验 Client Secret 与 PKCE）"的整条链路，并验证访问令牌过期 24 小时后、浏览器重启后都能用刷新令牌自动续期。正式构建 `dist/` 的构建脚本会自检：产物里出现疑似 Key、令牌或测试地址就构建失败。
 - 技术栈：TypeScript（strict）· esbuild · Preact · Vitest · Playwright（Chromium）· Firefox 自带的 Marionette；大模型用 Anthropic / OpenAI 官方 SDK。
@@ -1146,9 +1153,12 @@ src/content/       注入 YouTube 的脚本：观看追踪（只读播放器状�
 src/background.ts  service worker（Firefox 版是事件页）：闹钟、补算、接收观看上报、自动字幕的转写与翻译、片段录制记录与图标 REC 标记、快捷键、开侧边栏
 src/platform.ts    这份构建是 Chrome 版还是 Firefox 版（构建时注入），以及两边不同的说法
 scripts/           构建（含 Firefox 版与 .xpi 打包：firefox.mjs、zip.mjs）、生成扩展密钥、生成图标；
-                   发布用的打包（package.mjs）、CRX3 签名与校验（crx.mjs）、版本号（version.mjs）、从仓库 Secret 载入签名密钥（release-key.mjs）
+                   发布用的打包（package.mjs）、CRX3 签名与校验（crx.mjs）、版本号（version.mjs）、从仓库 Secret 载入签名密钥（release-key.mjs）、
+                   Firefox 版交 Mozilla 签名并核对（sign-firefox.mjs）
+tools/amo/         Mozilla 的 web-ext（签名与校验用），单独的 package.json 与锁文件，只给 CI 和发布用
 tests/unit/        单元与服务层测试
 tests/e2e/smoke-crx.mjs  让真的 Chromium 按策略下载、校验、安装发布用的 .crx（只在 Linux 上跑）
+tests/e2e/sign-firefox-mock.mjs  Firefox 签名流程：真的 web-ext 对着本机的假 AMO 走一遍
 tests/e2e/         mock 服务（含可播放的 mock 播放页、"说话"音频与 mock 语音转写、仿小红书网页版页面 xhs-pages.mjs、仿 X 页面 x-pages.mjs、仿酷播页面 kubb-pages.mjs、仿 Instagram 页面 ig-pages.mjs、仿抖音页面 douyin-pages.mjs、仿 B 站页面 bili-pages.mjs）、e2e 主流程、正式版冒烟测试
 tests/e2e/firefox/ Firefox 版的 e2e 与安装包冒烟（Marionette 客户端、主流程、正式版 .xpi 冒烟）
 tests/fixtures/    单测与 e2e 共用的夹具（豆瓣评论 RSS，结构照抄真实订阅源，用户名与正文为虚构）
@@ -1159,8 +1169,8 @@ tests/fixtures/    单测与 e2e 共用的夹具（豆瓣评论 RSS，结构照�
 ## ⚠️ 已知限制
 
 - 画像只来自订阅、喜欢的视频、本扩展记录的观看，以及可选导入的 Takeout 历史（YouTube API 不提供观看历史）。
-- **Releases 上的安装包**（[DECISIONS.md](DECISIONS.md) §70）：Windows / macOS 的正式版 Chrome 不允许安装 Chrome 应用商店以外的 `.crx`（Google 的规定，绕不开），这两个系统用 `.zip`。`.xpi` 没有经过 Mozilla 签名，同样只能临时载入。安装包里不带 OAuth Client ID，装好后在设置页填一次。`.crx` 在自动化测试里由 Chromium 按企业策略实际装过（Linux）；拖进 `chrome://extensions` 的装法没有自动化验证。
-- **Firefox 版**（[DECISIONS.md](DECISIONS.md) §69）：Firefox Beta / 正式版只能临时载入未签名的扩展，重启后要重新载入；语音只能本机识别（这个语言没有本机模型时语音输入用不了，可以打字；自动字幕可改用 OpenAI 转写）；没有本地翻译（自动字幕第二行请用大模型翻译）；片段录成 WebM。自动化测试在 Firefox 161.0b2 里跑过安装、设置、授权（mock）、找片打分、录制、Capture、剪贴板、多语字幕、问 muse、小红书、eMails、自动字幕和侧边栏，但都是在仿页面上；真实的 YouTube、Google 登录页、各站页面，以及 Firefox 本机语音模型下载成功后的识别，以你的实测为准。
+- **Releases 上的安装包**（[DECISIONS.md](DECISIONS.md) §70）：Windows / macOS 的正式版 Chrome 不允许安装 Chrome 应用商店以外的 `.crx`（Google 的规定，绕不开），这两个系统用 `.zip`。`-firefox-signed.xpi` 由 Mozilla 签名、能永久安装，但发布后要等 Mozilla 签完（一般几分钟）才出现；Mozilla 之后也可能随时人工复查这些版本。未签名的 `.xpi` 只能临时载入。安装包里不带 OAuth Client ID，装好后在设置页填一次。`.crx` 在自动化测试里由 Chromium 按企业策略实际装过（Linux）；拖进 `chrome://extensions` 的装法没有自动化验证。
+- **Firefox 版**（[DECISIONS.md](DECISIONS.md) §69）：自己构建的（未签名）只能临时载入，重启后要重新载入，永久安装用 Releases 上签过名的版本（§71）；语音只能本机识别（这个语言没有本机模型时语音输入用不了，可以打字；自动字幕可改用 OpenAI 转写）；没有本地翻译（自动字幕第二行请用大模型翻译）；片段录成 WebM。自动化测试在 Firefox 161.0b2 里跑过安装、设置、授权（mock）、找片打分、录制、Capture、剪贴板、多语字幕、问 muse、小红书、eMails、自动字幕和侧边栏，但都是在仿页面上；真实的 YouTube、Google 登录页、各站页面，以及 Firefox 本机语音模型下载成功后的识别，以你的实测为准。
 - YouTube 授权靠刷新令牌自动续期。Google 应用处于"测试中"时，刷新令牌 **7 天**后失效，要点一次"重新授权"；发布为正式版可去掉这个期限（见 [可选：发布为正式版](#oauth-production)）。后台定时任务（如 23:00 的总结补元数据）在续期失败时会记录原因并提示，不会静默跳过。
 - 换授权码、续期都要带 Client Secret（Google"Web 应用"客户端的要求），所以要在设置页填一次。它只存在本机，只发往 `oauth2.googleapis.com/token`。
 - 自动化测试只在 Playwright 自带的 Chromium 里跑过；Comet 等其他 Chromium 浏览器没有自动化验证（`launchWebAuthFlow` 是标准扩展 API，按理可用，以你的实测为准）。

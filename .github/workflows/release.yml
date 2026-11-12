@@ -4,6 +4,8 @@
 #
 # 签名密钥来自仓库 Secret CRX_PRIVATE_KEY：你电脑上 local/extension-key.pem 的全文。用它签名，.crx / .zip 装上后的扩展 ID
 # 就和你本机 npm run setup 得到的一样，Google Cloud 里登记的授权回跳地址照样能用。没配这个 Secret 时这次发布失败，并写明要怎么配。
+# 发布之后，再把 Firefox 版交给 Mozilla 签名（自行分发，不公开上架；DECISIONS §71），签好的 -signed.xpi 追加到同一个 Release：
+# 它能在 Firefox 正式版 / Beta 里永久安装。凭据是 Secret AMO_JWT_ISSUER / AMO_JWT_SECRET。签名失败不影响已经发布的文件，这一步变红并写明原因。
 name: Release
 
 on:
@@ -32,7 +34,8 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 等 Mozilla 签名最多 25 分钟（scripts/sign-firefox.mjs），其余步骤几分钟
+    timeout-minutes: 45
     permissions:
       # 建标签、建 Release、上传安装包
       contents: write
@@ -56,6 +59,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # Mozilla 的 web-ext（签名用），单独放在 tools/amo、按锁文件装，不进扩展
+      - name: Install Mozilla tools
+        run: npm ci --prefix tools/amo --no-audit --no-fund
 
       # 私钥只交给这一步；写成 local/extension-key.pem 与 local/manifest-key.txt，只在这台 runner 上，job 结束就没了
       - name: Load the signing key
@@ -108,3 +115,22 @@ jobs:
             --generate-notes \
             --latest="$latest"
           echo "已发布 [$tag]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$tag)：${files[*]##*/}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Firefox 版交给 Mozilla 签名（自行分发 / unlisted，不公开上架），签好的追加到这一版的 Release。
+      # 这一版已经有签好的文件（例如重新运行）就跳过；AMO 凭据只交给这一步
+      - name: Sign the Firefox package with Mozilla
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ steps.package.outputs.version }}
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          tag="v$VERSION"
+          name="tubemuse-$VERSION-firefox-signed.xpi"
+          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF "$name"; then
+            echo "$tag 已经有 Mozilla 签好的 $name，不再重复提交。" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          node scripts/sign-firefox.mjs --version="$VERSION"
+          gh release upload "$tag" "release/$name"

@@ -223,9 +223,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  # 发布用的安装包（DECISIONS §70）：用这台 runner 上临时生成的密钥，把发布时的那条路走一遍——打出 .zip / .crx / .xpi，
-  # 再让真的 Chromium 按策略下载、校验、安装这个 .crx。真正的发布在 release.yml（main 上的 CI 通过后），用仓库 Secret 里的密钥；
-  # 这里保证合并之前打包没坏，免得合并后才发现发布不出来。
+  # 发布用的安装包（DECISIONS §70、§71）：用这台 runner 上临时生成的密钥，把发布时的那条路走一遍——打出 .zip / .crx / .xpi，
+  # Firefox 版过一遍 Mozilla 的校验、对着假 AMO 走一遍签名，再让真的 Chromium 按策略下载、校验、安装这个 .crx。
+  # 真正的发布在 release.yml（main 上的 CI 通过后），用仓库 Secret 里的密钥；这里保证合并之前打包没坏，免得合并后才发现发布不出来。
   package:
     needs: gate
     if: ${{ !cancelled() && needs.gate.outputs.verified != 'true' }}
@@ -251,6 +251,14 @@ jobs:
 
       - name: Build and package
         run: npm run package
+
+      # Mozilla 签名前跑的同一套校验（addons-linter）：有错误的话 Firefox 版签不了名，合并前就发现（DECISIONS §71）
+      - name: Lint the Firefox package like Mozilla does
+        run: npm run lint:firefox
+
+      # 发布时交给 Mozilla 签名的那条路：真的 web-ext + 本机的假 AMO（不连 Mozilla、不用真凭据）
+      - name: Firefox signing flow against a mock AMO
+        run: npm run test:sign
 
       - name: Install Chromium
         run: npm run e2e:install

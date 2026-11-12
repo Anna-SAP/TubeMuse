@@ -1585,7 +1585,7 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 无头 Firefox 在没有声音设备的 Linux 上 AudioContext 起不来（录制、自动字幕要用；实测一直 suspended）：CI 装一个 PulseAudio 的空设备。真实电脑上没有这个问题。
   - 版本钉在 161.0b2（用户在用的版本；Mozilla 的归档一直保留）。match pattern：Firefox 不认带端口的匹配规则（`http://127.0.0.1:47321/*` 永远匹配不上，161 实测），测试版的本机 mock 在 manifest 里写成不带端口的 `http://127.0.0.1/*`；正式版的网址都没有端口，不受影响。
   - CI 加一个 `firefox` job（ubuntu-24.04），`verify` 要它也通过（`tests/unit/ci-shards.test.ts` 守着，免得哪天被悄悄去掉）；`npm run verify` 同步加上 `npm run e2e:firefox`。本地跑需要一个 Firefox（149 或更新）：环境变量 `FIREFOX_BIN`，或按常见安装位置找。
-- **放弃了什么**：WebExtension polyfill（Firefox 的 `chrome.*` 在 MV3 里本来就返回 Promise，161 实测，`chrome === browser`）；`web-ext` 作为依赖（只在开发时用它 lint 过一次：0 错误，3 条警告——缺 AMO 上架才要的 `data_collection_permissions`、Chrome 分支里留着的 `sidePanel` 字样、Preact 内部的 innerHTML，都不影响临时载入）；签名上架 AMO（个人自用，CLAUDE.md 不上架）。
+- **放弃了什么**：WebExtension polyfill（Firefox 的 `chrome.*` 在 MV3 里本来就返回 Promise，161 实测，`chrome === browser`）；`web-ext` 作为依赖（只在开发时用它 lint 过一次：0 错误，3 条警告——缺 AMO 上架才要的 `data_collection_permissions`、Chrome 分支里留着的 `sidePanel` 字样、Preact 内部的 innerHTML，都不影响临时载入）；签名上架 AMO（个人自用，CLAUDE.md 不上架）。（2026-11-12 起用户要求永久安装，改为自行分发签名、不上架，见 §71。）
 - **已知限制 / 风险**
   - 临时附加组件：Firefox 重启后要重新"临时载入"一次。实测 161：同一个配置文件里重新载入同一个安装包，本机数据还在（扩展 ID 固定）。Firefox Beta / 正式版不允许永久安装未签名的扩展；想永久安装可以用 Developer Edition / Nightly（`xpinstall.signatures.required` 设为 false）。
   - 真实的 YouTube、Google 登录页、各站页面在这个环境里打不开，Firefox 下这些只在仿页面上跑过；Firefox 本机语音模型在这个环境里是"不可用"，下载 / 识别成功的那条路没有实测。
@@ -1624,7 +1624,7 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - **直接挂在 `main` 的 push 上**：最贴近字面的"立即"，但可能把没验过的合并结果发布出去；`workflow_run` 只多等十几秒。
   - **用 Chrome 自己的 `--pack-extension` 打包**：权威，但要在 runner 上找 Chrome、无头模式下能不能用没把握，本机（Windows）也得找 Chrome；自己打 + 真 Chromium 安装验证，同样可靠，还能单测。
   - **`crx3` 等 npm 包**：功能一样，多一个依赖（项目的选型标准是依赖少）。
-  - **Mozilla 签名（`web-ext sign`，unlisted）**：签过的 `.xpi` 能永久安装，但要用户在 addons.mozilla.org 申请 API Key 放进 Secret，CLAUDE.md 也写明 Firefox 版用临时载入、不上架。需要时再加。
+  - **Mozilla 签名（`web-ext sign`，unlisted）**：签过的 `.xpi` 能永久安装，但要用户在 addons.mozilla.org 申请 API Key 放进 Secret，CLAUDE.md 也写明 Firefox 版用临时载入、不上架。需要时再加。（2026-11-12 用户要求后已加上，见 §71。）
   - **把 Client ID 放进仓库变量、打进发布的包**：省去设置页填一次，代价是公开 Client ID；留给用户决定。
   - **每次合并都一定有一个独立的版本**：`concurrency` 下排队等候的发布会被更新的那次顶替（GitHub 的规定），连续合并时中间那次可能没有自己的版本，但它的改动包含在下一版里；而且 `main` 上的 CI 本来就会取消被顶替的旧运行（§61）。
 - **已知限制 / 风险**
@@ -1632,3 +1632,32 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 第一次发布要等用户配好 `CRX_PRIVATE_KEY`；在那之前合并进 `main` 的话，发布那次会失败（有说明），配好后 Re-run 即可。
   - 发布工作流本身（`workflow_run` 触发、`gh release create` 真的建出 Release）要等这个 PR 合并后才第一次真正跑；合并前能验证的是打包与安装（CI 的 `package` job）和发布那一步的 shell 逻辑（假的 `gh`）。
 - **日后如何替换**：改 CI 的名字（`name: CI`）要同时改 `release.yml` 的 `workflows: [CI]`（单测守着）。想要 Mozilla 签名：在发布 job 里加 `web-ext sign --channel=unlisted`，Secret 加 AMO 的 JWT。想换版本号规则：只改 `scripts/version.mjs` 和 `release.yml` 里 `--build=` 那一行，但必须保证只增不减。不想自动发布：删掉 `release.yml`，CI 的 `package` job 可以留着当打包检查。
+
+## 71. Firefox 版交 Mozilla 签名，能永久安装（2026-11-12，用户要求）
+
+- **需求**：Firefox 版能永久安装（不再每次重启都要临时载入）。用户在 addons.mozilla.org 申请了 API Key，放进了仓库 Secret `AMO_JWT_ISSUER` / `AMO_JWT_SECRET`，并同意了下面的数据收集声明和这条红线变更（CLAUDE.md §2 第一条后注明）。
+- **先核实的事实**
+  - Firefox 正式版 / Beta 只允许永久安装 Mozilla 签过名的扩展；签名不等于上架：**自行分发（unlisted）**的版本由 addons.mozilla.org 自动校验后签名，不在商店公开，签好的 `.xpi` 从文件安装即可。所有版本（含自行分发的）之后都可能被 Mozilla 人工复查；签名一般几分钟，Mozilla 说最长可能 24 小时（Extension Workshop：Signing and distribution overview）。
+  - **数据收集声明必填**：2025-11-03 起新提交的扩展必须在 `browser_specific_settings.gecko.data_collection_permissions` 里声明，不声明签名被拒；TubeMuse 在 AMO 上是新扩展。用 web-ext 10.8.0 的 `lint`（就是 AMO 签名前跑的 addons-linter）实测当时的包：唯一相关的提示就是 `MISSING_DATA_COLLECTION_PERMISSIONS`（"required for all new Firefox extensions"）。Firefox 140+ 有内置的同意界面，我们的最低版本是 149，不用自己做。
+  - **要附源码**：Mozilla 要求用打包工具生成的代码附上原始源码，否则可能被拒；我们的代码是 esbuild 打包的（没压缩，但属于"打包"）。
+  - web-ext 10.8.0 的 `sign` 支持 `--channel=unlisted`、`--upload-source-code`、`--amo-metadata`（并入版本字段，如 `approval_notes`）；凭据走环境变量 `WEB_EXT_API_KEY` / `WEB_EXT_API_SECRET`；等签名超时会说明去哪里下载。读过它的实现：上传 → 轮询校验 → `PUT addon/<ID>/` 提交版本 → `PATCH` 上传源码 → 轮询到 `file.status == public` → 下载。它会在 `--source-dir` 里留下 `.amo-upload-uuid`，下次内容没变就沿用旧的上传。
+- **选了什么**
+  - **数据收集声明**（`scripts/firefox.mjs` 的 `FIREFOX_DATA_COLLECTION`，只进 Firefox 版 manifest）：`required: [searchTerms, browsingActivity, websiteContent, personalCommunications]`。Mozilla 的定义是"扩展把数据发到扩展以外的任何地方"，它没说"用户自己配置的大模型"算不算，这里按算处理、如实声明：找片口令（搜索词）、每日总结和兴趣簇（看过 / 喜欢的视频，浏览活动）、eMails 的文章与自动字幕的视频声音（网站内容）、eMails 读的是邮件（个人通信，保守声明）。不声明身份凭据（Key、令牌只发往各自的服务登录它本身）、位置（只发时区）、技术与使用数据（没有遥测）、个人身份信息。都设为"必需"：安装时同意一次；"可选"要每个功能在用到时弹窗询问，代码改动大，以后需要再做。构建自检：Firefox 版缺这项、或写成 `none` 就构建失败。声明不改变扩展的任何行为，README「隐私与数据」写明对应关系。
+  - **发布之后再签名**（`release.yml` 最后一步）：先照常发布 Chrome 的 `.zip` / `.crx` 和未签名的 `.xpi`，再签名、把 `tubemuse-<版本>-firefox-signed.xpi` 追加到同一个 Release。Mozilla 慢或出错不拖住 Chrome 版的发布；签名失败这一步变红并写明原因（运行摘要里有下一步怎么做），已发布的文件不受影响。这一版已经有签好的文件（例如重新运行）就跳过；job 超时从 15 分钟放宽到 45 分钟（最多等签名 25 分钟）。
+  - **`scripts/sign-firefox.mjs`**：把这个提交 `git archive` 成源码 zip（公开仓库的内容，不含 `local/`、`node_modules/`），写给审核员的构建说明（Node 20、`npm ci`、`node scripts/build.mjs --firefox --version=<版本>`，没有 Client ID 所以输出确定），调用 web-ext sign；签好后**核对**：有 Mozilla 的签名文件（`META-INF/mozilla.rsa` 或 `cose.sig`），除 `META-INF/` 外的文件和我们打的 `.xpi` 逐个字节相同，扩展 ID、版本号对得上——Mozilla 只该加签名，不该改内容。签名前后清掉 web-ext 留在 `dist-firefox/` 的上传记录，保证每次交的都是这次构建的包。凭据只经环境变量交给 web-ext 子进程，不进命令行、不进文件、不打印。
+  - **web-ext 放在 `tools/amo`**：单独的 `package.json` + 锁文件（329 个包，都有完整性哈希），版本钉在 10.8.0。它只在 CI 和发布时用：主项目的 `npm ci`、扩展本身、本机安装都不变。没有用 `npx web-ext@版本`：那样传递依赖不锁版本，而发布那一步手里有 AMO 凭据。
+  - **PR 上就验证**：CI 的 `package` job 加两步——`npm run lint:firefox`（Mozilla 的同一套校验，有错误就红，签不了名的问题合并前就发现）和 `npm run test:sign`（`tests/e2e/sign-firefox-mock.mjs`：真的 web-ext 对着本机的假 AMO 把签名流程走一遍，18 项：每个请求都带用 secret 签的 JWT、channel 是 unlisted、交上去的就是 `dist-firefox/` 的内容、带了源码和构建说明、签好的文件存对了名字；签好的文件被改过、Mozilla 校验不过、没配凭据时都失败并说明原因；输出里没有 secret）。测试入口 `TUBEMUSE_AMO_BASE_URL` 只认 `http://127.0.0.1:端口/`，凭据不会因此被发到别处。`npm run verify` 末尾同样加上这两步。
+  - **Firefox 版的测试**：正式版安装包冒烟（`smoke-xpi.mjs`）核对装好的扩展里数据声明原样保留；Firefox 161.0b2 的 e2e 全部通过（装上时没有报错）。
+- **放弃了什么**
+  - **签完名再发布**（整个 Release 原子化）：Mozilla 慢的时候 Chrome 版也跟着等，最长可能一天。
+  - **只发签过名的 `.xpi`**：签名没成功时那一版就没有 Firefox 包；未签名的照样有用（临时载入、Developer Edition / Nightly）。
+  - **自己调 AMO 接口**（不用 web-ext）：要自己处理 JWT、上传、轮询、源码、下载，web-ext 是 Mozilla 官方维护的。
+  - **公开上架（listed）**：CLAUDE.md 不上架；上架还要填商店信息、走人工审核。
+  - **把数据声明设为"可选"**：见上。
+  - **`update_url` 自动更新**：Firefox 会按它定期检查新版本，要一个托管更新清单的地址（GitHub Releases 可以做），这次没要求；新版本手动装，原地升级。
+- **已知限制 / 风险**
+  - 真的 Mozilla 签名只能在合并后、真的发布时第一次走到；合并前验证的是 Mozilla 的校验（lint）和对着假 AMO 的整条流程。
+  - 同一个版本号在 Mozilla 那边只能提交一次：等签名超时、或重新运行时那一版已经提交过，web-ext 会报错——签好后到 AMO 开发者中心下载，手动加到 Release，或者等下一版。
+  - Mozilla 之后人工复查时可能对某些写法提出要求（例如 Preact 内部的 `innerHTML`、Chrome 分支里留着的 `sidePanel` 字样，lint 都只是警告）；有的话按要求改。
+  - Firefox 安装确认框里的数据声明是 Mozilla 规定的固定说法，比 README 里的具体说明笼统。
+- **日后如何替换**：改声明只改 `FIREFOX_DATA_COLLECTION`（新增会把数据发出去的功能时要回来对一遍）；升级 web-ext 改 `tools/amo/package.json` 后重新生成锁文件（单测核对两者一致）；不想要签名就删掉 `release.yml` 最后一步，其余不受影响；想自动更新就在 Firefox manifest 加 `update_url`，由发布流程顺带生成更新清单。
