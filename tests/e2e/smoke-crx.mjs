@@ -76,7 +76,10 @@ function port() {
   const a = server.address();
   return a && typeof a === 'object' ? a.port : 0;
 }
-writeFileSync(POLICY_FILE, JSON.stringify({ ExtensionInstallForcelist: [`${crx.id};http://127.0.0.1:${port()}/updates.xml`] }));
+// DeveloperToolsAvailability: 1 —— 这条策略默认"不许对策略强制安装的扩展用开发者工具"，Playwright 正是通过开发者工具协议驱动浏览器的：
+// Chrome 156 起，不放开它时扩展自己的页面 Playwright 一个都连不上（设置页明明开着却看不到，打开扩展页面报"页面已关闭"；
+// 本机和 GitHub 的 runner 上都实际碰到过）。只放开这个临时配置里的测试，和安装、校验 .crx 无关。
+writeFileSync(POLICY_FILE, JSON.stringify({ ExtensionInstallForcelist: [`${crx.id};http://127.0.0.1:${port()}/updates.xml`], DeveloperToolsAvailability: 1 }));
 
 const userDataDir = mkdtempSync(join(tmpdir(), 'tubemuse-crx-'));
 /** @type {import('playwright').BrowserContext | undefined} */
@@ -99,10 +102,8 @@ try {
   check(served.includes('/tubemuse.crx'), 'Chromium 下载了这个 .crx');
   check(existsSync(installed) && readdirSync(installed).includes(`${manifest.version}_0`), `Chromium 校验通过并安装了它（版本 ${manifest.version}）`);
   if (existsSync(installed)) {
-    // 首次安装时扩展的后台（service worker）会调用 runtime.openOptionsPage()，Chromium 用它替换当前的空白标签页：
-    // 原来那个页面对象被关掉、换成设置页。后台什么时候起来不固定（本机 1–2 秒，GitHub 的 runner 上可能十几秒），
-    // 要是先开了自己的页面，被替换掉的就是它（CI 上实际碰到过："Target page, context or browser has been closed"）。
-    // 所以先等设置页出现——这也说明装上的扩展后台确实跑起来了——再开下面的页面。
+    // 首次安装时扩展的后台（service worker）会调用 runtime.openOptionsPage()，当前是空白标签页时 Chromium 用设置页替换它。
+    // 先等设置页出现：这说明装上的扩展后台确实跑起来了；后台什么时候起来不固定，等它出现后再开下面的页面，免得自己的页面被替换掉。
     const optionsUrl = `chrome-extension://${crx.id}/options.html`;
     const optionsDeadline = Date.now() + 60_000;
     while (!context.pages().some((p) => p.url() === optionsUrl) && Date.now() < optionsDeadline) await new Promise((r) => setTimeout(r, 250));
