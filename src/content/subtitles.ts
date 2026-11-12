@@ -35,6 +35,8 @@ import type { SubtitleCue } from '../core/types';
 import { videoIdFromUrl } from '../core/watch';
 import type { RecognitionLike } from '../services/speech';
 import { speechRecognitionCtor } from './speech-engine';
+import { SPEECH_PLATFORM } from '../platform';
+import { CAPTURE_UNSUPPORTED, captureVideoStream } from './capture-stream';
 
 type SubtitleSettings = typeof DEFAULT_SETTINGS.subtitles;
 
@@ -217,16 +219,17 @@ function onDown(raw: unknown): void {
 // ── 采集 ──
 
 function startCapture(video: HTMLVideoElement): void {
-  let track: MediaStreamTrack | undefined;
-  try {
-    const stream = (video as HTMLVideoElement & { captureStream(): MediaStream }).captureStream();
-    // 只要声音：画面轨立刻停掉，不占资源
-    for (const t of stream.getVideoTracks()) t.stop();
-    [track] = stream.getAudioTracks();
-  } catch {
-    fatal = { message: '读不到这个视频的音频（可能是受版权保护的视频），无法生成字幕', at: Date.now() };
+  const got = captureVideoStream(video);
+  if (!got.ok) {
+    fatal =
+      got.reason === 'unsupported'
+        ? { message: `${CAPTURE_UNSUPPORTED}，无法生成字幕`, hint: '升级浏览器后刷新页面', at: Date.now() }
+        : { message: '读不到这个视频的音频（可能是受版权保护的视频），无法生成字幕', at: Date.now() };
     return;
   }
+  // 只要声音：画面轨立刻停掉，不占资源
+  for (const t of got.stream.getVideoTracks()) t.stop();
+  const [track] = got.stream.getAudioTracks();
   if (!track) {
     nextCaptureAttempt = Date.now() + 2_000; // 音轨还没就绪，稍后再试
     return;
@@ -238,7 +241,12 @@ function startCapture(video: HTMLVideoElement): void {
     const node = ac.createScriptProcessor(4096, 1, 1);
     const mute = ac.createGain();
     mute.gain.value = 0; // 只取样本，不重复播放声音
-    node.onaudioprocess = (e) => onAudio(e.inputBuffer.getChannelData(0));
+    // 拷进脚本自己的数组：Firefox 里 getChannelData() 给的是页面那一侧的数组，后面切段时会被拒（见 capture-stream.ts 的 ownBytes）
+    node.onaudioprocess = (e) => {
+      const samples = new Float32Array(e.inputBuffer.length);
+      e.inputBuffer.copyFromChannel(samples, 0);
+      onAudio(samples);
+    };
     src.connect(node);
     node.connect(mute);
     mute.connect(ac.destination);
@@ -347,14 +355,31 @@ async function startRecognition(c: BrowserCapture): Promise<void> {
     }
     const lang = c.plan!.lang;
     let mode: 'local' | 'cloud' = 'cloud';
-    if (settings.browserPreferLocal && !c.localFailed && typeof R.available === 'function') {
+    // 没有云端识别的浏览器（Firefox，DECISIONS §69）不管"优先本地"开没开都只能本机识别
+    const wantLocal = !SPEECH_PLATFORM.hasCloud || (settings.browserPreferLocal && !c.localFailed);
+    let local: string | undefined;
+    if (wantLocal && typeof R.available === 'function') {
       try {
-        if ((await R.available({ langs: [lang], processLocally: true })) === 'available') mode = 'local';
+        local = await R.available({ langs: [lang], processLocally: true });
+        if (local === 'available') mode = 'local';
       } catch {
         // 查不到就用云端
       }
     }
     if (capture !== c || c.track.readyState !== 'live') return;
+    if (mode !== 'local' && !SPEECH_PLATFORM.hasCloud) {
+      // 交给它也只会一声不响地等着（Firefox 161 实测）：说清楚，停下来
+      const name = speechLangName(lang);
+      fatal = {
+        message: local === 'downloadable' || local === 'downloading' ? `「${name}」的本机语音模型还没下载好，浏览器识别用不了` : `这个浏览器只能在本机识别语音，没有「${name}」的本机模型`,
+        hint:
+          local === 'downloadable' || local === 'downloading'
+            ? `在设置页「12. 自动字幕」下载这个语言的本机语音模型（由浏览器从 ${SPEECH_PLATFORM.packSource} 下载），或把转写方式改成 OpenAI`
+            : '在侧边栏"字幕"页给这个视频换一种识别语言，或在设置页「12. 自动字幕」把转写方式改成 OpenAI',
+        at: Date.now(),
+      };
+      return;
+    }
     const rec = new R();
     rec.lang = c.plan!.lang; // 等待期间你可能换了语言
     rec.continuous = true;
@@ -397,7 +422,7 @@ function onSpeechResult(c: BrowserCapture, rec: RecognitionLike, e: Parameters<N
 
 function onSpeechError(c: BrowserCapture, rec: RecognitionLike, code: string): void {
   if (c.rec !== rec) return;
-  const info = speechErrorInfo(code, c.mode ?? 'cloud', c.plan?.lang ?? '');
+  const info = speechErrorInfo(code, c.mode ?? 'cloud', c.plan?.lang ?? '', SPEECH_PLATFORM.hasCloud);
   if (!info) return;
   if (info.retryCloud) {
     c.localFailed = true;

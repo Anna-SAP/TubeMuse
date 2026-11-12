@@ -11,6 +11,7 @@ import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { appCtx, useStore, useSubtitleSpend } from '../shared/app';
 import { Notice } from '../shared/components';
 import { useActiveTabState } from '../shared/tab-state';
+import { IS_FIREFOX, SHORTCUTS_PAGE, SPEECH_PLATFORM } from '../../platform';
 
 const CAPTION_LABELS = { available: '有', unavailable: '没有', unknown: '还没判断出来' } as const;
 
@@ -137,7 +138,7 @@ export function SubtitlesView() {
         ) : (
           <p class="muted small">当前标签页不是 YouTube 视频页。如果是，刷新一下那个页面（扩展安装或更新之前打开的页面里还没有字幕脚本）。</p>
         )}
-        <p class="muted small">快捷键 Alt+Shift+S 也能开关（可在 chrome://extensions/shortcuts 修改）。</p>
+        <p class="muted small">快捷键 Alt+Shift+S 也能开关（可在 {SHORTCUTS_PAGE} 修改）。</p>
       </section>
 
       {spend && (
@@ -154,9 +155,15 @@ export function SubtitlesView() {
             去向：
             {openai
               ? `视频的声音（切成几秒一段）发往 OpenAI 转写为文字（${s.asrModel}）`
-              : `视频的声音交给浏览器自带的语音识别（${rec?.mode ? RECOGNITION_MODE_LABELS[rec.mode] : '装了本地语音包时在本机识别，否则由 Chrome 发往 Google'}）`}
-            ；转写出的文字{s.translationEngine === 'local' ? '由 Chrome 在本机翻译（不发送）' : `发往${provider === 'anthropic' ? ' Anthropic' : ' OpenAI'}（${model}）翻译`}成
-            {SUBTITLE_LANGS[s.targetLang]}（原文已是{SUBTITLE_LANGS[s.targetLang]}时译成 {SUBTITLE_LANGS[s.altTargetLang]}）。音频不保存，字幕文字只存在本机。
+              : `视频的声音交给浏览器自带的语音识别（${rec?.mode ? RECOGNITION_MODE_LABELS[rec.mode] : SPEECH_PLATFORM.hasCloud ? '装了本地语音包时在本机识别，否则由 Chrome 发往 Google' : `只在本机用 ${SPEECH_PLATFORM.packSource} 的语音模型识别`}）`}
+            {s.translationEngine === 'local' && IS_FIREFOX ? (
+              '；翻译方式选的是浏览器本地翻译，但 Firefox 没有给扩展用的本地翻译接口，第二行不会显示（可在设置页改成大模型翻译）。音频不保存，字幕文字只存在本机。'
+            ) : (
+              <>
+                ；转写出的文字{s.translationEngine === 'local' ? '由 Chrome 在本机翻译（不发送）' : `发往${provider === 'anthropic' ? ' Anthropic' : ' OpenAI'}（${model}）翻译`}成
+                {SUBTITLE_LANGS[s.targetLang]}（原文已是{SUBTITLE_LANGS[s.targetLang]}时译成 {SUBTITLE_LANGS[s.altTargetLang]}）。音频不保存，字幕文字只存在本机。
+              </>
+            )}
           </p>
         </section>
       )}

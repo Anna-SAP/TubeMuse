@@ -17,6 +17,7 @@ import { ClipsView } from './ClipsView';
 import { XhsView } from './XhsView';
 import { EmailView } from './EmailView';
 import { ReminderBanner } from './ReminderBanner';
+import { HostAccessBanner } from '../shared/host-access';
 import { useMuseAsk } from './MuseAsk';
 import { runScheduledJobs } from '../../services/summary-service';
 
@@ -187,6 +188,7 @@ function App() {
         </button>
       </header>
       {muse.panel}
+      <HostAccessBanner />
       <SetupBanner />
       <ReminderBanner
         onUseUtterance={(text) => {

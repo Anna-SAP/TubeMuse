@@ -90,6 +90,7 @@ import {
   type ReadyClipInfo,
 } from '../core/clips';
 import { videoIdFromUrl } from '../core/watch';
+import { CAPTURE_UNSUPPORTED, captureVideoStream, ownBytes } from './capture-stream';
 
 type ClipSettings = typeof DEFAULT_SETTINGS.clips;
 
@@ -712,14 +713,11 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     return fail(UNREADABLE, `${SITE === 'x' ? `${X_GIF_NOTE}。` : ''}这种视频录不了；TubeMuse 不会绕过这项限制`);
   }
   const format = pickClipFormat((m) => MediaRecorder.isTypeSupported(m));
-  if (!format) return fail('这个浏览器不支持录制视频（MediaRecorder 不支持 MP4 或 WebM）', '请用最新版 Google Chrome');
+  if (!format) return fail('这个浏览器不支持录制视频（MediaRecorder 不支持 MP4 或 WebM）', '请用最新版 Google Chrome 或 Firefox');
 
-  let source: MediaStream;
-  try {
-    source = (video as HTMLVideoElement & { captureStream(): MediaStream }).captureStream();
-  } catch {
-    return fail('浏览器不允许录制这个视频（可能受版权保护）');
-  }
+  const got = captureVideoStream(video);
+  if (!got.ok) return got.reason === 'unsupported' ? fail(`${CAPTURE_UNSUPPORTED}，没法录`, '升级浏览器后刷新页面') : fail('浏览器不允许录制这个视频（可能受版权保护）');
+  const source = got.stream;
   let ac: AudioContext;
   try {
     // 采样率固定 48 kHz，不跟着输出设备走：蓝牙耳机通话模式的 16 kHz，AAC 编码器不接受（见 CLIPS.audioSampleRate）
@@ -855,7 +853,7 @@ async function checkMp4Header(r: Recording): Promise<void> {
   r.headerChecked = true;
   let kinds: string[] | undefined;
   try {
-    kinds = mp4TrackKinds(new Uint8Array(await new Blob(r.chunks).slice(0, CLIPS.headerScanBytes).arrayBuffer()));
+    kinds = mp4TrackKinds(ownBytes(await new Blob(r.chunks).slice(0, CLIPS.headerScanBytes).arrayBuffer()));
   } catch {
     return;
   }
@@ -1006,7 +1004,7 @@ async function captureFrame(): Promise<ClipCaptureReply> {
   g.drawImage(video, 0, 0, width, height);
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
   if (!blob) return { ok: false, message: `浏览器没能把 ${width}×${height} 的画面编成 PNG` };
-  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const bytes = ownBytes(await blob.arrayBuffer());
   const id = randomId();
   shot = { id, bytes, holdTimer: setTimeout(() => shot?.id === id && releaseShot(), CLIPS.captureHoldMs) };
   return { ok: true, id, videoId, ...(title ? { title } : {}), time, width, height, bytes: bytes.length, chunks: Math.ceil(bytes.length / CLIPS.captureChunkBytes) };

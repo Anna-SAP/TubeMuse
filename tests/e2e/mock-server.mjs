@@ -881,7 +881,8 @@ export function startMockServer() {
         const q = url.searchParams;
         const redirect = q.get('redirect_uri') ?? '';
         const challenge = q.get('code_challenge') ?? '';
-        if (!/^https:\/\/[a-p]{32}\.chromiumapp\.org\/$/.test(redirect) || q.get('response_type') !== 'code' || q.get('access_type') !== 'offline' || q.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) {
+        // Chrome：https://<扩展ID>.chromiumapp.org/；Firefox：https://<扩展 ID 的 SHA-1>.extensions.allizom.org/（DECISIONS §69）
+        if (!/^https:\/\/([a-p]{32}\.chromiumapp\.org|[0-9a-f]{40}\.extensions\.allizom\.org)\/$/.test(redirect) || q.get('response_type') !== 'code' || q.get('access_type') !== 'offline' || q.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) {
           return send(400, { error: 'invalid_request' });
         }
         const code = `e2e-code-${++oauthCounter}`;

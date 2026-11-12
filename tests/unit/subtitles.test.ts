@@ -797,6 +797,16 @@ describe('浏览器识别：出错时怎么说', () => {
       expect(e.message).toContain('发往 Google');
     }
   });
+  it('没有云端识别的浏览器（Firefox）：本机模型出问题就停下说明，不说"改用云端、发往 Google"', () => {
+    for (const code of ['network', 'language-not-supported', 'service-not-allowed']) {
+      const e = speechErrorInfo(code, 'local', 'zh-CN', false)!;
+      expect(e.fatal).toBe(true);
+      expect(e.retryCloud).toBeUndefined();
+      expect(e.message).not.toContain('Google');
+      expect(e.hint).toContain('OpenAI');
+    }
+    expect(speechErrorInfo('no-speech', 'local', 'zh-CN', false)).toBeUndefined();
+  });
   it('没听到声音、主动中止：不提示；语言不支持：停下并指明在哪换', () => {
     expect(speechErrorInfo('no-speech', 'cloud', 'zh-CN')).toBeUndefined();
     expect(speechErrorInfo('aborted', 'cloud', 'zh-CN')).toBeUndefined();

@@ -824,15 +824,16 @@ export function liveView(
   return { source, translation: recent?.translation ?? '' };
 }
 
-/** 浏览器识别出错时怎么说、要不要停下 */
-export function speechErrorInfo(code: string, mode: 'local' | 'cloud', lang: string): { message: string; hint?: string; fatal: boolean; retryCloud?: boolean } | undefined {
+/** 浏览器识别出错时怎么说、要不要停下。hasCloud：浏览器有没有云端识别（Chrome 有；Firefox 没有，见 DECISIONS §69） */
+export function speechErrorInfo(code: string, mode: 'local' | 'cloud', lang: string, hasCloud = true): { message: string; hint?: string; fatal: boolean; retryCloud?: boolean } | undefined {
   const switchHint = '可以在设置页「12. 自动字幕」把转写方式改成 OpenAI';
   switch (code) {
     case 'no-speech':
     case 'aborted':
       return undefined;
   }
-  // 本地语音包（实验特性）出任何问题都改用云端，并说明
+  // 本地语音包（实验特性）出任何问题都改用云端，并说明；没有云端可改的浏览器（Firefox）就停下说明
+  if (mode === 'local' && !hasCloud) return { message: `本机语音模型识别失败（${code}）`, hint: `这个浏览器没有云端识别可以替补；${switchHint}`, fatal: true };
   if (mode === 'local') return { message: `本地语音包识别失败（${code}），改用 Chrome 云端识别（声音发往 Google）`, fatal: false, retryCloud: true };
   switch (code) {
     case 'network':

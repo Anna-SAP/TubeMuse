@@ -39,6 +39,7 @@ import { createYouTube } from './youtube';
 import { createLlmClient, createTranscriber, type LlmProvider } from './llm';
 import { LocalTranslateError } from './local-translator';
 import { newId, stores, subtitleTrackStore, type Secrets, type Settings } from './repo';
+import { IS_FIREFOX } from '../platform';
 
 const PROVIDER_NAMES: Record<LlmProvider, string> = { anthropic: 'Anthropic', openai: 'OpenAI' };
 
@@ -295,7 +296,7 @@ function translationClient(ctx: AppContext, settings: Settings, secrets: Secrets
 /** Chrome 本地翻译：不花钱。语言包没准备好时说明怎么办，不会悄悄改用收费的大模型 */
 async function translateLocally(ctx: AppContext, cue: SubtitleCue, target: SubtitleLang): Promise<string> {
   const engineHint = '想用大模型翻译（按量计费）的话，在设置页「12. 自动字幕」改翻译方式';
-  if (!ctx.translator) throw new AppError('subtitles', '这个浏览器没有本地翻译（需要 Chrome 138 或更新版本）', engineHint);
+  if (!ctx.translator) throw new AppError('subtitles', IS_FIREFOX ? 'Firefox 没有给扩展用的本地翻译接口，第二行译不出来' : '这个浏览器没有本地翻译（需要 Chrome 138 或更新版本）', engineHint);
   try {
     return await ctx.translator.translate(localTranslatePair(cue.lang, cue.text, target), cue.text);
   } catch (e) {

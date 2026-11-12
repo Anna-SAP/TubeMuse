@@ -38,7 +38,7 @@ interface Shared {
  * 一个"扩展上下文"里的授权模块。传入 shared 可以让多个实例共用同一份存储（模拟侧边栏 + 后台，或扩展重新加载后的新实例）。
  * 假的 Google：授权页把 state 原样带回并发授权码；令牌端点校验 Client Secret 与 PKCE，发访问令牌与刷新令牌。
  */
-function setup(opts: { clientId?: string | null; secret?: string | null; launch?: Launch; shared?: Shared } = {}) {
+function setup(opts: { clientId?: string | null; storedClientId?: () => Promise<string | undefined>; secret?: string | null; launch?: Launch; shared?: Shared } = {}) {
   const shared: Shared = opts.shared ?? { kv: memoryKV(), locker: memoryLocker(), clock: { now: T0 }, google: { n: 0, codes: new Map(), liveRefresh: new Set() } };
   const { codes, liveRefresh } = shared.google;
   let secret: string | undefined = opts.secret === null ? undefined : (opts.secret ?? SECRET);
@@ -62,6 +62,7 @@ function setup(opts: { clientId?: string | null; secret?: string | null; launch?
     kv: shared.kv,
     locker: shared.locker,
     clientId: opts.clientId === null ? undefined : (opts.clientId ?? CLIENT),
+    ...(opts.storedClientId ? { storedClientId: opts.storedClientId } : {}),
     clientSecret: async () => secret,
     authorizeUrl: AUTHORIZE,
     tokenUrl: TOKEN,
@@ -210,6 +211,31 @@ describe('连接 YouTube（交互授权）', () => {
     expect(e?.kind).toBe('oauth_config');
     expect(e?.hint).toContain('Web 应用');
     expect(launches).toHaveLength(0);
+  });
+
+  it('构建时没带 Client ID、设置页填了（例如别处打好的 Firefox 安装包）：用填的那个连接、续期', async () => {
+    let stored: string | undefined;
+    const { auth, launches, requests, advance } = setup({ clientId: null, storedClientId: async () => stored });
+    expect(await auth.status()).toBe('not_configured');
+    expect((await fail(auth.getToken(true)))?.hint).toContain('设置页');
+    stored = `  ${CLIENT}  `;
+    expect(await auth.status()).toBe('disconnected');
+    await auth.getToken(true);
+    expect(launches[0]?.searchParams.get('client_id')).toBe(CLIENT);
+    expect(requests.find((r) => r.form.grant_type === 'authorization_code')?.form.client_id).toBe(CLIENT);
+    expect(await auth.status()).toBe('connected');
+    advance(2 * 3_600_000);
+    await auth.getToken(false);
+    expect(requests.find((r) => r.form.grant_type === 'refresh_token')?.form.client_id).toBe(CLIENT);
+    // 之后又删掉了：明确说没配置，不拿空 ID 去续期
+    stored = undefined;
+    expect(await auth.status()).toBe('not_configured');
+  });
+
+  it('构建时带了 Client ID：设置页里存的不起作用', async () => {
+    const { auth, launches } = setup({ storedClientId: async () => 'other.apps.googleusercontent.com' });
+    await auth.getToken(true);
+    expect(launches[0]?.searchParams.get('client_id')).toBe(CLIENT);
   });
 
   it('没填 Client Secret：说清楚要填什么、为什么，不弹窗', async () => {

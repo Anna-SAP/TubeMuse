@@ -1,6 +1,12 @@
 node_modules/
 dist/
 dist-e2e/
+dist-firefox/
+dist-firefox-e2e/
+# Firefox 安装包（npm run build:firefox 生成）
+release/
+# Firefox 的 e2e 在 CI 上把 Firefox 解压在这里
+.cache/
 # 本地私有配置：扩展私钥、OAuth Client ID 等，永不入库
 local/
 test-results/
