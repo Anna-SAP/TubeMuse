@@ -10,6 +10,7 @@
     "build:e2e": "node scripts/build.mjs --e2e",
     "build:firefox": "node scripts/build.mjs --firefox",
     "build:firefox-e2e": "node scripts/build.mjs --firefox --e2e",
+    "package": "node scripts/package.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -17,7 +18,7 @@
     "smoke": "node scripts/build.mjs && node tests/e2e/smoke-prod.mjs",
     "e2e": "node scripts/build.mjs --e2e && node tests/e2e/run-e2e.mjs && node scripts/build.mjs && node tests/e2e/smoke-prod.mjs",
     "e2e:firefox": "node scripts/build.mjs --firefox --e2e && node tests/e2e/firefox/run.mjs && node scripts/build.mjs --firefox && node tests/e2e/firefox/smoke-xpi.mjs",
-    "verify": "npm run typecheck && npm run test && npm run e2e && npm run e2e:firefox"
+    "verify": "npm run typecheck && npm run test && npm run e2e && npm run e2e:firefox && npm run package"
   },
   "engines": {
     "node": ">=20"
