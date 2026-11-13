@@ -4,7 +4,8 @@
 // 2. 音频由后台从扩展自己的 IndexedDB 读出来、分块交过来（扩展内部的长连接），在这个标签页的内存里拼成一个文件，
 //    交给一个不放进页面的 <audio>。脚本自己不发网络请求、不往页面插入任何元素、不读页面文字（只读页面标题，侧边栏列表里显示）。
 // 3. 跟随：视频播放、暂停、拖动进度、改倍速时配音跟着走，再加上你手动设的偏移；不做逐句对齐（两段录音的语速、停顿本来就不一样）。
-//    广告期间配音暂停、原声恢复。
+//    广告期间配音暂停、原声恢复。有对齐点时（DECISIONS §75）按段换算：每段有自己的偏移，中文先说完就停下等画面，
+//    说得慢就在下一个对齐点跳过去；"加对齐点"时报出此刻的视频位置与中文位置，由侧边栏存下。
 // 4. 配音开启时原声降到你的音量的 80%（直接改 <video> 的音量，不碰 YouTube 的设置）；配音保持正常音量。
 //    关闭、换视频、离开页面、扩展被重新加载时把原声恢复成你的音量。
 
@@ -16,10 +17,15 @@ import {
   VolumeDuck,
   clampDelay,
   cleanVideoTitle,
+  dubMapOf,
   dubReasonText,
+  dubSegmentAt,
   dubStep,
   sanitizeDubIndex,
+  withSegmentOffset,
   type DubIndex,
+  type DubMap,
+  type DubMark,
   type DubPhase,
   type DubPortReply,
   type DubReason,
@@ -37,8 +43,10 @@ let ready = false;
 let videoId: string | null = null;
 /** 你在这个标签页里开启了配音的视频（刷新页面即忘：下次打开同一视频时只提示，不自动出声） */
 const wantOn = new Set<string>();
-/** 拖动偏移滑块时的实时偏移（松手后侧边栏存进本机，这里随存储变化清掉） */
-let liveDelay: { videoId: string; delaySec: number } | undefined;
+/** 拖动"中文位置"时某一段的实时偏移（松手后侧边栏存进本机，这里随存储变化清掉） */
+let liveOffset: { videoId: string; index: number; offset: number } | undefined;
+/** 这一段中文快说完、或快到下一个对齐点时，到点立刻再检查一次 */
+let wakeTimer: ReturnType<typeof setTimeout> | undefined;
 
 interface Loaded {
   fileId: string;
@@ -101,8 +109,10 @@ function record(): DubRecord | undefined {
   return settings.enabled && videoId ? index[videoId] : undefined;
 }
 
-function delayOf(rec: DubRecord): number {
-  return liveDelay?.videoId === rec.videoId ? liveDelay.delaySec : rec.delaySec;
+/** 跟随用的对齐信息：存下的开头偏移与对齐点，拖动中的那一段换成实时值 */
+function mapOf(rec: DubRecord): DubMap {
+  const map = dubMapOf(rec);
+  return liveOffset?.videoId === rec.videoId ? withSegmentOffset(map, liveOffset.index, liveOffset.offset) : map;
 }
 
 // ── 音频 ──
@@ -224,13 +234,19 @@ function playDub(audio: HTMLAudioElement): void {
   );
 }
 
-function follow(v: HTMLVideoElement, audio: HTMLAudioElement, delaySec: number): void {
+function follow(v: HTMLVideoElement, audio: HTMLAudioElement, map: DubMap): void {
   const step = dubStep(
     { currentTime: v.currentTime, paused: v.paused, ended: v.ended, seeking: v.seeking, canPlay: v.readyState >= 3, rate: v.playbackRate, ad: adShowing() },
     { currentTime: audio.currentTime, paused: audio.paused, duration: audio.duration, rate: audio.playbackRate },
-    delaySec,
+    map,
   );
   reason = step.reason;
+  // 这一段中文快说完、或快到下一个对齐点：不等下一次例行检查，到点就停 / 接着放
+  if (wakeTimer) clearTimeout(wakeTimer);
+  wakeTimer = undefined;
+  if (step.wakeIn !== undefined && step.wakeIn * 1000 < DUB.tickMs * 1.5) {
+    wakeTimer = setTimeout(schedule, Math.max(0, (step.wakeIn / Math.max(0.1, v.playbackRate)) * 1000) + 5);
+  }
   if (step.rate !== undefined) audio.playbackRate = step.rate;
   if (step.seekTo !== undefined) audio.currentTime = step.seekTo;
   if (step.play) {
@@ -269,7 +285,7 @@ function restoreVolume(): void {
 
 function switchVideo(vid: string | null): void {
   videoId = vid;
-  liveDelay = undefined;
+  liveOffset = undefined;
   error = undefined;
   reason = undefined;
   autoplayBlocked = false;
@@ -318,7 +334,7 @@ function tick(): void {
   const v = videoEl();
   watchVideo(v);
   const engaged = active && !!rec && !!loaded?.ready && !!v;
-  if (engaged) follow(v!, loaded!.audio, delayOf(rec!));
+  if (engaged) follow(v!, loaded!.audio, mapOf(rec!));
   applyVolume(v, engaged && !adShowing());
   broadcast();
 }
@@ -327,6 +343,9 @@ function tabState(): DubTabState {
   const rec = record();
   const active = !!rec && wantOn.has(rec.videoId);
   const v = videoEl();
+  const map = rec ? mapOf(rec) : undefined;
+  const at = v && Number.isFinite(v.currentTime) && !adShowing() ? v.currentTime : 0;
+  const segment = map ? dubSegmentAt(map, at) : undefined;
   let phase: DubPhase;
   let status: string;
   if (!settings.enabled) {
@@ -353,7 +372,7 @@ function tabState(): DubTabState {
       autoplayBlocked && reason === 'playing'
         ? '浏览器拦下了配音的声音：在 YouTube 页面上点一下（例如暂停再播放），配音就会跟上'
         : reason
-          ? dubReasonText(reason, rec ? delayOf(rec) : 0)
+          ? dubReasonText(reason, segment ?? { offset: 0 })
           : '配音已就绪';
   }
   const audio = loaded?.ready ? loaded.audio : undefined;
@@ -362,7 +381,7 @@ function tabState(): DubTabState {
     videoId,
     enabled: settings.enabled,
     available: !!rec,
-    ...(rec ? { fileName: rec.fileName, delaySec: delayOf(rec) } : {}),
+    ...(rec && map && segment ? { fileName: rec.fileName, delaySec: segment.offset, segment: { ...segment, count: map.anchors.length }, target: at - segment.offset } : {}),
     active,
     phase,
     status,
@@ -380,7 +399,7 @@ function broadcast(): void {
   if (!alive()) return;
   const s = tabState();
   // 播放位置一直在变：不为它推送（侧边栏每秒问一次）
-  const { videoTime: _vt, dubTime: _dt, ...stable } = s;
+  const { videoTime: _vt, dubTime: _dt, target: _tg, ...stable } = s;
   const key = JSON.stringify({ ...stable, ...(s.volume ? { volume: { ...s.volume, now: Math.round(s.volume.now * 100) } } : {}) });
   try {
     if (key !== lastState) {
@@ -432,15 +451,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.settings) applySettings(changes.settings.newValue);
   if (changes.dubs) {
     index = sanitizeDubIndex(changes.dubs.newValue);
-    // 侧边栏存下了拖到的偏移：以存下的为准
-    if (liveDelay && index[liveDelay.videoId]?.delaySec === liveDelay.delaySec) liveDelay = undefined;
+    // 侧边栏存下了拖到的偏移（或别处改了对齐点）：以存下的为准
+    liveOffset = undefined;
   }
   if (ready) tick();
 });
 
 chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return false;
-  const msg = raw as { type?: string; on?: unknown; delaySec?: unknown; videoId?: unknown } | undefined;
+  const msg = raw as { type?: string; on?: unknown; offset?: unknown; dubAt?: unknown; segment?: unknown; videoId?: unknown } | undefined;
   if (msg?.type === DUB_MSG.getState) {
     sendResponse(tabState());
     return false;
@@ -461,13 +480,35 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
     sendResponse(tabState());
     return false;
   }
+  // 拖动"中文位置"：某一段的实时偏移。给 dubAt 时按此刻的视频位置算（"现在应放中文的 dubAt 秒处"）
   if (msg?.type === DUB_MSG.setDelay) {
     const rec = record();
-    if (rec && msg.videoId === rec.videoId && typeof msg.delaySec === 'number') {
-      liveDelay = { videoId: rec.videoId, delaySec: clampDelay(msg.delaySec) };
-      tick();
+    const index = typeof msg.segment === 'number' && Number.isInteger(msg.segment) ? msg.segment : -1;
+    const v = videoEl();
+    if (rec && msg.videoId === rec.videoId && index >= -1 && index < (rec.anchors?.length ?? 0)) {
+      const offset = typeof msg.dubAt === 'number' && Number.isFinite(msg.dubAt) && v ? v.currentTime - msg.dubAt : typeof msg.offset === 'number' ? msg.offset : undefined;
+      if (offset !== undefined && Number.isFinite(offset)) {
+        liveOffset = { videoId: rec.videoId, index, offset: clampDelay(offset) };
+        tick();
+      }
     }
     sendResponse(tabState());
+    return false;
+  }
+  // 加对齐点：此刻的视频位置，和按此刻的偏移算出的中文位置（不跳：加完听到的和加之前一样，之后再单独调这一段）。
+  // 正停在"这一段中文说完、等画面"时，中文位置取这一段的末尾，不越过下一个对齐点
+  if (msg?.type === DUB_MSG.mark) {
+    const rec = record();
+    const v = videoEl();
+    if (!rec || !v || adShowing() || !Number.isFinite(v.currentTime)) {
+      sendResponse(undefined);
+      return false;
+    }
+    const segment = dubSegmentAt(mapOf(rec), v.currentTime);
+    let dub = Math.max(0, v.currentTime - segment.offset);
+    if (segment.dubEnd !== undefined) dub = Math.min(dub, segment.dubEnd);
+    const mark: DubMark = { video: v.currentTime, dub };
+    sendResponse(mark);
     return false;
   }
   return false;

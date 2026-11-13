@@ -1,5 +1,7 @@
-// 中文配音（用户 2026-11-13 要求，见 DECISIONS §74）的纯逻辑：配音记录、跟随判定、原声降音量、偏移与时长的说法、m4a 的检查。
-// 配音是重新录制的克隆音频，时长和原视频不完全一致：同步只做"跟随播放状态 + 你手动设的偏移"，不做、也不假装做逐句 / 逐词对齐。
+// 中文配音（用户 2026-11-13 要求，见 DECISIONS §74、§75）的纯逻辑：配音记录、对齐点与分段、跟随判定、原声降音量、偏移与时长的说法、m4a 的检查。
+// 配音是重新录制的克隆音频，时长和原视频不完全一致：同步只做"跟随播放状态 + 你手动设的偏移 / 对齐点"，不做、也不假装做逐句 / 逐词对齐。
+// 对齐点（§75，手测后用户要求）：你在几处标"视频这一刻 ↔ 中文这一刻"，把全程分成几段，每段有自己的偏移；
+// 一段里中文按正常速度放，中文先说完就停下等画面，中文说得慢就在下一个对齐点跳过去。
 // 播放与降音量在 content/dub.ts（YouTube 播放页）；音频文件在扩展自己的 IndexedDB（services/dub-store.ts），由后台分块交给页面里的脚本。
 
 import { DUB } from '../config/defaults';
@@ -11,8 +13,13 @@ export const DUB_MSG = {
   state: 'tubemuse:dub:state',
   /** 侧边栏 → 配音脚本：开 / 关这个视频的配音（{ on?: boolean }） */
   toggle: 'tubemuse:dub:toggle',
-  /** 侧边栏 → 配音脚本：拖动偏移滑块时的实时偏移（不存；松手后侧边栏存进本机，脚本从存储里读到） */
+  /**
+   * 侧边栏 → 配音脚本：拖动"中文位置"时的实时偏移（不存；松手后侧边栏存进本机，脚本从存储里读到）。
+   * { videoId, segment, offset } 或 { videoId, segment, dubAt }（让此刻放中文的 dubAt 秒处，由脚本按此刻的视频位置算出偏移）
+   */
   setDelay: 'tubemuse:dub:set-delay',
+  /** 侧边栏 → 配音脚本：此刻的视频位置与中文位置（加对齐点用），回复 DubMark */
+  mark: 'tubemuse:dub:mark',
   /** 配音脚本 → 后台：工具栏图标上的"中" */
   badge: 'tubemuse:dub:badge',
 } as const;
@@ -35,9 +42,23 @@ export interface DubRecord {
   videoDurationSec?: number;
   /** 关联时的视频标题（页面标题），列表里显示 */
   title?: string;
-  /** 配音推后多少秒（负数 = 提前）：配音位置 = 视频位置 − delaySec */
+  /** 开头那一段（第一个对齐点之前）的偏移：中文推后多少秒（负数 = 提前），配音位置 = 视频位置 − delaySec */
   delaySec: number;
+  /** 对齐点（按视频时间排好；§75）：从每个对齐点起，配音位置 = 视频位置 − (video − dub) */
+  anchors?: DubAnchor[];
   addedAt: number;
+}
+
+/** 对齐点：视频的这一刻对应中文的这一刻（秒） */
+export interface DubAnchor {
+  video: number;
+  dub: number;
+}
+
+/** 跟随用的对齐信息：开头的偏移 + 对齐点 */
+export interface DubMap {
+  delaySec: number;
+  anchors: readonly DubAnchor[];
 }
 
 /** 视频 ID → 配音 */
@@ -85,9 +106,85 @@ export function sanitizeDubIndex(v: unknown): DubIndex {
     if (vd) rec.videoDurationSec = vd;
     const title = text(r.title, DUB.titleMaxChars);
     if (title) rec.title = title;
+    const anchors = sanitizeAnchors(r.anchors);
+    if (anchors.length) rec.anchors = anchors;
     out[key] = rec;
   }
   return out;
+}
+
+// ── 对齐点 ──
+
+const roundAnchor = (x: number) => Math.round(x / DUB.anchorPrecisionSec) * DUB.anchorPrecisionSec;
+const tidy = (x: number) => Number(roundAnchor(x).toFixed(2)) || 0;
+
+/** 读存储时：只留数字对的、按视频时间排好、太近的合并（留后面那个），最多 maxAnchors 个 */
+export function sanitizeAnchors(v: unknown): DubAnchor[] {
+  if (!Array.isArray(v)) return [];
+  let out: DubAnchor[] = [];
+  for (const a of v) {
+    const x = a as Partial<DubAnchor> | undefined;
+    if (!x || typeof x.video !== 'number' || typeof x.dub !== 'number' || !Number.isFinite(x.video) || !Number.isFinite(x.dub)) continue;
+    if (x.video <= 0 || x.video > DUB.maxDelaySec * 4 || x.dub < 0 || x.dub > DUB.maxDelaySec * 4) continue;
+    out = withAnchor(out, { video: x.video, dub: x.dub });
+  }
+  return out.slice(0, DUB.maxAnchors);
+}
+
+/** 加一个对齐点：离已有的不到 anchorMergeSec 时替换它；保持按视频时间排好 */
+export function withAnchor(anchors: readonly DubAnchor[], a: DubAnchor): DubAnchor[] {
+  const next = { video: tidy(a.video), dub: Math.max(0, tidy(a.dub)) };
+  return [...anchors.filter((x) => Math.abs(x.video - next.video) >= DUB.anchorMergeSec), next].sort((x, y) => x.video - y.video);
+}
+
+export function dubMapOf(rec: Pick<DubRecord, 'delaySec' | 'anchors'>): DubMap {
+  return { delaySec: rec.delaySec, anchors: rec.anchors ?? [] };
+}
+
+/** 一段：从 fromVideo 起，中文位置 = 视频位置 − offset；到 nextVideo 换下一段。这一段的中文到 dubEnd 为止（下一个对齐点的中文位置） */
+export interface DubSegment {
+  /** −1 = 开头那一段（第一个对齐点之前，偏移就是 delaySec）；k = 第 k 个对齐点（从 0 数）之后那一段 */
+  index: number;
+  fromVideo: number;
+  /** 正 = 中文推后（比画面晚），负 = 中文提前 */
+  offset: number;
+  nextVideo?: number;
+  dubEnd?: number;
+}
+
+/** 视频的 t 秒落在哪一段 */
+export function dubSegmentAt(map: DubMap, t: number): DubSegment {
+  let i = -1;
+  for (let k = 0; k < map.anchors.length; k++) {
+    if (map.anchors[k]!.video <= t) i = k;
+    else break;
+  }
+  const a = i >= 0 ? map.anchors[i]! : undefined;
+  const next = map.anchors[i + 1];
+  return {
+    index: i,
+    fromVideo: a ? a.video : 0,
+    offset: a ? Number((a.video - a.dub).toFixed(2)) : map.delaySec,
+    ...(next ? { nextVideo: next.video, dubEnd: next.dub } : {}),
+  };
+}
+
+/** 改某一段的偏移：开头那段改 delaySec；第 k 段改第 k 个对齐点的中文位置（视频位置不动） */
+export function withSegmentOffset(map: DubMap, index: number, offset: number): DubMap {
+  if (index < 0 || index >= map.anchors.length) return { delaySec: clampDelay(offset), anchors: [...map.anchors] };
+  const anchors = map.anchors.map((a, k) => (k === index ? { video: a.video, dub: Math.max(0, tidy(a.video - clampDelay(offset))) } : a));
+  return { delaySec: map.delaySec, anchors };
+}
+
+/** 前后颠倒的对齐点（中文位置不比前一个靠后）：这几个之前那一段的中文会被整段跳过或重放，界面上标出来 */
+export function misorderedAnchors(map: DubMap): number[] {
+  const bad: number[] = [];
+  let prev = Math.max(0, -map.delaySec);
+  map.anchors.forEach((a, k) => {
+    if (a.dub <= prev) bad.push(k);
+    prev = a.dub;
+  });
+  return bad;
 }
 
 // ── 选文件 ──
@@ -240,7 +337,7 @@ export interface DubAudioSample {
   rate: number;
 }
 
-export type DubReason = 'playing' | 'paused' | 'seeking' | 'buffering' | 'ad' | 'ended' | 'before-start' | 'after-end';
+export type DubReason = 'playing' | 'paused' | 'seeking' | 'buffering' | 'ad' | 'ended' | 'before-start' | 'after-end' | 'segment-end';
 
 export interface DubStep {
   play: boolean;
@@ -249,34 +346,57 @@ export interface DubStep {
   /** 要把配音的倍速改成这个 */
   rate?: number;
   reason: DubReason;
-  /** 配音此刻应在的位置（视频位置 − 偏移） */
+  /** 配音此刻应在的位置（视频位置 − 这一段的偏移） */
   target: number;
+  segment: DubSegment;
+  /** 视频再放这么多秒，跟随要换个做法（这一段中文说完、到下一个对齐点）：到时候立刻再检查一次，不等下一次例行检查 */
+  wakeIn?: number;
 }
 
 /**
- * 跟随：配音位置 = 视频位置 − 偏移。视频在放（不在缓冲、不在跳转、不是广告）且这个位置落在配音里时放，否则停；
- * 两边差过 resyncSec 就把配音拉回来；倍速跟着视频。不做逐句对齐：两段录音的语速、停顿本来就不一样。
+ * 跟随：找出视频此刻落在哪一段，配音位置 = 视频位置 − 这一段的偏移。视频在放（不在缓冲、不在跳转、不是广告）且这个位置落在配音里时放，否则停；
+ * 两边差过 resyncSec 就把配音拉回来；倍速跟着视频。
+ * 有对齐点时：这一段的中文到下一个对齐点的中文位置为止——中文先说完就停在那里等画面，视频到了下一个对齐点再接着放；
+ * 中文说得慢、视频先到了下一个对齐点，就跳到下一段的位置（两边差过 resyncSec 的那一下）。
+ * 不做逐句对齐：两段录音的语速、停顿本来就不一样，对齐点之间中文始终按正常速度放。
  */
-export function dubStep(v: DubVideoSample, a: DubAudioSample, delaySec: number, resyncSec: number = DUB.resyncSec): DubStep {
-  const target = v.currentTime - delaySec;
-  const stop = (reason: DubReason, seekTo?: number): DubStep => ({ play: false, reason, target, ...(seekTo !== undefined ? { seekTo } : {}) });
+export function dubStep(v: DubVideoSample, a: DubAudioSample, map: DubMap, resyncSec: number = DUB.resyncSec): DubStep {
+  const segment = dubSegmentAt(map, v.currentTime);
+  const target = v.currentTime - segment.offset;
+  const stop = (reason: DubReason, seekTo?: number, wakeIn?: number): DubStep => ({
+    play: false,
+    reason,
+    target,
+    segment,
+    ...(seekTo !== undefined ? { seekTo } : {}),
+    ...(wakeIn !== undefined ? { wakeIn } : {}),
+  });
   if (v.ad) return stop('ad');
   if (v.seeking) return stop('seeking');
   if (v.ended) return stop('ended');
-  if (target < 0) return stop('before-start', a.currentTime > 0.05 ? 0 : undefined);
+  if (target < 0) return stop('before-start', a.currentTime > 0.05 ? 0 : undefined, v.paused ? undefined : -target);
+  const toNext = segment.nextVideo !== undefined ? segment.nextVideo - v.currentTime : undefined;
+  if (segment.dubEnd !== undefined && target >= segment.dubEnd) {
+    // 这一段中文已经说完：停在这一段的末尾等画面（视频到下一个对齐点时正好从这里接着放）
+    const end = Number.isFinite(a.duration) ? Math.min(segment.dubEnd, a.duration) : segment.dubEnd;
+    return stop('segment-end', Math.abs(a.currentTime - end) > resyncSec ? end : undefined, v.paused ? undefined : toNext);
+  }
   if (Number.isFinite(a.duration) && target >= a.duration) return stop('after-end');
   const off = Math.abs(a.currentTime - target);
   // 停着的时候也把位置对好：一放就是对的
   if (v.paused) return stop('paused', off > resyncSec ? target : undefined);
   if (!v.canPlay) return stop('buffering', off > resyncSec ? target : undefined);
-  const step: DubStep = { play: true, reason: 'playing', target };
+  const step: DubStep = { play: true, reason: 'playing', target, segment };
   if (off > (a.paused ? DUB.startAlignSec : resyncSec)) step.seekTo = target;
   if (Math.abs(a.rate - v.rate) > 1e-3) step.rate = v.rate;
+  const toEnd = segment.dubEnd !== undefined ? segment.dubEnd - target : undefined;
+  const wake = [toEnd, toNext].filter((x): x is number => x !== undefined && x > 0);
+  if (wake.length) step.wakeIn = Math.min(...wake);
   return step;
 }
 
-/** 跟随状态的说法（delaySec：正在用的偏移） */
-export function dubReasonText(reason: DubReason, delaySec: number): string {
+/** 跟随状态的说法（segment：视频此刻所在的那一段） */
+export function dubReasonText(reason: DubReason, segment: Pick<DubSegment, 'offset' | 'nextVideo'>): string {
   switch (reason) {
     case 'playing':
       return '配音播放中，跟着视频走';
@@ -291,9 +411,13 @@ export function dubReasonText(reason: DubReason, delaySec: number): string {
     case 'ended':
       return '视频放完了';
     case 'before-start':
-      return `中文还没开始：按偏移，视频放到 ${formatClockSec(delaySec)} 时中文才开始`;
+      return `中文还没开始：按偏移，视频放到 ${formatClockSec(segment.offset)} 时中文才开始`;
     case 'after-end':
       return '中文已经放完了（原视频比中文长）';
+    case 'segment-end':
+      return segment.nextVideo !== undefined
+        ? `中文这一段已经说完，等画面到 ${formatClockSec(segment.nextVideo)} 的对齐点再接着放（这时听到的是原声）`
+        : '中文这一段已经说完';
   }
 }
 
@@ -398,11 +522,19 @@ export function formatBytes(n: number): string {
   return `${Math.max(1, Math.round(n / 1024))} KB`;
 }
 
-/** 偏移的说法 */
+/** 开头那一段偏移的说法 */
 export function delayText(delaySec: number): string {
   const d = clampDelay(delaySec);
   if (d === 0) return '不偏移：中文从视频开头一起开始';
   return d > 0 ? `中文推后 ${formatSeconds(d)}：视频放到 ${formatClockSec(d)} 时中文才开始` : `中文提前 ${formatSeconds(d)}：跳过中文开头的 ${formatSeconds(d)}`;
+}
+
+/** 某一段偏移的说法：开头那段沿用 delayText；对齐点之后的说"中文比画面晚 / 早多少" */
+export function segmentOffsetText(segment: Pick<DubSegment, 'index' | 'offset'>): string {
+  if (segment.index < 0) return delayText(segment.offset);
+  const d = Number(segment.offset.toFixed(1)) || 0;
+  if (d === 0) return '这一段中文和画面同步（偏移 0）';
+  return d > 0 ? `这一段中文比画面晚 ${formatSeconds(d)}` : `这一段中文比画面早 ${formatSeconds(d)}`;
 }
 
 /**
@@ -415,7 +547,7 @@ export function durationNote(dubSec: number | undefined, videoSec: number | unde
   const both = `中文 ${formatClockSec(dubSec)} · 原视频 ${formatClockSec(videoSec)}`;
   if (Math.abs(diff) < 1) return `${both}：长度一样。`;
   const longer = diff > 0 ? `中文长 ${formatSeconds(diff)}` : `中文短 ${formatSeconds(diff)}`;
-  return `${both}，${longer}。两段是分别录的，语速和停顿不一样：对齐开头后，越往后可能差得越多，需要时边看边再调偏移。`;
+  return `${both}，${longer}。两段是分别录的，语速和停顿不一样（中文还可能删掉了一些段落）：对齐开头后越往后差得越多——在对不上的地方加对齐点，从那里起单独调。`;
 }
 
 // ── 配音脚本的状态（交给侧边栏）──
@@ -443,11 +575,21 @@ export interface DubTabState {
   videoDuration?: number;
   dubTime?: number;
   dubDuration?: number;
-  /** 正在用的偏移（拖动滑块时是实时值） */
+  /** 视频此刻所在那一段的偏移（拖动"中文位置"时是实时值） */
   delaySec?: number;
+  /** 视频此刻所在的那一段（拖动"中文位置"时已算上实时值）；count：一共几个对齐点 */
+  segment?: DubSegment & { count: number };
+  /** 此刻中文应在的位置（视频位置 − 这一段的偏移） */
+  target?: number;
   /** 原声：你的音量、现在的音量、是不是降着、YouTube 是否把它改回去了 */
   volume?: { user: number; now: number; ducked: boolean; blocked: boolean; muted: boolean };
   error?: { message: string; hint?: string };
+}
+
+/** 配音脚本 → 侧边栏：此刻的视频位置与中文位置（加对齐点用） */
+export interface DubMark {
+  video: number;
+  dub: number;
 }
 
 /** 后台 → 配音脚本：音频分块 */
