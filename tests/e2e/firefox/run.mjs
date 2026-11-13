@@ -574,9 +574,40 @@ try {
   check(Math.abs(dubS.dubTime - dubS.videoTime) < 0.5, `Firefox：跟着视频走（视频 ${Number(dubS.videoTime).toFixed(2)} · 中文 ${Number(dubS.dubTime).toFixed(2)}）`);
   await b.switchTo(dubPage);
   const ffVol = await b.exec(`return document.querySelector('video').volume;`);
-  await b.exec(`document.querySelector('video').pause(); return true;`);
   await b.switchTo(handles.panel);
   check(Math.abs(ffVol - 0.8) < 0.005, `Firefox：原声降 20%（${ffVol}）`);
+  // 配音开着时录片段（DECISIONS §76）：录下的是双语混音。两个内容脚本在 Firefox 里也共用同一个隔离环境，录制脚本拿得到配音的 <audio>
+  await tapText('片段', '[role=tab]');
+  await b.waitFor(`document.querySelector('[data-testid=clip-dub]')?.textContent.includes('双语混音')`, { what: '片段页写明会录双语混音' });
+  const dubClipBefore = downloaded();
+  await tap('[data-testid=clip-start]');
+  await b.waitFor(`document.querySelector('[data-testid=clip-status]')?.textContent.includes('正在录制')`, { what: '正在录制' });
+  await sleep(3000);
+  await tap('[data-testid=clip-stop]');
+  const dubClip = await waitDownload(dubClipBefore, /\.webm$/);
+  await b.switchTo(dubPage);
+  // 原声是 200 Hz、振幅 0.2 的单音：按 0.1 秒一段量它的振幅和其余的响度（= 配音），取中位数
+  const dubMixInfo = await b.run(
+    `const bytes = Uint8Array.from(atob(args[0]), (c) => c.charCodeAt(0));
+     const ac = new AudioContext();
+     const buf = await ac.decodeAudioData(bytes.buffer.slice(0));
+     const ch = buf.getChannelData(0); const win = Math.round(buf.sampleRate / 10); const w = 2 * Math.PI * 200 / buf.sampleRate;
+     const tones = []; const rests = [];
+     for (let a = Math.floor(buf.sampleRate * 0.3); a + win <= ch.length - buf.sampleRate * 0.3; a += win) {
+       let re = 0, im = 0, sum = 0;
+       for (let i = a; i < a + win; i++) { re += ch[i] * Math.cos(w * i); im -= ch[i] * Math.sin(w * i); sum += ch[i] * ch[i]; }
+       const amp = 2 * Math.sqrt(re * re + im * im) / win; tones.push(amp); rests.push(Math.sqrt(Math.max(0, sum / win - amp * amp / 2)));
+     }
+     const med = (xs) => xs.sort((x, y) => x - y)[Math.floor(xs.length / 2)];
+     return { tone: med(tones), rest: med(rests) };`,
+    [readFileSync(join(downloads, dubClip)).toString('base64')],
+  );
+  await b.exec(`document.querySelector('video').pause(); return true;`);
+  await b.switchTo(handles.panel);
+  // 原声的振幅按 200 Hz 量：Firefox 以前把录音的 AudioContext 固定成 48 kHz、设备是 44.1 kHz 时声音录慢、音调降到约 184 Hz，这里就量不到（DECISIONS §76）
+  check(dubMixInfo.rest > 0.05 && Math.abs(dubMixInfo.tone - 0.16) < 0.03, `Firefox：配音开着时录下双语混音——有中文配音（其余响度 ${dubMixInfo.rest.toFixed(3)}），原声按 80% 混入、音调没变（200 Hz 振幅 ${dubMixInfo.tone.toFixed(3)}，原本 0.2）`);
+  await tapText('配音', '[role=tab]');
+  await b.waitFor(`!!document.querySelector('[data-testid=dub-toggle]')`, { what: '回到配音页' });
   for (let i = 0; i < 20 && (await dubState())?.playing; i++) await sleep(150);
   check((await dubState())?.playing === false, 'Firefox：视频暂停，配音跟着停');
   await tap('[data-testid=dub-toggle]');

@@ -31,9 +31,13 @@
 //    链接、标题、作者、正文（或描述）和这一刻的播放位置读一次，交给侧边栏拼成一段文字（咨询包），由你自己粘贴到 Muse。
 //    不暂停视频、不改页面、不发网络请求；读的都是当前这一条：第 4 点里已经在读的那些，外加小红书这篇笔记的作者名和正文；
 //    X 帖子页的作者和正文来自页面标题。别的帖子、评论、弹幕不读。
+// 7. 中文配音（用户 2026-11-13 要求，见 DECISIONS §76）：YouTube 上配音开着时，录下的片段是双语混音——原声按 80%（和你听到的一样）
+//    加中文配音。配音的 <audio> 由同一个隔离环境里的配音脚本交过来（core/dub-mix.ts），这里对它调 captureStream()，
+//    和对视频做的一样；混音后过一道限幅，免得两路声音叠在一起削波。配音关着时录音和以前完全一样。
 // 受版权保护（DRM）的视频浏览器不允许录制或截图，本脚本不绕过。
 
-import { CLIPS, DEFAULT_SETTINGS, MUSE } from '../config/defaults';
+import { CLIPS, DEFAULT_SETTINGS, DUB, MUSE } from '../config/defaults';
+import { dubMix, originalMixGain, softLimitCurve } from '../core/dub-mix';
 import { MULTICC_LINE_COLORS } from '../core/multi-captions';
 import { MUSE_MSG, museItem, museUnavailable, type MuseSnapshot } from '../core/muse';
 import { parseXhsUrl, xhsPath } from '../core/xhs';
@@ -90,6 +94,7 @@ import {
   type ReadyClipInfo,
 } from '../core/clips';
 import { videoIdFromUrl } from '../core/watch';
+import { IS_FIREFOX } from '../platform';
 import { CAPTURE_UNSUPPORTED, captureVideoStream, ownBytes } from './capture-stream';
 
 type ClipSettings = typeof DEFAULT_SETTINGS.clips;
@@ -142,6 +147,14 @@ interface Recording {
   ac: AudioContext;
   dest: MediaStreamAudioDestinationNode;
   audioNodes: Map<string, MediaStreamAudioSourceNode>;
+  /** 原声进录音前的音量倍数（配音开着时 0.8，和你听到的一样；否则 1） */
+  origGain: GainNode;
+  /** 混进来的中文配音（YouTube 上配音开着时，DECISIONS §76） */
+  dub?: { el: HTMLAudioElement; stream: MediaStream; gain: GainNode; node?: MediaStreamAudioSourceNode; trackId?: string };
+  /** 第一次混入配音时接上的软限幅（先乘 1/headroom 再过曲线；见 DUB.mixLimiter） */
+  limiter?: GainNode;
+  /** 这一段里混进过配音 */
+  dubbed: boolean;
   canvasTrack: MediaStreamTrack;
   recorder: MediaRecorder;
   /** 录音机等到第一次真正要录时才 start()，见 startRecorder */
@@ -663,7 +676,7 @@ function connectAudio(r: Recording): void {
   for (const track of r.source.getAudioTracks()) {
     if (r.audioNodes.has(track.id) || track.readyState === 'ended') continue;
     const node = r.ac.createMediaStreamSource(new MediaStream([track]));
-    node.connect(r.dest);
+    node.connect(r.origGain);
     r.audioNodes.set(track.id, node);
   }
   for (const [id, node] of r.audioNodes) {
@@ -673,6 +686,58 @@ function connectAudio(r: Recording): void {
   }
   // 画面另外从画布取：这个流里的画面轨用不到，停掉不占资源
   for (const t of r.source.getVideoTracks()) t.stop();
+}
+
+/**
+ * 中文配音（DECISIONS §76）：YouTube 上配音开着、已载入时，把配音的声音接进录音，原声按配音脚本此刻的倍数（降着时 0.8）。
+ * 每一轮都看一次：录制中途开 / 关配音、换文件、配音换了音轨都跟着变。配音关着时什么也不接，录音和以前一样
+ */
+function connectDub(r: Recording): void {
+  const mix = SITE === 'youtube' ? dubMix() : undefined;
+  const el = mix?.audio();
+  if (r.dub && r.dub.el !== el) dropDub(r);
+  if (el && !r.dub) {
+    const got = captureVideoStream(el);
+    if (got.ok) {
+      const gain = r.ac.createGain();
+      if (!r.limiter) {
+        // 第一次混入配音：原声和配音一起过软限幅再进录音（满幅以下原样不动，只压住叠出来的峰值）
+        const p = DUB.mixLimiter;
+        const pre = r.ac.createGain();
+        pre.gain.value = 1 / p.headroom;
+        const shaper = r.ac.createWaveShaper();
+        shaper.curve = softLimitCurve(p.points, p.knee, p.headroom);
+        r.origGain.disconnect();
+        r.origGain.connect(pre);
+        pre.connect(shaper);
+        shaper.connect(r.dest);
+        r.limiter = pre;
+      }
+      gain.connect(r.limiter);
+      r.dub = { el, stream: got.stream, gain };
+    }
+  }
+  if (r.dub) {
+    // 配音的音轨：刚开始取时可能还没有；配音换了片源时旧的会结束，换成新的
+    const track = r.dub.stream.getAudioTracks().find((t) => t.readyState !== 'ended');
+    if (track && track.id !== r.dub.trackId) {
+      r.dub.node?.disconnect();
+      r.dub.node = r.ac.createMediaStreamSource(new MediaStream([track]));
+      r.dub.node.connect(r.dub.gain);
+      r.dub.trackId = track.id;
+      r.dubbed = true;
+    }
+  }
+  const g = el ? originalMixGain(mix?.originalGain()) : 1;
+  if (Math.abs(r.origGain.gain.value - g) > 1e-3) r.origGain.gain.setTargetAtTime(g, r.ac.currentTime, DUB.mixRampSec);
+}
+
+function dropDub(r: Recording): void {
+  if (!r.dub) return;
+  r.dub.node?.disconnect();
+  r.dub.gain.disconnect();
+  r.dub.stream.getTracks().forEach((t) => t.stop());
+  r.dub = undefined;
 }
 
 // ── 开始 / 结束 ──
@@ -720,8 +785,11 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   const source = got.stream;
   let ac: AudioContext;
   try {
-    // 采样率固定 48 kHz，不跟着输出设备走：蓝牙耳机通话模式的 16 kHz，AAC 编码器不接受（见 CLIPS.audioSampleRate）
-    ac = new AudioContext({ sampleRate: CLIPS.audioSampleRate });
+    // Chrome：采样率固定 48 kHz，不跟着输出设备走：蓝牙耳机通话模式的 16 kHz，AAC 编码器不接受（见 CLIPS.audioSampleRate）。
+    // Firefox：用默认采样率（跟着它的音频图走）。Firefox 不会把视频的音轨重采样进另一个采样率的 AudioContext——
+    // 设备是 44.1 kHz 时固定 48 kHz，录下的声音慢约 9%、音调偏低，越录越和画面对不上（2026-11-13 Firefox 161 实测，DECISIONS §76）。
+    // Firefox 只录 WebM（Opus），编码器自己接受各种采样率，没有 Chrome 那个 AAC 的限制
+    ac = IS_FIREFOX ? new AudioContext() : new AudioContext({ sampleRate: CLIPS.audioSampleRate });
   } catch (e) {
     source.getTracks().forEach((t) => t.stop());
     return fail(`浏览器没能准备录音：${e instanceof Error ? e.message : String(e)}`);
@@ -744,6 +812,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     return fail('浏览器没能创建画布，无法录制');
   }
   const dest = ac.createMediaStreamDestination();
+  const origGain = ac.createGain();
+  origGain.connect(dest);
   const canvasTrack = canvas.captureStream(CLIPS.fps).getVideoTracks()[0];
   const audioTrack = dest.stream.getAudioTracks()[0];
   if (!canvasTrack || !audioTrack) {
@@ -788,6 +858,8 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     ac,
     dest,
     audioNodes: new Map(),
+    origGain,
+    dubbed: false,
     canvasTrack,
     recorder,
     started: false,
@@ -805,6 +877,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     burnBoxes: [],
   };
   connectAudio(r);
+  connectDub(r);
   source.addEventListener('addtrack', () => rec === r && connectAudio(r));
   source.addEventListener('removetrack', () => rec === r && connectAudio(r));
   recorder.ondataavailable = (e) => {
@@ -889,6 +962,7 @@ function cleanup(r: Recording): void {
   r.canvasTrack.stop();
   for (const node of r.audioNodes.values()) node.disconnect();
   r.audioNodes.clear();
+  dropDub(r);
   r.source.getTracks().forEach((t) => t.stop());
   void r.ac.close().catch(() => undefined);
 }
@@ -922,6 +996,7 @@ function finish(r: Recording): void {
     end,
     format: r.format.label,
     burned: r.burn,
+    ...(r.dubbed ? { dubbed: true } : {}),
     endedBy: reason,
     videoId: r.videoId,
     pageUrl: r.pageUrl,
@@ -958,6 +1033,7 @@ function saveReady(): void {
     format: c.format,
     fileName: c.fileName,
     burned: c.burned,
+    ...(c.dubbed ? { dubbed: true } : {}),
     savedAt: c.savedAt,
   };
   try {
@@ -1133,6 +1209,7 @@ function tick(): void {
       if (r.recorder.state === 'recording') r.recorder.pause();
       r.waiting = d.why;
     }
+    if (!r.stopping) connectDub(r);
     updateBurn(r);
   }
   broadcast();
@@ -1177,6 +1254,8 @@ function tabState(precise = false): ClipTabState {
     ...(r?.waiting ? { waiting: r.waiting } : {}),
     status,
     burn: r ? r.burn : SITE === 'youtube' && settings.burnSubtitles,
+    // 中文配音（DECISIONS §76）：录制中混着配音 / 配音开着、开始录就会混进去
+    ...(SITE === 'youtube' && (r ? r.dub : dubMix()?.audio()) ? { dub: r ? ('mixing' as const) : ('ready' as const) } : {}),
     autoSave: settings.autoSave,
     maxSec,
     ...(r ? { format: r.format.label } : {}),

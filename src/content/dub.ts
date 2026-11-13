@@ -8,6 +8,7 @@
 //    说得慢就在下一个对齐点跳过去；"加对齐点"时报出此刻的视频位置与中文位置，由侧边栏存下。
 // 4. 配音开启时原声降到你的音量的 80%（直接改 <video> 的音量，不碰 YouTube 的设置）；配音保持正常音量。
 //    关闭、换视频、离开页面、扩展被重新加载时把原声恢复成你的音量。
+// 5. 片段录制（DECISIONS §76）：配音开着时，把配音的 <audio> 交给同一个隔离环境里的录制脚本，录下的片段是双语混音。
 
 import { DEFAULT_SETTINGS, DUB } from '../config/defaults';
 import { base64ToBytes } from '../core/clips';
@@ -32,6 +33,7 @@ import {
   type DubRecord,
   type DubTabState,
 } from '../core/dub';
+import { publishDubMix } from '../core/dub-mix';
 import { playerRootId } from '../core/multicc-protocol';
 import { videoIdFromUrl } from '../core/watch';
 
@@ -418,6 +420,7 @@ function broadcast(): void {
 
 /** 扩展被重新加载（这个脚本失效）：停下配音、恢复原声 */
 function shutdown(): void {
+  publishDubMix(undefined);
   if (timer) clearInterval(timer);
   timer = undefined;
   ready = false;
@@ -512,6 +515,16 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
     return false;
   }
   return false;
+});
+
+// 片段录制（DECISIONS §76）：配音开着、已载入时，把这个 <audio> 和原声此刻的倍数交给同一个隔离环境里的录制脚本，
+// 录下的片段就是你听到的双语混音。这里不采集任何声音，只是让录制脚本拿得到这个元素
+publishDubMix({
+  audio: () => {
+    const rec = ready ? record() : undefined;
+    return rec && wantOn.has(rec.videoId) && loaded?.ready && loaded.fileId === rec.fileId ? loaded.audio : undefined;
+  },
+  originalGain: () => (duck.ducked ? DUB.originalVolume : 1),
 });
 
 // 离开页面（关标签页、刷新、跳到别的站）：先把原声恢复成你的音量；工具栏图标上的"中"也清掉（跳到别的站时它不会自己消失）

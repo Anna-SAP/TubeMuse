@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { DUB } from '../../src/config/defaults';
 import { ENDPOINTS } from '../../src/config/endpoints';
-import { base64ToBytes } from '../../src/core/clips';
+import { base64ToBytes, sanitizeClipRecord } from '../../src/core/clips';
+import { dubMix, originalMixGain, publishDubMix, softLimitCurve } from '../../src/core/dub-mix';
 import {
   DubFileError,
   VolumeDuck,
@@ -443,5 +444,51 @@ describe('中文配音：导出与清空', () => {
     await clearAll(ctx);
     expect(await ctx.kv.getAll()).toEqual({});
     expect(dubAudio.data.size).toBe(0);
+  });
+});
+
+describe('中文配音 × 片段录制：双语混音（DECISIONS §76）', () => {
+  it('配音脚本挂上混音来源，录制脚本取得到；摘掉后取不到；不像样的对象不认', () => {
+    const el = {} as HTMLAudioElement;
+    publishDubMix({ audio: () => el, originalGain: () => 0.8 });
+    expect(dubMix()?.audio()).toBe(el);
+    expect(dubMix()?.originalGain()).toBe(0.8);
+    publishDubMix(undefined);
+    expect(dubMix()).toBeUndefined();
+    (globalThis as unknown as Record<symbol, unknown>)[Symbol.for('tubemuse.dub.mix')] = { audio: 1 };
+    expect(dubMix()).toBeUndefined();
+    publishDubMix(undefined);
+  });
+
+  it('原声的混音倍数只认 0–1', () => {
+    expect(originalMixGain(0.8)).toBe(0.8);
+    expect(originalMixGain(1.5)).toBe(1);
+    expect(originalMixGain(NaN)).toBe(1);
+    expect(originalMixGain('x')).toBe(1);
+  });
+
+  it('软限幅曲线：满幅的 90% 以下原样不动（比例严格是 80% : 100%），叠出来的峰值平滑压在 1 以内', () => {
+    const { knee, headroom, points } = DUB.mixLimiter;
+    const curve = softLimitCurve(points, knee, headroom);
+    const at = (v: number) => {
+      // WaveShaper 的取值：输入先乘 1/headroom，再在曲线上线性插值
+      const x = ((v / headroom + 1) / 2) * (points - 1);
+      const i = Math.floor(x);
+      return curve[i]! + (curve[Math.min(points - 1, i + 1)]! - curve[i]!) * (x - i);
+    };
+    for (const v of [-0.85, -0.5, 0, 0.16, 0.2, 0.8, 0.89]) expect(at(v)).toBeCloseTo(v, 6);
+    expect(at(0.95)).toBeGreaterThan(0.9);
+    expect(at(0.95)).toBeLessThan(0.95);
+    expect(at(1.8)).toBeLessThanOrEqual(1);
+    expect(at(1.8)).toBeGreaterThan(0.99);
+    expect(at(-1.8)).toBeGreaterThanOrEqual(-1);
+    for (let i = 1; i < points; i++) expect(curve[i]!).toBeGreaterThanOrEqual(curve[i - 1]!);
+  });
+
+  it('片段记录：YouTube 的记下"双语混音"，别的站的不认这一项', () => {
+    const base = { id: 'clip_1', videoId: VID, mode: 'free', start: 1, end: 5, durationSec: 4, bytes: 1000, format: 'MP4', fileName: 'a.mp4', burned: false, savedAt: NOW };
+    expect(sanitizeClipRecord({ ...base, dubbed: true })).toMatchObject({ dubbed: true });
+    expect(sanitizeClipRecord(base)).not.toHaveProperty('dubbed');
+    expect(sanitizeClipRecord({ ...base, dubbed: 'yes' })).not.toHaveProperty('dubbed');
   });
 });

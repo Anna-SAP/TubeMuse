@@ -924,6 +924,8 @@ export interface ReadyClipInfo {
   end: number;
   format: string;
   burned: boolean;
+  /** 混进了中文配音（双语混音，DECISIONS §76） */
+  dubbed?: boolean;
   /** 这一段为什么结束 */
   endedBy: ClipStopReason;
   savedAt?: number;
@@ -952,6 +954,8 @@ export interface ClipTabState {
   /** 一句话说明现在的状态 */
   status: string;
   burn: boolean;
+  /** 中文配音（YouTube，DECISIONS §76）：ready = 配音开着，开始录就会混进去；mixing = 正在录、混着配音 */
+  dub?: 'ready' | 'mixing';
   autoSave: boolean;
   maxSec: number;
   format?: string;
@@ -983,6 +987,8 @@ export interface ClipRecord {
   format: string;
   fileName: string;
   burned: boolean;
+  /** 混进了中文配音（双语混音，DECISIONS §76）；没有这一项的是没混 */
+  dubbed?: boolean;
   savedAt: number;
 }
 
@@ -1025,7 +1031,23 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const format = str(r.format, 60);
   if (!id || !videoId || !mode || start === null || end === null || durationSec === null || bytes === null || savedAt === null || !fileName || !format) return null;
   const title = str(r.title, 200);
-  return { id, ...(sourceUrl ? { site, url: sourceUrl } : {}), videoId, ...(title ? { title } : {}), mode, start, end, durationSec, bytes, format, fileName, burned: r.burned === true, savedAt };
+  return {
+    id,
+    ...(sourceUrl ? { site, url: sourceUrl } : {}),
+    videoId,
+    ...(title ? { title } : {}),
+    mode,
+    start,
+    end,
+    durationSec,
+    bytes,
+    format,
+    fileName,
+    burned: r.burned === true,
+    // 中文配音只在 YouTube 上（DECISIONS §76）
+    ...(r.dubbed === true && site === 'youtube' ? { dubbed: true } : {}),
+    savedAt,
+  };
 }
 
 /** 新记录放最前；同一个片段再存一次只更新时间；最多保留 max 条 */

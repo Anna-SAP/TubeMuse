@@ -5,8 +5,9 @@
 
 export type CaptureResult = { ok: true; stream: MediaStream } | { ok: false; reason: 'unsupported' | 'blocked' };
 
-export function captureVideoStream(video: HTMLVideoElement): CaptureResult {
-  const capture = (video as HTMLVideoElement & { captureStream?: () => MediaStream }).captureStream;
+/** 也用来取中文配音那个 <audio> 的声音（片段录制混音，DECISIONS §76） */
+export function captureVideoStream(video: HTMLMediaElement): CaptureResult {
+  const capture = (video as HTMLMediaElement & { captureStream?: () => MediaStream }).captureStream;
   if (typeof capture !== 'function') return { ok: false, reason: 'unsupported' };
   try {
     return { ok: true, stream: capture.call(video) };
