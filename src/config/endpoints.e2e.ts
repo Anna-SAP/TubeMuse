@@ -11,6 +11,7 @@ export const ENDPOINTS: Endpoints = {
   x: `${MOCK}/x/2`,
   openai: `${MOCK}/openai/v1`,
   douban: `${MOCK}/douban`,
+  xyzMedia: `${MOCK}/xyzmedia`,
 };
 
 export type { Endpoints };
@@ -20,6 +21,12 @@ export type { Endpoints };
  * 不能从 ./endpoints 再导出：e2e 构建会把对 ./endpoints 的导入换成本文件自己。
  */
 export const DOUBAN_IMAGE_ORIGINS: readonly string[] = Array.from({ length: 9 }, (_, i) => `https://img${i + 1}.doubanio.com`);
+
+/** e2e：仿小宇宙页面的封面放在本机 mock 的 /xyzimg/ 下（同样带 Access-Control-Allow-Origin: *），测试不出网 */
+export const XYZ_IMAGE_ORIGINS: readonly string[] = ['https://image.xyzcdn.net', MOCK];
+
+/** e2e：本机 mock 的 /xyz/ 下是仿小宇宙网页版的页面（单集页 /xyz/episode/<ID>） */
+export const XYZ_PAGES: readonly string[] = ['https://www.xiaoyuzhoufm.com/', `${MOCK}/xyz/`];
 
 /** e2e：mock 授权页直接 302 回跳 https://<扩展ID>.chromiumapp.org/?code=…（授权码再到 mock 的 /oauth/token 换令牌） */
 export const GOOGLE_OAUTH_AUTHORIZE_URL = `${MOCK}/oauth/authorize`;

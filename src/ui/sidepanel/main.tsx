@@ -16,12 +16,13 @@ import { SubtitlesView } from './SubtitlesView';
 import { ClipsView } from './ClipsView';
 import { XhsView } from './XhsView';
 import { EmailView } from './EmailView';
+import { XyzView } from './XyzView';
 import { ReminderBanner } from './ReminderBanner';
 import { HostAccessBanner } from '../shared/host-access';
 import { useMuseAsk } from './MuseAsk';
 import { runScheduledJobs } from '../../services/summary-service';
 
-type Tab = 'find' | 'discover' | 'douban' | 'xhs' | 'email' | 'subtitles' | 'clips' | 'records' | 'profile' | 'changes';
+type Tab = 'find' | 'discover' | 'douban' | 'xhs' | 'xyz' | 'email' | 'subtitles' | 'clips' | 'records' | 'profile' | 'changes';
 
 function SetupBanner() {
   const ctx = appCtx();
@@ -206,6 +207,7 @@ function App() {
               ['discover', '发现'],
               ['douban', '豆瓣'],
               ['xhs', '小红书'],
+              ['xyz', '小宇宙'],
               ['email', 'eMails'],
               ['subtitles', '字幕'],
               ['clips', '片段'],
@@ -243,6 +245,7 @@ function App() {
         )}
         {tab === 'douban' && <DoubanView />}
         {tab === 'xhs' && <XhsView />}
+        {tab === 'xyz' && <XyzView />}
         {tab === 'email' && <EmailView />}
         {tab === 'subtitles' && <SubtitlesView />}
         {tab === 'clips' && <ClipsView />}

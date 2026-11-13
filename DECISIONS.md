@@ -1661,3 +1661,47 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - Mozilla 之后人工复查时可能对某些写法提出要求（例如 Preact 内部的 `innerHTML`、Chrome 分支里留着的 `sidePanel` 字样，lint 都只是警告）；有的话按要求改。
   - Firefox 安装确认框里的数据声明是 Mozilla 规定的固定说法，比 README 里的具体说明笼统。
 - **日后如何替换**：改声明只改 `FIREFOX_DATA_COLLECTION`（新增会把数据发出去的功能时要回来对一遍）；升级 web-ext 改 `tools/amo/package.json` 后重新生成锁文件（单测核对两者一致）；不想要签名就删掉 `release.yml` 最后一步，其余不受影响；想自动更新就在 Firefox manifest 加 `update_url`，由发布流程顺带生成更新清单。
+
+## 72. 小宇宙：中英字幕、字幕下载、收藏、收听记录、音频片段 + 字幕的分享快照（2026-11-13，用户要求）
+
+- **需求**：侧边栏新增"小宇宙"功能区，辅助在小宇宙网页版（`www.xiaoyuzhoufm.com`）单集页上听播客：① 高质量的中文、英文实时字幕（要明显好于用户现在用的 Windows 11 系统实时字幕）；② 字幕下载；③ 单集收藏、节目收藏；④ 收听记录；⑤ 音频片段 + 字幕的可视化快照与分享（用户给了效果图：封面、标题、节目名、"TubeMuse × 小宇宙"，中文字幕引文 + 英文，播放按钮 + 波形高亮所选区间 + "04:52 – 05:18 (26s)"，"分享这段快照 / 导出图片 / 复制链接"，页面进度条上标出起止）。
+- **外部事实（2026-11-13 核实）**
+  - 单集页是 Next.js 渲染的：`script#__NEXT_DATA__` 里有 `episode.eid / title / description / duration / enclosure.url / media.source.url / pubDate / podcast{pid,title,image,color}`；页面上 `header h1`、`.podcast-title a.name`（指向 `/podcast/<pid>`）、`time[datetime]`、`section[aria-label="节目show notes"]`；底部播放器 `section[aria-label="播放器"]`：`.progress-wrap`、`.label.left / .right`、"后退15秒 / 播放 / 前进15秒"按钮和一个 `<audio src="https://media.xyzcdn.net/…" preload="none">`（没有 `crossorigin`）。单集 ID、节目 ID 都是 24 位十六进制。站内跳转后 `__NEXT_DATA__` 不更新，以页面上显示的为准。
+  - **页面上的 `<audio>` 取不到声音**：在 Chromium 156 里点播放后对它调 `captureStream()`，报 `SecurityError: Cannot capture from element with cross-origin data`。CDN（`media.xyzcdn.net`，腾讯 COS + EdgeOne）的 GET 响应不带 `Access-Control-Allow-Origin`（预检带，但缓存命中的 GET 不带），给 `<audio>` 加 `crossorigin` 会让它连播都放不了。所以自动字幕那套"`captureStream()` 边播边采"（§30）在小宇宙上用不了。
+  - 音频文件：自托管的节目是 m4a（AAC-LC，`ftyp` 后紧跟 `moov`；示例 #817 是 32 kHz 单声道、111237 帧、编辑列表跳过 0.064 秒）；从 RSS 同步来的节目也镜像在同一个 CDN，格式随原文件（《硅谷101》是 106 MB、44.1 kHz 立体声的**可变码率 mp3**，带 Xing 目录）。CDN 支持分段读取（206 + Content-Range）。封面在 `image.xyzcdn.net`，对任何来源都返回 `Access-Control-Allow-Origin: *`。
+  - **可变码率 mp3 跳转后浏览器报告的时间是错的**：在 Chromium 里把《硅谷101》那集跳到 1740 秒，实际放的是 1781.4 秒的声音；跳到 2940 秒，实际是 2998.5 秒（用测试页同源播放、`captureStream` 录下来与 ffmpeg 全文件解码做包络互相关）。规律与 ffmpeg 的快速定位一致：跳到 T 时取 Xing 目录第 i = ⌊T / 时长 × 100⌋ 项指向的字节（数据开头 + toc[i] × 总字节 / 256），把那一帧当成 i × 时长 / 100 秒，往后解码到 T 才开始放——按这个规则算出的差值与实测吻合到 0.05 秒；在测试夹具（600 秒、16 kHz 的可变码率 mp3）上吻合到 0.17 秒。m4a 和恒定码率 mp3 跳转是准的（< 0.1 秒）。
+  - Chromium 的 `decodeAudioData` 能解一段加了 ADTS 头的 AAC 帧、一段直接拼起来的 mp3 帧（都验证过，解出的时间与 ffmpeg 对得上 0.02 秒以内）；Firefox 161 的内容脚本里也能（Firefox e2e）。
+- **用户的决定（开工前问过，2026-11-13）**：① 音频来源选"读公开音频文件"（放弃的两个方案见下）——这是红线变更：网络出口新增 `media.xyzcdn.net`；② 封面加载 `image.xyzcdn.net`（只进 CSP img-src）；③ 用户的 OpenAI API 已经有额度，小宇宙字幕默认用 OpenAI 转写。CLAUDE.md 第 1、2 节同步。
+- **做法**
+  - **读音频（后台，`services/xyz-service.ts`）**：只读 `ENDPOINTS.xyzMedia` 下的地址（页面上读到的地址不是这个 CDN 就拒绝）；每次用 `Range: bytes=a-b` 读一段，`credentials: 'omit'`、`referrerPolicy: 'no-referrer'`；服务器不认分段、一次给太多就停（上限 8 MB），不会把整个文件读进内存。认格式、建索引是纯函数（`core/podcast-audio.ts`）：m4a 解析 moov 的帧表（stsz / stsc / stco·co64 / stts / esds / elst，moov 在文件末尾时只多读几个盒子头）；mp3 跳过 ID3、认帧头、读 Xing / Info 头。可变码率 mp3 先把整个文件流式读一遍、只看帧头（`Mp3Scanner`：每 64 帧记一个位置，另记 Chrome 的 100 个跳转锚点的帧序号），结果存本机（`xyzScans`，最多 20 集，只有帧位置），之后不再扫。索引在后台内存里留最近 4 集。
+  - **两种时间**：字幕按"真实时间"（从文件开头逐帧数）存，与怎么跳转无关；页面脚本记下最近一次跳转的目标（`seeking` 事件；脚本加载前就跳过的，按当前所在已播放区间的起点推），向后台问"真实时间 − 页面时间"（`pageOffset`：m4a、恒定码率为 0；可变码率按上面的规则，Firefox 按 Mozilla 源码里的线性插值规则——**没实测过**）。点字幕跳转、"试听"时反过来换算，最多两轮逼近。
+  - **出字幕（页面脚本 `content/xyz.ts`）**：开启后，从播放位置前 1 秒起找"还没处理的地方"，向后台要一段（第一次 12 秒，之后 30 秒），用 `OfflineAudioContext` 在本机解码成 16 kHz 单声道，用自动字幕的 `Segmenter` 按停顿切句（播客参数：停顿 0.5 秒交出，一句最长 12 秒——比视频的 7 秒长，转写有更多上下文）。段尾那句没说完就留给下一段从它的开头接着读；从任意位置开始读（刚开始、刚跳转）时往前多读 6 秒、只要跨进要处理位置的那几句，免得把一句话从中间切开（e2e 发现跳转后会多出半句）。一句一句编成 WAV 交给后台转写，同时在途不超过 6 句（排队，不丢句）；一段的句子都回来后告诉后台"这段处理完了"，后台记下（以后不再读、不再花钱）并立即校对 / 翻译这一段。边听边转写最多提前 `lookaheadSec`（默认 120 秒）；暂停时转写到那里就停。"生成整集字幕"从 0 秒开始把没处理的地方都处理完，完成后自动退出并说一声。
+  - **转写**：OpenAI `gpt-transcribe`（与自动字幕同一个设置），提示词是"节目名：单集标题"加前几句（≤300 字），提高人名、术语的准确率；不发单集 ID 和链接。同一段已有字幕（重叠过半）不再转写。浏览器识别（免费，可在侧边栏一键切换）：把读到的声音按 1 倍速放进一条不出声的 `MediaStreamDestination`，交给 `SpeechRecognition.start(track)`，用自动字幕的 `LiveTranscript` 断行，按这条"放音"的时间轴换算回真实时间。
+  - **校对 / 翻译（质量的关键）**：每段（约 30 秒、最多 24 句）一次大模型调用，同时做两件事：中文节目——中文只校对（改错字和同音字、补标点、按参考资料统一人名和术语，不改写、不增删）、英文是译文；英文节目反过来。参考资料是节目名、单集标题、简介前 1200 字（小宇宙的简介里通常有嘉宾名、术语、时间戳）；附前 3 句已校对的中文作上下文；句子用短编号对回去，大模型漏掉的句子标出原因、原文照常显示。用"12. 自动字幕"的字幕翻译模型（默认 `claude-haiku-5-5`）。这是相对系统实时字幕最明显的改进：系统字幕没有标点、不知道专有名词、不能回头改。
+  - **花费**：转写、校对都记进"字幕 $"（`subtitleLedger`，与自动字幕共用每日预算），走同一套预扣 / 结算 / 限流暂停（从 `subtitle-service.ts` 导出了 `holdSpend`、`closeFailedHold`、`throwIfRatePaused`、`rateLimited` 等，自动字幕的行为不变）。`recordTranslation` 多一个"句数"参数：一次校对一批，按句数记，界面上的"翻译 N 句"才对。一小时约 $0.27（转写）+ $0.03（校对）。
+  - **显示**：页面最外层（`document.documentElement`）挂一个 Shadow DOM 的元素，固定在底部播放器上方居中：第一行中文（白）、第二行英文（浅黄），只用 `textContent`；`pointer-events: none`。还没校对的那句先把原文放在它自己语言的那一行，校对好了替换。显示方式（双语 / 中文 / English / 不显示）、字号在设置里，侧边栏可直接切。快照的起止标记画在同一个 Shadow DOM 里、按进度条的位置覆盖在它上方，不碰小宇宙的元素。
+  - **字幕下载**：SRT（中英双语 / 中文 / English）、WebVTT 中英双语、纯文本（带时间）、Markdown 文稿（带标题、链接、"机器生成"说明）。没生成完的注明覆盖到哪里（SRT 没有注释语法，不写）。文件由侧边栏交给浏览器存进下载文件夹。
+  - **收藏**：单集、节目两类，复用小红书 / eMails 的标签逻辑（`core/collection.ts`、`ui/shared/tags.tsx`）；只存本机（`xyzSaved`），不会在小宇宙上订阅或收藏。
+  - **收听记录**：复用观看追踪的 `stepTracker`（只计在播放的时间、拖动跳过的不算），每 15 秒和离开页面时上报累计值；后台按集合并（`xyzListens`：听过的区间、有效收听、按天的时长、最后位置；同一段会话重复上报只记增量），判定沿用"6. 观看追踪"的阈值（听完 / 听了一部分 / 只听了一点）。不进每日总结（那是 YouTube 的观看画像），以后需要可以接。设置可关。
+  - **快照**：侧边栏里用画布画 1080 宽的卡片（`ui/sidepanel/xyz-card.ts`）：节目主题色渐变底、白卡、封面（`crossOrigin = anonymous`，CDN 允许，画进去照样能导出）、标题（最多两行）、节目名、"TubeMuse × 小宇宙"、引号 + 中文字幕（最多 8 行）+ 英文（最多 6 行）、播放按钮样式的圆、**真实波形**（向后台要片段前后各一段音频，在侧边栏解码后按响度画 72 根柱子，所选区间高亮，两端标记）、"mm:ss – mm:ss (Ns)"、单集链接。卡片上的文字默认是这一段的字幕，可以改。导出图片（PNG 存进下载文件夹，同时放进剪贴板，沿用 Capture 的写法 §62）、导出音频片段（这一段解码成 44.1 kHz WAV）、复制链接、分享（`navigator.share` 带图片文件；浏览器不支持时把图片放进剪贴板并说明）、试听（页面上从起点放到终点自动暂停）。做过的记进"我的快照"（`xyzSnapshots`，只有元数据，最多 100 条）。片段 1–60 秒；默认是当前这句，不够 20 秒连上后面几句。
+  - **快捷键**：没加新的。`Alt+Shift+S` 发的是自动字幕的开关消息，小宇宙脚本也接这条消息，在单集页上开关这一集的字幕。
+- **Firefox 的数据收集声明（§71）对了一遍，不用改**：小宇宙字幕把这一集的音频和简介摘录发给你选的转写 / 大模型服务，属于已声明的"网站内容"；收听记录只在本机。
+- **权限：没有新增。** 网络出口多了 `media.xyzcdn.net`（host_permissions + connect-src，构建脚本从 `ENDPOINTS` 生成）；`image.xyzcdn.net` 只进 img-src；注入范围多了 `www.xiaoyuzhoufm.com`。冒烟测试（Chrome 正式版、Firefox `.xpi`）逐项核对。
+- **构建检查**：小宇宙脚本里不得出现 `fetch(`、`XMLHttpRequest`、`WebSocket`、`sendBeacon`、`EventSource`、`innerHTML / outerHTML / insertAdjacentHTML`、`document.cookie`、页面存储、`.click()`、`dispatchEvent(`、写扩展存储、`eval`、`window.open`、`.download =`、`getUserMedia / getDisplayMedia`、`captureStream`；小宇宙网站本身和图片 CDN 不得出现在网络出口里。
+- **放弃了什么**
+  - **`tabCapture` 采整个标签页的声音**（问用户时的第二个方案）：要新增 `tabCapture`、`offscreen` 权限；每个标签页都要先点一次工具栏图标或按快捷键才能采；采集期间标签页被静音、要自己再放一遍；只能边听边出（比声音晚 1–2 秒）；字幕下载只含听过的部分；Firefox 没有这个接口。
+  - **给页面的 `<audio>` 加 `crossorigin`**：CDN 缓存的响应不带 CORS 头，加了就放不了；而且要改小宇宙的元素。
+  - **一次下载整个文件再解码**：一集几十到一百多 MB、解码后上 GB 的内存；分段读只读需要的部分。
+  - **整段（30 秒）发给转写、按字数均分时间**：一段里没有时间戳，字幕对不准；按停顿切句、一句一个请求，时间来自切句。
+  - **小宇宙自己的"AI 文稿"**：只在 App 里，接口要登录令牌；不碰。
+  - **侧边栏或 offscreen 文档里解码**：侧边栏可能关着；offscreen 要新权限、Firefox 没有。页面脚本里解码最自然（你就在这一页听）。
+  - **只用浏览器识别**：质量与系统实时字幕同级（没有标点、专有名词常错），正是用户要摆脱的；保留为免费的备选。
+  - **自创时间参数的分享链接**（`?t=`）：小宇宙网页版不认，CLAUDE.md 也不让自创；链接旁写明片段起止。
+  - **微信 / 微博分享按钮**（效果图里有）：要么要登录、要么是发帖，违反"只建议，不代办"；用系统分享面板，由你选发给谁。
+- **测试**：单测 27 条（`tests/unit/xyz.test.ts`：m4a 帧表与 ADTS、moov 在末尾、HE-AAC 配置；恒定码率 mp3 的帧号与预读；可变码率要先扫描、扫描时字节不连续报错、Chrome 跳转规则在夹具上的差值；波形与 WAV；页面识别与信息校验（音频只认 CDN、封面只认图片 CDN）；已处理时间段、两行显示、导出四种格式、校对结果校验、花费估算、提示词不带 ID 和链接；收藏与标签；收听记录的增量合并；快照的起止、默认片段、文字、分享文字；后台：只读 CDN 且不带 Cookie、付费节目被拒时说清楚、转写的提示词与记账、处理完一段就校对 / 翻译、关掉校对不调大模型、漏句标原因、预算用完是致命错误、拒收格式不对的音频、收听记录与开关）。e2e 新增一组 `xyz`（CI 多一个并行 job）：仿小宇宙单集页 + 两个音频夹具（`tests/fixtures/xyz-tones.m4a`、`xyz-tones-vbr.mp3`：每 3 秒一段音、每段音高不同，mock 转写据此认出"第几段"），跑通：默认不读音频；开启后字幕与正在放的那段音对得上；只发节目名 / 标题 / 简介 / 转写文字给大模型；显示方式；点一句跳过去；整集生成（30 段都对、开始时间误差 < 0.4 秒）；下载 SRT / Markdown；快照的进度条标记、卡片 PNG、复制链接、WAV、试听到终点暂停、"我的快照"；收藏与标签；收听记录；没点过页面上的任何东西、页面元素一个没改；改用浏览器识别后不发音频；**可变码率 mp3 跳到 160 秒后，测试自己从同源播放器录下正在放的声音、认出是第几段，与屏幕上的字幕一致**（差值 −3.63 秒）。Firefox e2e 加一节：真的 Firefox 里出中英字幕、对得上、音频由后台分段读。
+- **已知限制 / 风险**
+  - Firefox 上可变码率 mp3 跳转后的换算没在真实节目上实测过（规则是按 Mozilla 源码推的）。没有目录的可变码率 mp3 跳转后可能对不齐（侧边栏注明）。
+  - 第一次出字幕多用一份流量；可变码率 mp3 第一次要读完整个文件建索引（几十秒）。
+  - 小宇宙改页面结构或换 CDN 时要跟着改：页面结构只影响读标题、封面等（`__NEXT_DATA__` 兜底）；换 CDN 要改网络出口（红线变更，要先问用户）。
+  - 转写与校对的真实质量只能在用户的账号上验证（打卡清单列了逐项步骤）。
+- **日后如何替换**：转写模型改 `subtitles.asrModel`；校对模型改 `subtitles.translationModels`；切句参数、窗口大小、提前量在 `config/defaults.ts` 的 `XYZ`；格式支持在 `core/podcast-audio.ts`（要支持别的容器，只需新增一种索引和 `planWindow / extractWindow` 的分支）；想用实时流式转写，替换 `transcribeXyzSegment` 一处。

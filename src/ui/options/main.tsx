@@ -5,7 +5,9 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { BROWSER_SPEECH_LANGS, DEFAULT_SETTINGS, GOOGLE_OAUTH, GOOGLE_OAUTH_SCOPE, LLM_TASKS, MULTI_CC, MULTI_CC_LANGS, SUBTITLE_LANGS, type BrowserSpeechLang, type LlmTask, type LlmTier, type SubtitleLang } from '../../config/defaults';
 import { ORIGINAL } from '../../core/multi-captions';
-import { asrPrice, hourlyEstimateUsd, llmPrice, localPreparePairs } from '../../core/subtitles';
+import { asrPrice, formatUsd, hourlyEstimateUsd, llmPrice, localPreparePairs } from '../../core/subtitles';
+import { estimateXyzUsd } from '../../core/xyz';
+import { xyzPolishModel } from '../../services/xyz-service';
 import { subtitleTranslationModel } from '../../services/subtitle-service';
 import { browserSpeechEnv, detectLocal, installLocal, type LocalAvailability } from '../../services/speech';
 import { ENDPOINTS } from '../../config/endpoints';
@@ -712,7 +714,7 @@ function App() {
       </Section>
 
       <Section title="17. 数据" id="data">
-        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签、eMails 收藏的文章与评分），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
+        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签、eMails 收藏的文章与评分、小宇宙的字幕、收藏、收听记录与快照清单），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
         <div class="row">
           <button
             class="btn"
@@ -775,6 +777,55 @@ function App() {
         )}
       </Section>
 
+      <Section title="18. 小宇宙" id="xyz">
+        <p class="muted small">
+          在小宇宙网页版（www.xiaoyuzhoufm.com）的单集页上：中英字幕（叠在页面底部播放器上方）、字幕下载、单集 / 节目收藏、收听记录、音频片段 + 字幕的分享快照，都在侧边栏"小宇宙"页。
+          字幕要读这一集的公开音频文件（只读 media.xyzcdn.net 上你打开的那一集，分段读，不保存音频），转写与校对 / 翻译的花费记在"字幕 $"里，与"12. 自动字幕"共用每日预算和转写模型、字幕翻译模型。
+          收藏和收听记录只存在本机，不会在小宇宙上订阅、收藏或评论。
+        </p>
+        <label class="inline">
+          <input type="checkbox" data-testid="xyz-enabled" checked={settings.xyz.enabled} onChange={(e) => updateSection('xyz', { enabled: e.currentTarget.checked })} />
+          启用小宇宙功能（关掉后页面上不再出现字幕层、不再记收听，已有收藏、记录和字幕保留）
+        </label>
+        <div class="grid">
+          <label class="field">
+            <span>转写方式</span>
+            <select class="input" data-testid="xyz-asr" value={settings.xyz.asrEngine} onChange={(e) => updateSection('xyz', { asrEngine: e.currentTarget.value as Settings['xyz']['asrEngine'] })}>
+              <option value="openai">OpenAI（{settings.subtitles.asrModel || 'gpt-transcribe'}，质量最好，按分钟计费）</option>
+              <option value="browser">浏览器自带的语音识别（免费，只能按 1 倍速边放边认）</option>
+            </select>
+            <span class="muted small">
+              {settings.xyz.asrEngine === 'openai'
+                ? `需要 OpenAI API Key。一小时的节目约 ${formatUsd(estimateXyzUsd(3600, settings.subtitles.asrModel || 'gpt-transcribe', xyzPolishModel(settings)))}（含校对 / 翻译）。`
+                : `${SPEECH_PLATFORM.hasCloud ? '装了本地语音包时在本机识别，否则声音由浏览器发往 Google。' : `只在本机用 ${SPEECH_PLATFORM.packSource} 的语音模型识别。`}质量接近系统自带的实时字幕，靠大模型校对补标点、改错字。`}
+            </span>
+          </label>
+          <label class="field">
+            <span>页面上的字幕层</span>
+            <select class="input" value={settings.xyz.display} onChange={(e) => updateSection('xyz', { display: e.currentTarget.value as Settings['xyz']['display'] })}>
+              <option value="bilingual">中英双语</option>
+              <option value="zh">只看中文</option>
+              <option value="en">只看英文</option>
+              <option value="off">不在页面上显示</option>
+            </select>
+          </label>
+          <NumField label="提前转写（秒）" value={settings.xyz.lookaheadSec} min={30} max={600} step={10} hint="边听边转写时最多提前这么多；暂停时转写到这里就停" onChange={(v) => updateSection('xyz', { lookaheadSec: v })} />
+          <NumField label="字号倍数" value={settings.xyz.fontScale} min={0.6} max={2} step={0.1} onChange={(v) => updateSection('xyz', { fontScale: v })} />
+        </div>
+        <label class="inline">
+          <input type="checkbox" data-testid="xyz-polish" checked={settings.xyz.polish} onChange={(e) => updateSection('xyz', { polish: e.currentTarget.checked })} />
+          用大模型校对转写（改错字和同音字、补标点、按节目简介统一人名和术语）并译出另一种语言（中文节目出英文，英文节目出中文）：用"12. 自动字幕"里的字幕翻译模型
+        </label>
+        <label class="inline">
+          <input type="checkbox" data-testid="xyz-auto" checked={settings.xyz.autoStart} onChange={(e) => updateSection('xyz', { autoStart: e.currentTarget.checked })} />
+          打开单集页就开始字幕（默认关：花钱的转写由你点"开始字幕"或按 Alt+Shift+S 开始）
+        </label>
+        <label class="inline">
+          <input type="checkbox" data-testid="xyz-tracking" checked={settings.xyz.tracking} onChange={(e) => updateSection('xyz', { tracking: e.currentTarget.checked })} />
+          记下在小宇宙上听了什么（收听记录，只在本机）
+        </label>
+      </Section>
+
       <Section title="网络出口" id="egress">
         <p class="muted small">本扩展只会连接以下地址（由内容安全策略强制限制）：</p>
         <ul class="small">
@@ -802,6 +853,12 @@ function App() {
           <li>
             <code>https://img1–9.doubanio.com</code>（豆瓣条目海报，只作图片加载，地址来自 RSS）
           </li>
+          <li>
+            <code>{ENDPOINTS.xyzMedia}</code>（小宇宙的音频 CDN：只读你打开的那一集的公开音频，分段读，用来出字幕、画快照波形、导出音频片段；不带 Cookie、不保存音频）
+          </li>
+          <li>
+            <code>https://image.xyzcdn.net</code>（小宇宙的单集 / 节目封面，只作图片加载，画进快照卡片）
+          </li>
         </ul>
         <p class="muted small">
           Google 登录 / 授权窗口（accounts.google.com）由浏览器自己打开，授权结果回跳到 {new URL(redirectUrl).hostname.split('.').slice(1).join('.')} 由浏览器直接截获；
@@ -816,6 +873,9 @@ function App() {
         </p>
         <p class="muted small">
           注入小红书网页版（www.xiaohongshu.com、www.rednote.com）的脚本不发任何网络请求：页面内助手只读页面数据里各笔记的发布时间；另一个脚本在笔记卡片作者那一行、笔记详情的日期旁写上发布时间，放"收藏"按钮和弹窗（只用文字写入，不改动小红书自己的元素，不点击小红书的任何按钮）。收藏经扩展后台校验后存在本机。
+        </p>
+        <p class="muted small">
+          注入小宇宙网页版（www.xiaoyuzhoufm.com）的脚本只在单集页上工作：读这一集的标题、节目名、封面、音频地址、时长、发布时间和节目简介（简介只用来让大模型校对人名和术语），看页面上 &lt;audio&gt; 的播放状态（收听记录、字幕对时），不读评论和别的单集。你开启字幕后，它向扩展后台要这一集音频的一段一段，在本机解码、切句，交给后台转写和校对 / 翻译，并在播放器上方叠一层只读字幕；做快照时在进度条上方标出片段起止，你点"试听"或点一句字幕时把播放位置跳过去。它本身不发任何网络请求，不点击小宇宙的任何按钮，不改动小宇宙自己的元素。
         </p>
         <p class="muted small">
           注入 Gmail（mail.google.com）的脚本只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"：只读打开的这一封的主题、发件人名字和正文，不读发件人地址、收件人和邮件列表；不发任何网络请求，不往 Gmail 页面写任何东西，不点击任何按钮，不碰 Cookie 与本地存储。

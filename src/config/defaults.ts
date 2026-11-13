@@ -227,6 +227,27 @@ export const DEFAULT_SETTINGS = {
      */
     fetchCaptions: true,
   },
+  /**
+   * 小宇宙（用户 2026-11-13 要求，见 DECISIONS §72）：单集页的中英字幕、字幕下载、收藏、收听记录、片段快照。
+   * 字幕要读这一集的公开音频文件（media.xyzcdn.net），转写与校对 / 翻译的花费记在"字幕 $"里，与自动字幕共用每日预算。
+   */
+  xyz: {
+    enabled: true,
+    /** 转写方式：OpenAI（默认，用户 2026-11-13 选择：质量明显好于系统自带的实时字幕）或浏览器自带的语音识别（免费，只能按 1 倍速边放边认） */
+    asrEngine: 'openai' as SubtitleAsrEngine,
+    /** 打开单集页就开始出字幕。默认关闭：花钱的转写由你点"开始字幕"或按 Alt+Shift+S 开始 */
+    autoStart: false,
+    /** 用大模型校对转写（改错字、补标点、统一人名术语）并译出另一种语言：中文播客出英文，英文播客出中文 */
+    polish: true,
+    /** 边听边转写时最多提前多少秒（暂停时转写到这里就停，不一下子把整集都花掉） */
+    lookaheadSec: 120,
+    /** 页面上的字幕层显示什么 */
+    display: 'bilingual' as 'bilingual' | 'zh' | 'en' | 'off',
+    /** 字幕层字号倍数 */
+    fontScale: 1,
+    /** 记下在小宇宙上听了什么（只在本机） */
+    tracking: true,
+  },
   /** 侧边栏界面偏好 */
   ui: {
     /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
@@ -630,6 +651,66 @@ export const MUSE = {
   captionFetchMs: 8000,
   /** 咨询包末尾给 Muse 的回答要求（用户 2026-11-11 手测后改定的原话，见 DECISIONS §63） */
   answerRule: '视频里的说法必须引用位置或原文；通用概念问题可用通用知识回答，但必须标明「这是通用知识，不是视频原话」。',
+} as const;
+
+/** 小宇宙（见 DECISIONS §72）的内部参数 */
+export const XYZ = {
+  titleMaxChars: 200,
+  nameMaxChars: 80,
+  /** 页面上读到的节目简介最多留多少字（只用来让大模型校对人名和术语） */
+  showNotesMaxChars: 4000,
+  /** 发给大模型的简介摘录最多多少字（数据最小化） */
+  promptNotesChars: 1200,
+  /** 一次读多少秒音频、切句、转写、校对（第一次开始或跳转后先读短一点，字幕出得快） */
+  windowSec: 30,
+  firstWindowSec: 12,
+  /** 从任意位置开始读（刚开始、刚跳转）时往前多读这么多秒，好找到正在说的那句话的开头 */
+  leadSec: 6,
+  /** 切句：播客句子比视频长，一段最长 12 秒（更多上下文，转写更准） */
+  segmenter: { pauseSec: 0.5, minSegmentSec: 2, longPauseSec: 1.0, maxSegmentSec: 12 },
+  /** 一段最长多少秒（后台按这个校验收到的音频） */
+  maxSegmentSec: 13,
+  /** 同时在途的转写请求上限 */
+  maxInFlight: 6,
+  /** 转写的提示词：节目名、标题与前文，最多多少字 */
+  asrPromptChars: 300,
+  /** 校对 / 翻译：每次最多多少句；附带前面几句已校对的中文作上下文 */
+  polishMaxCues: 24,
+  polishContextCues: 3,
+  polishMaxOutputTokens: 4000,
+  /** 预算护栏按这个预留（偏保守），实际按返回的用量记账 */
+  polishEstimate: { inputTokens: 2500, outputTokens: 1500 },
+  /** 设置页"一小时约花多少"：每 windowSec 秒一次的典型用量 */
+  polishTypical: { inputTokens: 1400, outputTokens: 700 },
+  cueMaxChars: 600,
+  /** 一句字幕结束后在屏幕上再停留多久 */
+  lingerSec: 0.6,
+  /** 本机最多保留多少集的字幕（超过时删最久没更新的） */
+  maxTranscripts: 60,
+  /** 可变码率 mp3 的扫描结果最多记几集 */
+  maxScans: 20,
+  /** 读音频：一次最多读多少字节（防止服务器不认分段读取时把整个文件读下来） */
+  maxRangeBytes: 8 * 1024 * 1024,
+  /** 扫描可变码率 mp3：整个文件最多多大 */
+  maxScanBytes: 600 * 1024 * 1024,
+  /** 收藏最多多少条、每条最多几个标签 */
+  maxSaved: 5000,
+  maxTags: 20,
+  /** 收听记录最多多少集；每集只留最近多少段会话的累计值 */
+  maxListens: 1000,
+  listenSessionsKept: 20,
+  /** 快照片段：最短、最长、默认多少秒 */
+  minSnapSec: 1,
+  maxSnapSec: 60,
+  defaultSnapSec: 20,
+  /** 快照波形：片段两边各多显示多少（占片段长度的比例，最少 6 秒） */
+  snapContextRatio: 0.6,
+  snapContextMinSec: 6,
+  waveformBars: 72,
+  /** "我的快照"最多留多少条 */
+  snapshotLogMax: 100,
+  /** 状态推给侧边栏的最短间隔 */
+  stateEveryMs: 1000,
 } as const;
 
 /** 观看追踪的内部参数 */

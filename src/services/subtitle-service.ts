@@ -49,6 +49,31 @@ const PROVIDER_NAMES: Record<LlmProvider, string> = { anthropic: 'Anthropic', op
  */
 const rateLimitPauses = new WeakMap<AppContext, { until: number; failures: number; reason: string; hint?: string }>();
 
+/** OpenAI 转写被限流后的暂停期间：不发请求，直接说明还要等多久 */
+export function throwIfRatePaused(ctx: AppContext): void {
+  const pause = rateLimitPauses.get(ctx);
+  if (pause && ctx.now() < pause.until) {
+    const left = pause.until - ctx.now();
+    throw new AppError('llm_rate', pause.reason, `暂停期间不发请求（被拒的请求也计入每分钟上限），还要等 ${Math.ceil(left / 1000)} 秒；这期间的句子先跳过，拖回去重看时会补上`, left);
+  }
+}
+
+/** 转写请求失败：被限流时记下暂停（所有标签页共用）并换成带等待时间的错误；别的错误原样返回 */
+export function rateLimited(ctx: AppContext, e: unknown): unknown {
+  if (e instanceof AppError && e.kind === 'llm_rate') {
+    const failures = (rateLimitPauses.get(ctx)?.failures ?? 0) + 1;
+    const wait = backoffMs(failures, e.retryAfterMs);
+    rateLimitPauses.set(ctx, { until: ctx.now() + wait, failures, reason: e.message });
+    return new AppError('llm_rate', e.message, `暂停 ${Math.ceil(wait / 1000)} 秒再继续（被拒的请求也计入每分钟上限，连续重发只会一直被拒）。${e.hint ?? ''}`, wait);
+  }
+  return e;
+}
+
+/** 转写成功：清掉限流暂停 */
+export function clearRatePause(ctx: AppContext): void {
+  rateLimitPauses.delete(ctx);
+}
+
 export async function subtitleSpend(ctx: AppContext): Promise<SubtitleSnapshot> {
   const [settings, ledger] = await Promise.all([stores.settings.read(ctx.kv), stores.subtitleLedger.read(ctx.kv)]);
   const now = ctx.now();
@@ -85,7 +110,7 @@ function budgetError(snap: SubtitleSnapshot): AppError {
   );
 }
 
-function missingOpenAiKey(): AppError {
+export function missingOpenAiKey(): AppError {
   return new AppError(
     'llm_key',
     '自动字幕需要 OpenAI API Key：语音转写只能用 OpenAI（Anthropic 没有语音转文字接口）',
@@ -97,7 +122,7 @@ function missingOpenAiKey(): AppError {
  * 预扣一笔：写进账本，多个标签页同时出字幕时守得住预算，service worker 中途被回收时这笔钱也还在账上。
  * 返回预扣的编号，请求回来后由调用方结算。
  */
-async function holdSpend(ctx: AppContext, usd: number, what: string): Promise<string> {
+export async function holdSpend(ctx: AppContext, usd: number, what: string): Promise<string> {
   const settings = await stores.settings.read(ctx.kv);
   const id = newId('t');
   const now = ctx.now();
@@ -111,7 +136,7 @@ async function holdSpend(ctx: AppContext, usd: number, what: string): Promise<st
 }
 
 /** 请求失败时结算：服务方明确拒绝的退回；已计费、不知道有没有计费的都留在账上 */
-async function closeFailedHold(ctx: AppContext, holdId: string, e: unknown, charged?: (l: SubtitleLedger, usage: { inputTokens: number; outputTokens: number }) => SubtitleLedger): Promise<void> {
+export async function closeFailedHold(ctx: AppContext, holdId: string, e: unknown, charged?: (l: SubtitleLedger, usage: { inputTokens: number; outputTokens: number }) => SubtitleLedger): Promise<void> {
   const billing = e instanceof AppError ? e.billing : { state: 'unknown' as const };
   await stores.subtitleLedger.update(ctx.kv, ctx.locker, (l) => {
     if (billing?.state === 'billed' && billing.usage && charged) return charged(releaseSubtitleHold(l, holdId), billing.usage);
@@ -240,11 +265,7 @@ export async function transcribeSegment(ctx: AppContext, input: SegmentInput): P
     .join(' ')
     .slice(-SUBTITLES.asrPromptChars);
 
-  const pause = rateLimitPauses.get(ctx);
-  if (pause && ctx.now() < pause.until) {
-    const left = pause.until - ctx.now();
-    throw new AppError('llm_rate', pause.reason, `暂停期间不发请求（被拒的请求也计入每分钟上限），还要等 ${Math.ceil(left / 1000)} 秒；这期间的句子先跳过，拖回去重看时会补上`, left);
-  }
+  throwIfRatePaused(ctx);
 
   let result: Awaited<ReturnType<ReturnType<typeof createTranscriber>['transcribe']>>;
   const holdId = await holdSpend(ctx, estimateSegmentUsd(asrModel, durationSec, translateModel), '语音转写');
@@ -255,13 +276,7 @@ export async function transcribeSegment(ctx: AppContext, input: SegmentInput): P
     });
   } catch (e) {
     await closeFailedHold(ctx, holdId, e);
-    if (e instanceof AppError && e.kind === 'llm_rate') {
-      const failures = (rateLimitPauses.get(ctx)?.failures ?? 0) + 1;
-      const wait = backoffMs(failures, e.retryAfterMs);
-      rateLimitPauses.set(ctx, { until: ctx.now() + wait, failures, reason: e.message });
-      throw new AppError('llm_rate', e.message, `暂停 ${Math.ceil(wait / 1000)} 秒再继续（被拒的请求也计入每分钟上限，连续重发只会一直被拒）。${e.hint ?? ''}`, wait);
-    }
-    throw e;
+    throw rateLimited(ctx, e);
   }
   rateLimitPauses.delete(ctx);
   const now = ctx.now();
@@ -279,7 +294,7 @@ export async function transcribeSegment(ctx: AppContext, input: SegmentInput): P
   return cue;
 }
 
-function translationClient(ctx: AppContext, settings: Settings, secrets: Secrets) {
+export function translationClient(ctx: AppContext, settings: Settings, secrets: Secrets) {
   const { provider, model } = subtitleTranslationModel(settings);
   const apiKey = provider === 'anthropic' ? secrets.anthropicApiKey : secrets.openaiApiKey;
   if (!apiKey) throw new AppError('llm_key', `没有填写 ${PROVIDER_NAMES[provider]} API Key，第二行不翻译`, '在设置页「1. 大模型」填写');

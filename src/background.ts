@@ -15,7 +15,10 @@ import { CLIP_MSG, type ClipTabState } from './core/clips';
 import { recordSavedClip } from './services/clip-service';
 import { MULTICC_MSG } from './core/multi-captions';
 import { multiCcVideoLanguage } from './services/multi-captions-service';
-import { BILI_PAGES, DOUYIN_PAGES, IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } from './config/endpoints';
+import { BILI_PAGES, DOUYIN_PAGES, IG_PAGES, KUBB_PAGES, XHS_PAGES, XYZ_PAGES, X_PAGES } from './config/endpoints';
+import { XYZ_MSG, XYZ_PORT, isXyzMediaUrl } from './core/xyz';
+import { ingestXyzListen, readAudioWindow, xyzSession, type XyzWindowReply } from './services/xyz-service';
+import { toAppError } from './services/errors';
 import { XHS_MSG } from './core/xhs';
 import { applyXhsFromPage, type XhsReply } from './services/xhs-service';
 import { IS_FIREFOX } from './platform';
@@ -128,6 +131,11 @@ function fromBiliPage(sender: chrome.runtime.MessageSender): boolean {
   return sender.id === chrome.runtime.id && !!sender.tab && !!sender.url && BILI_PAGES.some((p) => sender.url!.startsWith(p));
 }
 
+/** 注入小宇宙网页版的脚本（只认 manifest 里注入它的那些网址） */
+function fromXyzPage(sender: chrome.runtime.MessageSender): boolean {
+  return sender.id === chrome.runtime.id && !!sender.tab && !!sender.url && XYZ_PAGES.some((p) => sender.url!.startsWith(p));
+}
+
 /** 本扩展自己的页面（设置页、侧边栏），不是注入网页的脚本 */
 function fromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
   return sender.id === chrome.runtime.id && !!sender.url && sender.url.startsWith(chrome.runtime.getURL(''));
@@ -137,7 +145,9 @@ function fromExtensionPage(sender: chrome.runtime.MessageSender): boolean {
 let connecting: Promise<void> | undefined;
 
 let reminderTimer: ReturnType<typeof setTimeout> | undefined;
-chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | XhsReply | { lang?: string; note?: string }) => void) => {
+type XyzWindowResponse = ({ ok: true } & XyzWindowReply) | { ok: false; message: string; hint?: string; wait?: boolean };
+
+chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | XhsReply | { lang?: string; note?: string } | XyzWindowResponse) => void) => {
   const m = msg as { type?: string; session?: unknown } | undefined;
   if (m?.type === AUTH_CONNECT_MESSAGE) {
     if (!fromExtensionPage(sender)) return false;
@@ -178,6 +188,29 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
     applyXhsFromPage(ctx, (m as { op?: unknown }).op).then(sendResponse, () => sendResponse({ ok: false, error: '没有保存：本机存储出错，稍后再试' }));
     return true;
   }
+  // 小宇宙：收听记录（累计值，可重复上报）
+  if (m?.type === XYZ_MSG.listen) {
+    if (!fromXyzPage(sender)) return false;
+    void ingestXyzListen(ctx, msg).catch(() => undefined);
+    return false;
+  }
+  // 小宇宙：侧边栏要一段音频（快照的波形、导出音频片段）。只读小宇宙 CDN 上的音频
+  if (m?.type === XYZ_MSG.window) {
+    if (!fromExtensionPage(sender)) return false;
+    const r = msg as { audioUrl?: unknown; from?: unknown; to?: unknown };
+    if (!isXyzMediaUrl(r.audioUrl, ctx.endpoints.xyzMedia)) {
+      sendResponse({ ok: false, message: '这一集的音频不在小宇宙的公开 CDN 上，读不了' });
+      return false;
+    }
+    keepAlive(() => readAudioWindow(ctx, r.audioUrl as string, Number(r.from), Number(r.to))).then(
+      (w) => sendResponse({ ok: true, ...w }),
+      (e: unknown) => {
+        const err = toAppError(e);
+        sendResponse({ ok: false, message: err.message, ...(err.hint ? { hint: err.hint } : {}), ...(err.kind === 'xyz_scan' ? { wait: true } : {}) });
+      },
+    );
+    return true;
+  }
   // 片段录制状态：在工具栏图标上标出正在录（用快捷键录制时不打开侧边栏也看得见）
   if (m?.type === CLIP_MSG.state) {
     if (!(fromTrackedSite(sender) || fromXhsPage(sender) || fromXPage(sender) || fromKubbPage(sender) || fromIgPage(sender) || fromDouyinPage(sender) || fromBiliPage(sender)) || sender.tab?.id === undefined) return false;
@@ -198,8 +231,24 @@ function showClipBadge(tabId: number, state: ClipTabState | undefined): void {
   void chrome.action.setTitle({ tabId, title }).catch(() => undefined);
 }
 
-// 自动字幕：YouTube 播放页里的字幕脚本经长连接送来切好的音频片段，这里转写、翻译后回传
+// 自动字幕：YouTube 播放页里的字幕脚本经长连接送来切好的音频片段，这里转写、翻译后回传。
+// 小宇宙：单集页的脚本经另一条长连接要音频、送切好的句子，这里读音频、转写、校对 / 翻译后回传（DECISIONS §72）
 chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === XYZ_PORT) {
+    if (!port.sender || !fromXyzPage(port.sender)) return port.disconnect();
+    let alive = true;
+    port.onDisconnect.addListener(() => (alive = false));
+    const handle = xyzSession(ctx, (m) => {
+      if (!alive) return;
+      try {
+        port.postMessage(m);
+      } catch {
+        alive = false;
+      }
+    });
+    port.onMessage.addListener((m) => void keepAlive(() => handle(m)).catch((e) => console.warn('[TubeMuse] 小宇宙字幕处理失败', e instanceof Error ? e.message : e)));
+    return;
+  }
   if (port.name !== SUBTITLE_PORT) return;
   if (!port.sender || !fromTrackedSite(port.sender)) return port.disconnect();
   let open = true;
@@ -216,7 +265,7 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 // 快捷键：开关当前标签页这个视频的自动字幕 / 多语字幕 / 开始或停止录制片段（只发给本扩展的内容脚本；
-// 不是 YouTube 页面时什么也不做；录制也认小红书、X、酷播、Instagram、抖音和 B 站）
+// 不是 YouTube 页面时什么也不做；录制也认小红书、X、酷播、Instagram、抖音和 B 站；Alt+Shift+S 在小宇宙单集页上开关这一集的字幕）
 chrome.commands.onCommand.addListener((command, tab) => {
   if (tab?.id === undefined) return;
   if (command === 'toggle-subtitles') void chrome.tabs.sendMessage(tab.id, { type: 'tubemuse:subtitles:toggle' }).catch(() => undefined);

@@ -12,6 +12,7 @@ import { shortsMediaSeconds, shortsPage } from './shorts-pages.mjs';
 import { xMediaSeconds, xPage } from './x-pages.mjs';
 import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
 import { gmailPage } from './email-pages.mjs';
+import { xyzImage, xyzMedia, xyzPage, xyzToneIndex } from './xyz-pages.mjs';
 
 export const PORT = 47321;
 /** e2e 用的假 Client Secret：只有 mock 令牌端点认它 */
@@ -414,6 +415,11 @@ const empty = (/** @type {Partial<Record<string, unknown>>} */ c) => ({
 });
 
 /** 假 LLM：按任务与口令返回固定的结构化结果（真实 LLM 的解析质量需手测） */
+/** 小宇宙：收到的转写（认出的段号与提示词）与校对请求，供断言 @type {{ k: number | undefined; prompt: string }[]} */
+export const xyzTranscribes = [];
+/** @type {string[]} */
+export const xyzPolishes = [];
+
 function llmAnswer(/** @type {string} */ system, /** @type {string} */ user) {
   if (system.includes('兴趣画像')) {
     return {
@@ -439,6 +445,12 @@ function llmAnswer(/** @type {string} */ system, /** @type {string} */ user) {
     };
   }
   if (system.includes('只回复')) return { ok: true };
+  if (system.includes('播客字幕的校对兼翻译')) {
+    // 小宇宙：中文加一个"（校）"标记，英文带上同一个编号，便于断言哪句对哪句、校对过没有
+    xyzPolishes.push(user);
+    const items = /** @type {{ id: string; text: string }[]} */ (JSON.parse(user.slice(user.indexOf('待处理（JSON）：\n') + '待处理（JSON）：\n'.length)));
+    return { items: items.map((i) => ({ id: i.id, zh: `${i.text}（校）`, en: `This is segment ${/第(\d+)段/.exec(i.text)?.[1] ?? '?'}` })) };
+  }
   if (system.includes('视频字幕翻译')) {
     // 当前这句形如"第 N 句：……"：译文带上同一个编号，便于断言哪句对哪句
     const n = /当前字幕：\n第 (\d+) 句/.exec(user)?.[1] ?? '?';
@@ -599,8 +611,12 @@ export function startMockServer() {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', ORIGIN);
     let body = '';
-    req.on('data', (c) => (body += c));
+    /** @type {Buffer[]} */
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
+      const raw = Buffer.concat(chunks);
+      body = raw.toString('utf8');
       requests.push({ method: req.method ?? 'GET', path: url.pathname, query: Object.fromEntries(url.searchParams), headers: req.headers, body });
       const cors = {
         'access-control-allow-origin': '*',
@@ -622,6 +638,24 @@ export function startMockServer() {
         const wav = speechWav(mediaSeconds);
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
         return res.end(wav);
+      }
+      // 仿小宇宙的单集页（/xyz/episode/<ID>）与它的音频 CDN（/xyzmedia/…，带分段读取）
+      if (p.startsWith('/xyzmedia/')) {
+        const r = xyzMedia(p, req.headers.range);
+        if (!r) return send(404, {});
+        res.writeHead(r.status, r.headers);
+        return res.end(r.body);
+      }
+      if (p.startsWith('/xyzimg/')) {
+        const r = /** @type {NonNullable<ReturnType<typeof xyzImage>>} */ (xyzImage(p));
+        res.writeHead(r.status, r.headers);
+        return res.end(r.body);
+      }
+      if (p.startsWith('/xyz/')) {
+        const html = xyzPage(p);
+        if (!html) return send(404, {});
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(html);
       }
       // 「问 muse」的"打开 muse.ai"在 e2e 里打开的页面：一个空壳，扩展不往这里发任何东西
       if (p === '/muse/') {
@@ -840,6 +874,12 @@ export function startMockServer() {
           return res.end(JSON.stringify({ error: { message: 'Your request rate increased too quickly.', type: 'rate_limit_error', code: 'slow_down', param: null } }));
         }
         transcribeCounter++;
+        // 小宇宙：提示词里带着节目名；从音频里认出是第几段音，回一句带编号的话（e2e 据此核对字幕的时间）
+        if (body.includes('测试节目串门儿')) {
+          const k = xyzToneIndex(raw);
+          xyzTranscribes.push({ k, prompt: /name="prompt"\r\n\r\n([^\r]*)/.exec(body)?.[1] ?? '' });
+          return send(200, { text: k === undefined ? '' : `这是第${k}段音频的内容`, languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 2 } });
+        }
         return send(200, { text: `第 ${transcribeCounter} 句：我说到哪里了`, languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 2 } });
       }
       if (p === '/openai/v1/responses' && req.method === 'POST') {

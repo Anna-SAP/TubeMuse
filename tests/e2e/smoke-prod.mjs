@@ -51,8 +51,9 @@ try {
         { js: 'content-xhs-bridge.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'MAIN' },
         { js: 'content-xhs.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'ISOLATED' },
         { js: 'content-email.js', matches: 'https://mail.google.com/*', world: 'ISOLATED' },
+        { js: 'content-xyz.js', matches: 'https://www.xiaoyuzhoufm.com/*', world: 'ISOLATED' },
       ]),
-    `观看追踪、自动字幕、多语字幕脚本只注入 www.youtube.com，小红书脚本只注入小红书网页版，邮件脚本只注入 mail.google.com，片段录制脚本注入 YouTube、小红书、X、酷播、Instagram、抖音、B 站（同一条、只注入一次，后五个站只有它），只有两个页面内助手在页面环境（${scripts.map((/** @type {{ js: string; matches: string; world: string }} */ s) => `${s.js} → ${s.matches} ${s.world}`).join('；')}）`,
+    `观看追踪、自动字幕、多语字幕脚本只注入 www.youtube.com，小红书脚本只注入小红书网页版，邮件脚本只注入 mail.google.com，小宇宙脚本只注入小宇宙网页版，片段录制脚本注入 YouTube、小红书、X、酷播、Instagram、抖音、B 站（同一条、只注入一次，后五个站只有它），只有两个页面内助手在页面环境（${scripts.map((/** @type {{ js: string; matches: string; world: string }} */ s) => `${s.js} → ${s.matches} ${s.world}`).join('；')}）`,
   );
   check(
     manifest.permissions.includes('alarms') && !['tabs', 'scripting', 'tabCapture', 'offscreen', 'downloads', 'desktopCapture', 'webRequest', 'declarativeNetRequest'].some((p) => manifest.permissions.includes(p)),
@@ -65,12 +66,13 @@ try {
   // 授权走 launchWebAuthFlow：不再需要 manifest 的 oauth2（那是 getAuthToken 专用，依赖浏览器级 Google 登录）
   check(!manifest.oauth2 && manifest.permissions.includes('identity'), 'manifest 不含 oauth2，授权走 launchWebAuthFlow');
   const connect = /connect-src ([^;]+)/.exec(manifest.content_security_policy.extension_pages)?.[1]?.trim().split(/\s+/) ?? [];
-  const expected = ['https://www.googleapis.com', 'https://oauth2.googleapis.com', 'https://api.anthropic.com', 'https://api.openai.com', 'https://api.x.com', 'https://www.douban.com'];
-  check(JSON.stringify([...connect].sort()) === JSON.stringify([...expected].sort()), `网络出口白名单只有官方 API 与豆瓣 RSS：${connect.join(' ')}`);
+  const expected = ['https://www.googleapis.com', 'https://oauth2.googleapis.com', 'https://api.anthropic.com', 'https://api.openai.com', 'https://api.x.com', 'https://www.douban.com', 'https://media.xyzcdn.net'];
+  check(JSON.stringify([...connect].sort()) === JSON.stringify([...expected].sort()), `网络出口白名单只有官方 API、豆瓣 RSS 与小宇宙的音频 CDN：${connect.join(' ')}`);
   check(JSON.stringify([...manifest.host_permissions].sort()) === JSON.stringify(expected.map((o) => `${o}/*`).sort()), 'host_permissions 与 connect-src 一致');
   const img = /img-src ([^;]+)/.exec(manifest.content_security_policy.extension_pages)?.[1]?.trim().split(/\s+/) ?? [];
   const doubanImg = img.filter((o) => o.endsWith('.doubanio.com'));
   check(doubanImg.length === 9 && doubanImg.every((o) => /^https:\/\/img[1-9]\.doubanio\.com$/.test(o)), `豆瓣图片域名只出现在 img-src：${doubanImg.length} 个`);
+  check(img.includes('https://image.xyzcdn.net') && !connect.includes('https://image.xyzcdn.net'), '小宇宙的封面域名只出现在 img-src（只作图片加载）');
   for (const page of ['sidepanel.html', 'options.html', 'mic-permission.html']) {
     const p = await context.newPage();
     p.on('console', (m) => m.type() === 'error' && errors.push(`${page}: ${m.text()}`));
