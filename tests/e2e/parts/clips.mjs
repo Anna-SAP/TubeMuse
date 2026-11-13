@@ -1552,10 +1552,20 @@ export async function clips(t) {
     '界面写明 Shorts 放完一遍就结束；字幕烧录读的是 Shorts 播放器里的原生字幕；有 Capture',
   );
   const shortsAppHtml = () => shorts.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
-  await onShort('v.currentTime = 3;');
+  // 先停在第 3 秒，等录制准备好了（"视频已暂停"）再放：开始录制要等浏览器的声音处理启动（最多 CLIPS.audioResumeMs），
+  // 边放边点"开始"的话，慢的机器上开头会被吃掉一两秒，录下的长度就看运气了（2026-11-13 Windows CI 上出现过只录到 2 秒）
+  await onShort('v.pause(); v.currentTime = 3;');
+  await shorts.waitForFunction(() => { const v = /** @type {HTMLVideoElement} */ (document.querySelector('#shorts-player video')); return v.paused && !v.seeking && Math.abs(v.currentTime - 3) < 0.05; }, null, { timeout: 5000 });
   const shortsHtmlBefore = await shortsAppHtml();
   // 不点停止：Shorts 放到结尾自己跳回开头时，这一段自动结束并保存
-  const [loopDl] = await Promise.all([shorts.waitForEvent('download', { timeout: 20000 }), panel.getByTestId('clip-start').click()]);
+  const [loopDl] = await Promise.all([
+    shorts.waitForEvent('download', { timeout: 20000 }),
+    (async () => {
+      await panel.getByTestId('clip-start').click();
+      await clipStatus.filter({ hasText: '视频已暂停' }).waitFor({ timeout: 10000 });
+      await onShort('return v.play();');
+    })(),
+  ]);
   const loopName = loopDl.suggestedFilename();
   check(loopName.startsWith(`${SHORT_A.title}_00m0`) && /_00m0[3-4]s-00m0[6-7]s\.(mp4|webm)$/.test(loopName), `Shorts 放到结尾跳回开头时自动结束并保存，文件名用标题与起止时间：${loopName}`);
   await panel.getByTestId('clip-ready').filter({ hasText: '视频播完了' }).waitFor({ timeout: 5000 });
