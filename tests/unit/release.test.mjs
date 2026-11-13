@@ -251,12 +251,13 @@ describe('Firefox 版的 Mozilla 签名（DECISIONS §71）', () => {
   ];
 
   /** 用 zipDirectory 打一个"扩展"，再按需加上 META-INF 签名文件、改动内容 */
-  const makeXpi = (/** @type {{ version?: string; id?: string; extra?: Record<string, string>; jsBody?: string }} */ o = {}) => {
+  const makeXpi = (/** @type {{ version?: string; id?: string; extra?: Record<string, string>; jsBody?: string; manifest?: (m: any) => string }} */ o = {}) => {
     const base = mkdtempSync(join(tmpdir(), 'tubemuse-xpi-'));
     const d = join(base, 'ext');
     try {
       mkdirSync(join(d, 'chunks'), { recursive: true });
-      writeFileSync(join(d, 'manifest.json'), JSON.stringify({ manifest_version: 3, version: o.version ?? '0.1.0.51', browser_specific_settings: { gecko: { id: o.id ?? FIREFOX_ADDON_ID } } }));
+      const m = { manifest_version: 3, version: o.version ?? '0.1.0.51', browser_specific_settings: { gecko: { id: o.id ?? FIREFOX_ADDON_ID } } };
+      writeFileSync(join(d, 'manifest.json'), o.manifest ? o.manifest(m) : JSON.stringify(m, null, 2) + '\n');
       writeFileSync(join(d, 'chunks', 'a.js'), o.jsBody ?? 'console.log("ok");\n'.repeat(30));
       for (const [name, body] of Object.entries(o.extra ?? {})) {
         mkdirSync(join(d, name, '..'), { recursive: true });
@@ -278,6 +279,17 @@ describe('Firefox 版的 Mozilla 签名（DECISIONS §71）', () => {
     expect(FIREFOX_DATA_COLLECTION.required).not.toContain('technicalAndInteraction');
     // 找片口令发给大模型 / YouTube：核心功能，少了它声明就不如实
     expect(FIREFOX_DATA_COLLECTION.required).toContain('searchTerms');
+  });
+
+  it('Mozilla 会重新序列化 manifest.json（2026-11-12 第一次真签名时碰到）：内容相同就通过，内容变了照样拒收', () => {
+    const unsigned = makeXpi();
+    // 去掉末尾换行、换一种缩进：解析后一样
+    expect(() => verifySignedXpi(makeXpi({ extra: SIG, manifest: (m) => JSON.stringify(m, null, 2) }), unsigned, expected)).not.toThrow();
+    expect(() => verifySignedXpi(makeXpi({ extra: SIG, manifest: (m) => JSON.stringify(m) }), unsigned, expected)).not.toThrow();
+    // 多了一项、改了一项：拒收，并说出是哪一项
+    expect(() => verifySignedXpi(makeXpi({ extra: SIG, manifest: (m) => JSON.stringify({ ...m, update_url: 'https://evil.example/u.json' }) }), unsigned, expected)).toThrow(/manifest\.json.*update_url/);
+    expect(() => verifySignedXpi(makeXpi({ extra: SIG, manifest: (m) => JSON.stringify({ ...m, manifest_version: 2 }) }), unsigned, expected)).toThrow(/manifest_version/);
+    expect(() => verifySignedXpi(makeXpi({ extra: SIG, manifest: () => '{ not json' }), unsigned, expected)).toThrow(/不是合法的 JSON/);
   });
 
   it('Mozilla 签好的文件：有签名、其余文件逐个相同、ID 与版本对得上，才算通过', () => {

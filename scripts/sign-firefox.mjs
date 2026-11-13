@@ -15,6 +15,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdtempSync, readFileSync, re
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { FIREFOX_ADDON_ID } from './firefox.mjs';
 import { isManifestVersion } from './version.mjs';
 import { listZipEntries, readZipEntry } from './zip.mjs';
@@ -46,7 +47,7 @@ export function approvalNotes(version, sha, repo) {
 /**
  * 核对 Mozilla 签好的 .xpi：
  * - 有签名文件（META-INF/mozilla.rsa 或 META-INF/cose.sig）；
- * - 除 META-INF/ 外的文件和我们打的 .xpi 一一对应、内容一模一样（Mozilla 只加签名，不改内容）；
+ * - 除 META-INF/ 外的文件和我们打的 .xpi 一一对应、内容一模一样（Mozilla 只加签名，不改内容；manifest.json 会被它重新序列化，按解析后的内容比）；
  * - manifest 里的扩展 ID、版本号是这一版的。
  * 不通过时抛错说明哪里不对。
  * @param {Buffer} signed Mozilla 签好的 .xpi
@@ -69,9 +70,22 @@ export function verifySignedXpi(signed, unsigned, expected) {
   if (missing.length || extra.length) {
     throw new Error(`签好的文件和我们打的 .xpi 文件不一样：${missing.length ? `少了 ${missing.join(', ')}` : ''}${missing.length && extra.length ? '；' : ''}${extra.length ? `多了 ${extra.join(', ')}` : ''}`);
   }
-  const changed = ours.filter((n) => !(/** @type {Buffer} */ (readZipEntry(signed, n)).equals(/** @type {Buffer} */ (readZipEntry(unsigned, n)))));
+  // manifest.json 例外：Mozilla 签名时会把它重新序列化（2026-11-12 第一次真签名实测：只有它字节不同；外部报告是去掉了末尾的换行），
+  // 所以按解析后的内容比，必须完全相同；其余文件逐字节比
+  const changed = ours.filter((n) => n !== 'manifest.json' && !(/** @type {Buffer} */ (readZipEntry(signed, n)).equals(/** @type {Buffer} */ (readZipEntry(unsigned, n)))));
   if (changed.length) throw new Error(`签好的文件里这些文件的内容和我们打的不一样：${changed.join(', ')}`);
-  const manifest = JSON.parse(String(readZipEntry(signed, 'manifest.json')));
+  /** @type {any} */
+  let manifest;
+  try {
+    manifest = JSON.parse(String(readZipEntry(signed, 'manifest.json')));
+  } catch {
+    throw new Error('签好的文件里的 manifest.json 不是合法的 JSON');
+  }
+  const ourManifest = JSON.parse(String(readZipEntry(unsigned, 'manifest.json')));
+  if (!isDeepStrictEqual(manifest, ourManifest)) {
+    const keys = [...new Set([...Object.keys(manifest), ...Object.keys(ourManifest)])].filter((k) => !isDeepStrictEqual(manifest[k], ourManifest[k]));
+    throw new Error(`签好的文件里 manifest.json 的内容和我们打的不一样（不只是格式）：${keys.join(', ')}`);
+  }
   if (manifest.version !== expected.version) throw new Error(`签好的文件版本是 ${manifest.version}，不是 ${expected.version}`);
   const id = manifest.browser_specific_settings?.gecko?.id;
   if (id !== expected.id) throw new Error(`签好的文件扩展 ID 是 ${id}，不是 ${expected.id}`);

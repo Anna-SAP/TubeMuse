@@ -55,7 +55,7 @@ function jwtOk(header) {
 
 /**
  * 一次运行：起假 AMO，跑 sign-firefox.mjs，返回结果。
- * @param {{ valid?: boolean; tamper?: boolean; env?: Record<string, string> }} mode
+ * @param {{ valid?: boolean; tamper?: boolean; manifestChange?: boolean; env?: Record<string, string> }} mode
  */
 async function runOnce(mode) {
   /** @type {{ method: string; path: string; authOk: boolean }[]} */
@@ -115,6 +115,10 @@ async function runOnce(mode) {
         }
         mkdirSync(join(dir, 'x', 'META-INF'), { recursive: true });
         for (const f of ['manifest.mf', 'mozilla.sf', 'mozilla.rsa', 'cose.manifest', 'cose.sig']) writeFileSync(join(dir, 'x', 'META-INF', f), `mock ${f}`);
+        // 像真的 Mozilla 一样把 manifest.json 重新序列化（2026-11-12 第一次真签名实测：只有它字节不同；去掉末尾换行）
+        const mf = JSON.parse(String(readZipEntry(up, 'manifest.json')));
+        if (mode.manifestChange) mf.update_url = 'https://evil.example/updates.json';
+        writeFileSync(join(dir, 'x', 'manifest.json'), JSON.stringify(mf, null, 2));
         if (mode.tamper) writeFileSync(join(dir, 'x', 'background.js'), '/* changed */');
         zipDirectory(join(dir, 'x'), join(dir, 'signed.xpi'));
         signed = readFileSync(join(dir, 'signed.xpi'));
@@ -166,7 +170,7 @@ async function runOnce(mode) {
 }
 
 try {
-  console.log('\n[签好名：整条路走通]');
+  console.log('\n[签好名：整条路走通（manifest.json 被重新序列化，和真的 Mozilla 一样）]');
   const ok = await runOnce({});
   check(ok.run.status === 0, `sign-firefox.mjs 成功退出${ok.run.status === 0 ? '' : `（${ok.run.status}）：${ok.output.slice(-1500)}`}`);
   check(ok.requests.length > 0 && ok.requests.every((r) => r.authOk), `每个请求都带着用 AMO_JWT_SECRET 签的 JWT（iss = AMO_JWT_ISSUER），共 ${ok.requests.length} 个`);
@@ -193,6 +197,11 @@ try {
   console.log('\n[签好的文件被改过：核对发现，不上传]');
   const bad = await runOnce({ tamper: true });
   check(bad.run.status !== 0 && /签好的文件没通过核对/.test(bad.output) && /background\.js/.test(bad.output), '签好的文件和我们打的不一样时失败，并说出是哪个文件');
+  check(!existsSync(signedOut), '没有存下这个文件');
+
+  console.log('\n[签好的文件里 manifest.json 的内容被改了（不只是格式）：拒收]');
+  const mchg = await runOnce({ manifestChange: true });
+  check(mchg.run.status !== 0 && /manifest\.json/.test(mchg.output) && /update_url/.test(mchg.output), 'manifest.json 多了 update_url 时失败，并说出是哪一项');
   check(!existsSync(signedOut), '没有存下这个文件');
 
   console.log('\n[Mozilla 的校验没通过]');
