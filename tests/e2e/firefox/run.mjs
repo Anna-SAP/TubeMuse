@@ -413,6 +413,9 @@ try {
   await b.switchTo(handles.panel);
   await tap('[data-testid=muse-ask]');
   await b.waitFor(`document.querySelector('[data-testid=muse-panel]')`, { what: '问 muse 面板' });
+  // 面板一点开就在，"我的问题"输入框要等冻结做完（读播放位置、取字幕、查作者和简介）才出现：等它出来再填。
+  // 只等面板的话，runner 慢的时候冻结还没做完，就报"找不到 muse-question"（main 上 CI #77 就是这样挂的）
+  await b.waitFor(`document.querySelector('[data-testid=muse-question]')`, { timeout: 20_000, what: '问 muse 冻结完成、出现"我的问题"' });
   await fill('[data-testid=muse-question]', '这一段讲了什么？');
   await tap('[data-testid=muse-generate]');
   const pkg = await b.waitFor(`return document.querySelector('[data-testid=muse-package]')?.value || document.querySelector('[data-testid=muse-package]')?.textContent || false`, { timeout: 20_000, what: '咨询包' });
