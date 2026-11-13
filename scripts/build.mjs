@@ -55,7 +55,7 @@ if (!e2e && existsSync(configPath)) {
 // ── 读取网络出口（把 endpoints.ts 临时编译成 JS 再导入）──
 const endpointsFile = join(root, 'src', 'config', e2e ? 'endpoints.e2e.ts' : 'endpoints.ts');
 const compiled = await esbuild.build({ entryPoints: [endpointsFile], bundle: true, write: false, format: 'esm', platform: 'neutral' });
-const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XHS_PAGES, EMAIL_PAGES, X_PAGES, KUBB_PAGES, IG_PAGES, DOUYIN_PAGES, BILI_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XYZ_IMAGE_ORIGINS, XHS_PAGES, EMAIL_PAGES, X_PAGES, KUBB_PAGES, IG_PAGES, DOUYIN_PAGES, BILI_PAGES, XYZ_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 /** @type {string[]} */
 const origins = [...new Set(Object.values(ENDPOINTS).map((u) => new URL(String(u)).origin))];
 /**
@@ -65,7 +65,7 @@ const origins = [...new Set(Object.values(ENDPOINTS).map((u) => new URL(String(u
  * @param {string} pattern
  */
 const match = (pattern) => (firefox ? pattern.replace(/^(\w+:\/\/[^/:]+):\d+\//, '$1/') : pattern);
-const imgOrigins = ['https://i.ytimg.com', ...DOUBAN_IMAGE_ORIGINS, ...(e2e ? origins.filter((o) => o.startsWith('http://127.0.0.1')) : [])];
+const imgOrigins = ['https://i.ytimg.com', ...DOUBAN_IMAGE_ORIGINS, ...XYZ_IMAGE_ORIGINS, ...(e2e ? origins.filter((o) => o.startsWith('http://127.0.0.1')) : [])];
 
 // ── 打包 ──
 rmSync(outdir, { recursive: true, force: true });
@@ -125,6 +125,7 @@ await esbuild.build({
     'content-xhs': join(root, 'src', 'content', 'xhs.ts'),
     'content-xhs-bridge': join(root, 'src', 'content', 'xhs-bridge.ts'),
     'content-email': join(root, 'src', 'content', 'email.ts'),
+    'content-xyz': join(root, 'src', 'content', 'xyz.ts'),
   },
   outdir,
   bundle: true,
@@ -203,6 +204,7 @@ const manifest = {
   // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
   // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
   // eMails（DECISIONS §44）：只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"，不发网络请求，不写页面
+  // 小宇宙（DECISIONS §72）：只认单集页；读这一集的信息、看 <audio> 的播放状态，向后台要音频段、送切好的句子，在页面上叠一层只读字幕。不发网络请求
   // 问 muse（DECISIONS §60、§63）：没有新脚本。片段录制脚本在你点「问 muse」时把当前这条视频 / 帖子读一次交给侧边栏；
   // 多语字幕脚本交出位置前后的字幕——已经读到的，或为这一次提问取一种语言（仍是下面检查的那唯一一处同源 /api/timedtext 请求）
   content_scripts: [
@@ -214,9 +216,10 @@ const manifest = {
     { matches: XHS_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
     { matches: XHS_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xhs.js'], run_at: 'document_idle' },
     { matches: EMAIL_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-email.js'], run_at: 'document_idle' },
+    { matches: XYZ_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xyz.js'], run_at: 'document_idle' },
   ],
   commands: {
-    'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕' },
+    'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕（在小宇宙单集页上开关这一集的字幕）' },
     'toggle-multi-captions': { suggested_key: { default: 'Alt+Shift+C' }, description: '开关当前视频的多语字幕（YouTube 原生字幕叠加显示）' },
     'toggle-clip-recording': { suggested_key: { default: 'Alt+Shift+R' }, description: '开始 / 停止录制当前视频的片段' },
   },
@@ -399,6 +402,33 @@ for (const bad of [
 ]) {
   if (bad.test(email)) fail(`邮件脚本里出现了不允许的操作（${bad}）：它只能在被问到时读打开的这封邮件。`);
 }
+
+// 小宇宙（2026-11-13 新增，DECISIONS §72）：注入小宇宙的脚本自己不发任何网络请求（音频由后台只从小宇宙 CDN 读），
+// 不得用 HTML 字符串写页面、不得读写 Cookie / 页面的本地存储、不得点击或模拟点击小宇宙的按钮（不会替你订阅、收藏、点赞）、
+// 不得触发下载、不得直接写扩展存储、不得动态执行代码、不得开麦克风或录屏
+const xyzScript = readFileSync(join(outdir, 'content-xyz.js'), 'utf8');
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /innerHTML|outerHTML|insertAdjacentHTML/,
+  /document\.cookie/,
+  /localStorage|sessionStorage|indexedDB/,
+  /\.click\(\)/,
+  /dispatchEvent\(/,
+  /chrome\.storage\.local\.(set|remove|clear)\(/,
+  /\beval\(|new Function\(/,
+  /window\.open\(/,
+  /\.download\s*=/,
+  /getUserMedia|getDisplayMedia/,
+  /captureStream/,
+]) {
+  if (bad.test(xyzScript)) fail(`小宇宙脚本里出现了不允许的操作（${bad}）：它只能读这一集的信息、看播放状态、叠加字幕层。`);
+}
+// 小宇宙的音频 CDN 是新增的网络出口：只允许这一个，别的小宇宙域名（网站本身、图片 CDN）都不进 connect-src / host_permissions
+if (origins.some((o) => /xiaoyuzhoufm\.com|image\.xyzcdn\.net/i.test(o))) fail('小宇宙网站与图片 CDN 不应出现在网络出口里：扩展只读 media.xyzcdn.net 上的音频。');
 
 // 「问 muse」（2026-11-11 新增，DECISIONS §60）：只生成一段文字，由你自己粘贴到 Muse。muse.ai 只由侧边栏在新标签页里打开：
 // 不进网络出口（host_permissions / connect-src），注入网页的脚本里也不出现它的地址（它们不能替你打开或联系它）

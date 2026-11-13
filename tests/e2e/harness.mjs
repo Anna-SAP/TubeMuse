@@ -4,7 +4,7 @@
 // 各功能的检查在 parts/ 下；哪几部分放在一组里跑见 shards.json（DECISIONS §61）。
 // 任何发往 mock 以外地址的请求都会被拦截并判失败（测试中不得发出真实网络请求）。
 import { chromium } from 'playwright';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,6 +62,9 @@ export async function launch() {
   const blocked = [];
   /** @type {{ url: string; referer: string | undefined }[]} */
   const doubanImages = [];
+  /** 小宇宙的封面（image.xyzcdn.net）：在本地应答一张 PNG，带上真实 CDN 那样的 Access-Control-Allow-Origin: *，绝不出网 @type {{ url: string; referer: string | undefined }[]} */
+  const xyzImages = [];
+  const xyzCover = readFileSync(join(root, 'static', 'icons', 'icon-128.png'));
   /** 仿 X 的动图：测试现场录一小段视频填进来（setXGifBody），见下面的路由 @type {Buffer} */
   let xGifBody = Buffer.alloc(0);
   /** 网络护栏：只放行扩展自身与本机 mock，其余一律在本地应答或拦下并记为失败 */
@@ -74,6 +77,10 @@ export async function launch() {
     if (/^https:\/\/img\d\.doubanio\.com\//.test(url)) {
       doubanImages.push({ url, referer: route.request().headers().referer });
       return route.fulfill({ status: 418, body: '' });
+    }
+    if (url.startsWith('https://image.xyzcdn.net/')) {
+      xyzImages.push({ url, referer: route.request().headers().referer });
+      return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: xyzCover });
     }
     // X 的动图：跨站视频（实测真实页面就是 video.twimg.com 的地址，不是 blob:），在本地应答，绝不出网
     if (url === X_GIF_POST.src) return route.fulfill({ status: 200, contentType: 'video/webm', body: xGifBody });
@@ -95,6 +102,7 @@ export async function launch() {
     guard,
     blocked,
     doubanImages,
+    xyzImages,
     consoleErrors,
     setXGifBody: (/** @type {Buffer} */ body) => {
       xGifBody = body;
@@ -212,7 +220,7 @@ export function redLines(t, ran) {
   const llm = requests.filter((r) => r.path.startsWith('/anthropic'));
   const yt = requests.filter((r) => r.path.startsWith('/youtube'));
   // 片段那一组不调大模型：只在会调的组里要求"确实发过请求"
-  const expectLlm = ['core', 'subtitles', 'emails'].some((p) => ran.has(p));
+  const expectLlm = ['core', 'subtitles', 'emails', 'xyz'].some((p) => ran.has(p));
   check((!expectLlm || llm.length > 0) && llm.every((r) => String(r.headers.authorization ?? r.headers['x-api-key'] ?? '').includes(FAKE_KEY)), 'LLM 请求携带 Key（仅在请求头）');
   check(yt.every((r) => r.headers.authorization === 'Bearer e2e-fake-token'), 'YouTube 请求携带 OAuth 令牌（仅在请求头）');
   check(yt.every((r) => !JSON.stringify(r).includes(FAKE_KEY)), 'LLM Key 从未发往 YouTube');

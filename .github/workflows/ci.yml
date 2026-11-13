@@ -132,7 +132,7 @@ jobs:
       # 一组红了，别的组照样跑完：一次看全有哪些问题
       fail-fast: false
       matrix:
-        shard: [core, subtitles, clips]
+        shard: [core, subtitles, clips, xyz]
     defaults:
       run:
         shell: pwsh

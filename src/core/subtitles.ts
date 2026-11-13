@@ -584,11 +584,12 @@ export function recordAsr(ledger: SubtitleLedger, day: string, model: string, se
   }));
 }
 
-export function recordTranslation(ledger: SubtitleLedger, day: string, model: string, inputTokens: number, outputTokens: number): SubtitleLedger {
+/** 记一次翻译的花费；cues：这次译了几句（小宇宙一次校对 / 翻译一批，按句数记，界面上的"翻译 N 句"才对得上） */
+export function recordTranslation(ledger: SubtitleLedger, day: string, model: string, inputTokens: number, outputTokens: number, cues = 1): SubtitleLedger {
   const usd = llmCostUsd(model, inputTokens, outputTokens);
   return withDay(ledger, day, (d) => ({
     ...d,
-    translations: d.translations + 1,
+    translations: d.translations + cues,
     inputTokens: d.inputTokens + inputTokens,
     outputTokens: d.outputTokens + outputTokens,
     translateUsd: round6(d.translateUsd + usd),

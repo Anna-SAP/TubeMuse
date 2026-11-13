@@ -504,6 +504,34 @@ try {
   await b.screenshot(join(shots, '04-subtitles.png'));
   await closeTab(sub);
 
+  console.log('\n[小宇宙：单集页 → 开始字幕 → 后台读音频段 → 页面脚本在 Firefox 里解码、切句 → 转写 → 校对 / 翻译 → 叠在播放器上方]');
+  await b.switchTo(handles.panel);
+  const xyzPage = await openActiveTab(`${MOCK}/xyz/episode/6af02451b4a4e20202f67f19`);
+  await b.switchTo(xyzPage);
+  await b.click('#pp');
+  await b.waitFor(`!document.querySelector('audio').paused`, { timeout: 15_000, what: '小宇宙页面开始播放' });
+  await b.switchTo(handles.panel);
+  await tapText('小宇宙', 'button[role=tab]');
+  await b.waitFor(`document.querySelector('[data-testid=xyz-title]')?.textContent.includes('#817.测试单集') && !!document.querySelector('[data-testid=xyz-toggle]')`, { what: '侧边栏读到这一集' });
+  await tap('[data-testid=xyz-toggle]');
+  await b.switchTo(xyzPage);
+  const xyzLines = await b
+    .waitFor(
+      `const root = document.querySelector('[data-tubemuse="xyz"]')?.shadowRoot; const q = (c) => root?.querySelector(c)?.textContent ?? '';
+       return q('.zh').includes('（校）') ? { zh: q('.zh'), en: q('.en'), t: document.querySelector('audio').currentTime } : false;`,
+      { timeout: 40_000, what: '小宇宙的双语字幕' },
+    )
+    .catch(() => ({ zh: '', en: '', t: 0 }));
+  const shownK = Number(/第(\d+)段/.exec(xyzLines.zh)?.[1] ?? NaN);
+  check(/第\d+段音频的内容（校）/.test(xyzLines.zh) && /This is segment \d+/.test(xyzLines.en), `播放器上方出现中英字幕：${xyzLines.zh} / ${xyzLines.en}`);
+  check(xyzLines.t >= 0.5 + 3 * shownK - 0.35 && xyzLines.t <= 0.5 + 3 * shownK + 2.5, `字幕对得上正在放的那段音（${xyzLines.t.toFixed(1)} 秒显示第 ${shownK} 段）`);
+  const xyzMedia = requests.filter((r) => r.path.startsWith('/xyzmedia/') && !r.headers.referer);
+  check(xyzMedia.length >= 1 && xyzMedia.every((r) => /^bytes=\d+-\d+$/.test(String(r.headers.range)) && !r.headers.cookie), `音频由扩展后台分段读（${xyzMedia.length} 次），不带 Cookie`);
+  const xyzTr = requests.filter((r) => r.path === '/openai/v1/audio/transcriptions' && r.body.includes('测试节目串门儿'));
+  check(xyzTr.length >= 1 && xyzTr.every((r) => String(r.headers.origin ?? '').startsWith('moz-extension://')), `切好的句子由扩展后台发往 OpenAI 转写（${xyzTr.length} 句）`);
+  await b.screenshot(join(shots, '05-xyz.png'));
+  await closeTab(xyzPage);
+
   console.log('\n[工具栏图标 → 打开 / 关上 Firefox 的侧边栏]');
   // Firefox 新装的扩展按钮收在"扩展"面板里：先固定到工具栏（就像你右键"固定到工具栏"），再真的点一下
   const widgetId = `${FIREFOX_E2E_ADDON_ID.toLowerCase().replace(/[^a-z0-9_-]/g, '_')}-browser-action`;
@@ -551,7 +579,7 @@ try {
 } finally {
   // 红线：除本机 mock 以外没有请求能出去（代理是死的）；这里核对 mock 只收到了预期的几类请求
   const paths = [...new Set(requests.map((r) => r.path.split('/').slice(0, 2).join('/')))];
-  check(paths.every((p) => ['/youtube', '/oauth', '/anthropic', '/openai', '/thumb', '/watch', '/media', '/api', '/xhs', '/gmail', '/favicon.ico'].includes(p)), `mock 只收到预期的请求：${paths.join(' ')}`);
+  check(paths.every((p) => ['/youtube', '/oauth', '/anthropic', '/openai', '/thumb', '/watch', '/media', '/api', '/xhs', '/gmail', '/xyz', '/xyzimg', '/xyzmedia', '/favicon.ico'].includes(p)), `mock 只收到预期的请求：${paths.join(' ')}`);
   // 扩展自己的报错（后台、页面、内容脚本）：Firefox 打到标准输出的 JavaScript 错误
   const extErrors = log.filter((l) => /JavaScript error|console\.error|Uncaught/.test(l) && (l.includes(UUID) || /content-[\w-]+\.js|TubeMuse/.test(l)));
   check(extErrors.length === 0, `扩展没有报错${extErrors.length ? `：\n    ${extErrors.slice(0, 10).join('\n    ')}` : ''}`);

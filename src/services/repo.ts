@@ -12,6 +12,8 @@ import type { MuseVideoInfo } from '../core/muse';
 import { sanitizeCcLangs } from '../core/multi-captions';
 import { emptyXhsState, sanitizeXhsState, type XhsState } from '../core/xhs';
 import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState, type EmailVerdicts } from '../core/email';
+import { emptyXyzSaved, sanitizeXyzSaved, type XyzListen, type XyzSaved, type XyzSnapshotRecord, type XyzTranscript } from '../core/xyz';
+import type { Mp3Scan } from '../core/podcast-audio';
 import type {
   Adjustment,
   ClusterState,
@@ -120,6 +122,7 @@ export function mergeSettings(stored: unknown): Settings {
     xhs: { ...d.xhs, ...(s.xhs as object) },
     email: { ...d.email, ...(s.email as object) },
     muse: { ...d.muse, ...(s.muse as object) },
+    xyz: { ...d.xyz, ...(s.xyz as object) },
     ui: { ...d.ui, ...(s.ui as object) },
   } as Settings;
 }
@@ -210,6 +213,16 @@ export const stores = {
   emailScores: new Store<EmailScores>('emailScores', () => ({})),
   /** eMails：每封邮件的总体结论（键是 verdictKey：文章和分数都对得上才显示） */
   emailVerdicts: new Store<EmailVerdicts>('emailVerdicts', () => ({})),
+  /** 小宇宙：哪些单集有字幕（字幕本身按单集分键存放，见 xyzTranscriptStore） */
+  xyzTranscriptIndex: new Store<Record<string, number>>('xyzTranscriptIndex', () => ({})),
+  /** 小宇宙：收藏的单集与节目、各自的标签（只存在本机，与小宇宙账号里的订阅、收藏无关） */
+  xyzSaved: new Store<XyzSaved>('xyzSaved', emptyXyzSaved, (v) => sanitizeXyzSaved(v)),
+  /** 小宇宙：收听记录（单集 ID → 累计） */
+  xyzListens: new Store<Record<string, XyzListen>>('xyzListens', () => ({})),
+  /** 小宇宙：做过的片段快照（只有元数据；图片与音频在下载文件夹） */
+  xyzSnapshots: new Store<XyzSnapshotRecord[]>('xyzSnapshots', () => []),
+  /** 小宇宙：可变码率 mp3 的帧位置索引（音频地址 → 扫描结果；只有帧的位置，没有音频） */
+  xyzScans: new Store<Record<string, { scan: Mp3Scan; at: number }>>('xyzScans', () => ({})),
   /** YouTube 授权：访问令牌、刷新令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
   /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */
@@ -219,6 +232,11 @@ export const stores = {
 /** 一个视频的字幕（按视频时间），回看时直接用、不再花钱。每个视频一个键：写入时不必把所有视频的字幕都重写一遍 */
 export function subtitleTrackStore(videoId: string): Store<SubtitleTrack | null> {
   return new Store<SubtitleTrack | null>(`subtitles:${videoId}`, () => null);
+}
+
+/** 一集小宇宙的字幕（按真实时间）：每集一个键 */
+export function xyzTranscriptStore(eid: string): Store<XyzTranscript | null> {
+  return new Store<XyzTranscript | null>(`xyzTranscript:${eid}`, () => null);
 }
 
 export interface YouTubeAuthState {

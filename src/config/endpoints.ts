@@ -12,6 +12,11 @@ export const ENDPOINTS = {
   openai: 'https://api.openai.com/v1',
   /** 豆瓣：只读条目评论的公开 RSS（/feed/subject/<ID>/reviews），不带 Cookie、不带 Referer */
   douban: 'https://www.douban.com',
+  /**
+   * 小宇宙的音频 CDN（2026-11-13 新增，用户批准，见 DECISIONS §72）：只读你打开的那一集的公开音频文件（分段读，不存文件），
+   * 用来出字幕、画快照波形、导出快照的音频片段。不带 Cookie、不带 Referer；页面上的 <audio> 是跨站的，浏览器不让扩展从播放器取声音。
+   */
+  xyzMedia: 'https://media.xyzcdn.net',
 } as const;
 
 export type Endpoints = { [K in keyof typeof ENDPOINTS]: string };
@@ -27,6 +32,12 @@ export const GOOGLE_OAUTH_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/
  * 豆瓣对外站加载图片有防盗链；被拒时界面说明原因并改用本地生成的封面，不伪装来源绕过。
  */
 export const DOUBAN_IMAGE_ORIGINS: readonly string[] = Array.from({ length: 9 }, (_, i) => `https://img${i + 1}.doubanio.com`);
+
+/**
+ * 小宇宙的图片 CDN（2026-11-13 新增，用户批准，见 DECISIONS §72）：只进 CSP img-src，侧边栏用 <img> 加载单集 / 节目封面、画进快照卡片
+ * （它对所有来源返回 Access-Control-Allow-Origin: *，画进画布后照样能导出 PNG）。不进 connect-src / host_permissions。
+ */
+export const XYZ_IMAGE_ORIGINS: readonly string[] = ['https://image.xyzcdn.net'];
 
 /** 内容脚本注入、并接受其观看上报的站点（只读本地播放器状态，不抓取页面内容） */
 export const TRACKED_SITES = ['https://www.youtube.com'] as const;
@@ -81,6 +92,13 @@ export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/'];
  * 直播（live.bilibili.com）、搜索（search.bilibili.com）、个人空间（space.bilibili.com）是别的域名，不在范围里。
  */
 export const BILI_PAGES: readonly string[] = ['https://www.bilibili.com/'];
+
+/**
+ * 小宇宙网页版（2026-11-13 新增，见 DECISIONS §72）：小宇宙脚本注入的页面。脚本只认单集页 /episode/<ID>：
+ * 读单集的标题、节目名、封面、音频地址、时长和节目简介，看 <audio> 的播放状态，在页面上叠加一层只读字幕（可关闭）。
+ * 小宇宙是单页应用，从节目页点进单集不重新加载，所以注入范围是整个站。扩展不向这个站点发任何请求，不在 ENDPOINTS 里。
+ */
+export const XYZ_PAGES: readonly string[] = ['https://www.xiaoyuzhoufm.com/'];
 
 /**
  * Muse 聊天（2026-11-11 新增，见 DECISIONS §60）：「问 muse」面板里的"打开 muse.ai"只是在新标签页里打开它，

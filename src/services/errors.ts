@@ -21,6 +21,8 @@ export type ErrorKind =
   | 'douban' // 豆瓣 RSS 读取失败
   | 'subtitles' // 自动字幕（转写 / 翻译 / 采集）
   | 'subtitles_budget' // 达到每日字幕预算
+  | 'xyz' // 小宇宙：读音频、认格式
+  | 'xyz_scan' // 小宇宙：可变码率 mp3 还在扫描，等一会儿再读
   | 'network'
   | 'input'
   | 'internal';
