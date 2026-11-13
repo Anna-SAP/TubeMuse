@@ -248,6 +248,15 @@ export const DEFAULT_SETTINGS = {
     /** 记下在小宇宙上听了什么（只在本机） */
     tracking: true,
   },
+  /**
+   * 中文配音（用户 2026-11-13 要求，见 DECISIONS §74）：给 YouTube 视频关联一个本地 .m4a，开启后在播放页叠加播放，
+   * 跟随视频的播放、暂停、拖动与倍速，加上你手动设的偏移；开启时原声降 20%。音频只存在本机（IndexedDB），不发任何网络请求。
+   */
+  dub: {
+    enabled: true,
+    /** 打开有中文配音的视频时提示（工具栏图标上的"中"、侧边栏顶部的一行）；配音本身仍要你点"开启" */
+    prompt: true,
+  },
   /** 侧边栏界面偏好 */
   ui: {
     /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
@@ -898,6 +907,39 @@ export const LLM_LIMITS = {
   clusterMaxWatchedChannels: 50,
   channelDescriptionChars: 120,
   utteranceMaxChars: 500,
+} as const;
+
+/** 中文配音的内部参数（DECISIONS §74） */
+export const DUB = {
+  /** 配音开启时原声的音量倍数：降 20%（用户 2026-11-13 指定）；配音本身保持正常音量（1） */
+  originalVolume: 0.8,
+  /** 两边位置差超过这么多秒才把配音拉回来（每次拉回会有一下极短的停顿；同一速度下两个播放器的走时差得很慢） */
+  resyncSec: 0.3,
+  /** 从暂停开始播放时，差这么多就先对齐再放 */
+  startAlignSec: 0.08,
+  /** 偏移滑块的范围（秒，正负对称）与步长；更大的偏移可以直接输入数字 */
+  delayRangeSec: 60,
+  delayStepSec: 0.1,
+  /** 偏移最多能设到多少秒（输入框的上限，正负对称） */
+  maxDelaySec: 600,
+  /** 跟随的检查间隔（毫秒）；视频的播放、暂停、跳转、倍速事件到来时立刻检查 */
+  tickMs: 200,
+  /** 后台把本机的音频文件分块交给 YouTube 页面里的配音脚本：每块多少字节（base64 后约 1.33 倍） */
+  chunkBytes: 4 * 1024 * 1024,
+  /** 文件大小上限（字节）：开启时整份载入那个标签页的内存 */
+  maxFileBytes: 500 * 1024 * 1024,
+  /** m4a 的索引（moov）最多读多少字节 */
+  maxMoovBytes: 32 * 1024 * 1024,
+  /** 音量比较的容差 */
+  volumeEps: 0.002,
+  /** 原声音量被改回原值这么多次（在 revertWindowMs 内）：判定 YouTube 不让改，停手并说明，不跟它来回抢 */
+  maxVolumeReverts: 5,
+  revertWindowMs: 3_000,
+  /** 浏览器拦下自动出声后，隔多久再试一次播放（毫秒） */
+  playRetryMs: 2_000,
+  /** 列表里显示的标题最多多少字 */
+  titleMaxChars: 200,
+  fileNameMaxChars: 200,
 } as const;
 
 /** Anthropic 服务端拒答回退：'default' 在不支持的模型上等于不回退，安全。 */

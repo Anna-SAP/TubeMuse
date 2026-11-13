@@ -714,7 +714,7 @@ function App() {
       </Section>
 
       <Section title="17. 数据" id="data">
-        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签、eMails 收藏的文章与评分、小宇宙的字幕、收藏、收听记录与快照清单），但不含 API Key、X Token 与授权令牌（也从不保存任何音频或视频）。</p>
+        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签、eMails 收藏的文章与评分、小宇宙的字幕、收藏、收听记录与快照清单、中文配音的视频与文件对应关系），但不含 API Key、X Token 与授权令牌，也不含中文配音的音频文件本身（那是你自己选的本地文件，只存在这个浏览器里；除此之外从不保存任何音频或视频）。清空时一并删除这些配音音频。</p>
         <div class="row">
           <button
             class="btn"
@@ -823,6 +823,21 @@ function App() {
         <label class="inline">
           <input type="checkbox" data-testid="xyz-tracking" checked={settings.xyz.tracking} onChange={(e) => updateSection('xyz', { tracking: e.currentTarget.checked })} />
           记下在小宇宙上听了什么（收听记录，只在本机）
+        </label>
+      </Section>
+
+      <Section title="19. 中文配音" id="dub">
+        <p class="muted small">
+          在侧边栏"配音"页给 YouTube 视频关联一个本地中文配音（.m4a），开启后在播放页叠加播放：跟随视频的播放、暂停、拖动进度和倍速，加上你手动设的偏移（不做逐句对齐）；配音开着时原声降 20%。
+          音频文件只存在这个浏览器里（扩展自己的 IndexedDB），不上传、不发任何网络请求、不花钱；导出数据时只导出视频与文件名、偏移的对应关系。
+        </p>
+        <label class="inline">
+          <input type="checkbox" data-testid="dub-enabled" checked={settings.dub.enabled} onChange={(e) => updateSection('dub', { enabled: e.currentTarget.checked })} />
+          启用中文配音（关掉后不再播放、不再提示，已关联的文件保留）
+        </label>
+        <label class="inline">
+          <input type="checkbox" data-testid="dub-prompt-setting" checked={settings.dub.prompt} onChange={(e) => updateSection('dub', { prompt: e.currentTarget.checked })} />
+          打开有中文配音的视频时提示（工具栏图标上的"中"、侧边栏顶部一行；配音仍要你点"开启"）
         </label>
       </Section>
 

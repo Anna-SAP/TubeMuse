@@ -69,6 +69,8 @@ export const WATCH_VIDEOS = [
   { id: 'p2Glance0002', seconds: 900, title: '搞笑合集 第 8 期', channelId: 'UCp2fun', channelTitle: '快乐每一天', categoryId: '24' },
   { id: 'p2Half000003', seconds: 1200, title: '神经网络课程 第 2 讲', channelId: 'UCp2learn', channelTitle: '机器学习课堂', categoryId: '27' },
 ];
+/** 中文配音（DECISIONS §74）用的播放页：两分钟的静音视频，配音用 tests/fixtures/xyz-tones.m4a（约 92 秒） */
+export const DUB_VIDEO = { id: 'dubVideo0001', seconds: 120 };
 /**
  * 自动字幕用的播放页：captions 决定播放器字幕按钮的样子（属性取自 2026-11 实测的 YouTube 播放器）。
  * 音频是"说话"的模拟：一段一段带谐波的声音，中间有停顿。
@@ -752,9 +754,9 @@ export function startMockServer() {
       }
       if (p.startsWith('/media/')) {
         const id = p.slice('/media/'.length).replace(/.wav$/, '');
-        const w = WATCH_VIDEOS.find((x) => x.id === id) ?? SUBTITLE_VIDEOS.find((x) => x.id === id) ?? CC_VIDEOS.find((x) => x.id === id);
+        const w = WATCH_VIDEOS.find((x) => x.id === id) ?? SUBTITLE_VIDEOS.find((x) => x.id === id) ?? CC_VIDEOS.find((x) => x.id === id) ?? (id === DUB_VIDEO.id ? DUB_VIDEO : undefined);
         if (!w) return send(404, {});
-        const wav = WATCH_VIDEOS.includes(/** @type {any} */ (w)) ? silentWav(w.seconds) : speechWav(w.seconds);
+        const wav = WATCH_VIDEOS.includes(/** @type {any} */ (w)) || w === DUB_VIDEO ? silentWav(w.seconds) : speechWav(w.seconds);
         const range = /bytes=(d+)-(d*)/.exec(String(req.headers.range ?? ''));
         if (range) {
           const start = Number(range[1]);

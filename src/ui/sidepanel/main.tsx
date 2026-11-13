@@ -17,12 +17,13 @@ import { ClipsView } from './ClipsView';
 import { XhsView } from './XhsView';
 import { EmailView } from './EmailView';
 import { XyzView } from './XyzView';
+import { DubPrompt, DubView } from './DubView';
 import { ReminderBanner } from './ReminderBanner';
 import { HostAccessBanner } from '../shared/host-access';
 import { useMuseAsk } from './MuseAsk';
 import { runScheduledJobs } from '../../services/summary-service';
 
-type Tab = 'find' | 'discover' | 'douban' | 'xhs' | 'xyz' | 'email' | 'subtitles' | 'clips' | 'records' | 'profile' | 'changes';
+type Tab = 'find' | 'discover' | 'douban' | 'xhs' | 'xyz' | 'email' | 'subtitles' | 'dub' | 'clips' | 'records' | 'profile' | 'changes';
 
 function SetupBanner() {
   const ctx = appCtx();
@@ -197,6 +198,7 @@ function App() {
           go('find');
         }}
       />
+      <DubPrompt hidden={tab === 'dub'} onOpen={() => go('dub')} />
       <QuotaWarning snap={quota} />
       <div ref={pin.anchor} />
       <nav class={`tabs${pinned ? ' pinned' : ''}${pin.stuck ? ' stuck' : ''}`} ref={pin.nav} data-testid="nav">
@@ -210,6 +212,7 @@ function App() {
               ['xyz', '小宇宙'],
               ['email', 'eMails'],
               ['subtitles', '字幕'],
+              ['dub', '配音'],
               ['clips', '片段'],
               ['records', '记录'],
               ['profile', '画像'],
@@ -248,6 +251,7 @@ function App() {
         {tab === 'xyz' && <XyzView />}
         {tab === 'email' && <EmailView />}
         {tab === 'subtitles' && <SubtitlesView />}
+        {tab === 'dub' && <DubView />}
         {tab === 'clips' && <ClipsView />}
         {tab === 'records' && <RecordsView />}
         {tab === 'profile' && <ProfileView />}

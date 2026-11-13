@@ -112,6 +112,7 @@ try {
         { js: 'content-xhs.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'ISOLATED' },
         { js: 'content-email.js', matches: 'https://mail.google.com/*', world: 'ISOLATED' },
         { js: 'content-xyz.js', matches: 'https://www.xiaoyuzhoufm.com/*', world: 'ISOLATED' },
+        { js: 'content-dub.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
       ]),
     '内容脚本与 Chrome 版完全相同：注入的站点、两个页面内助手在页面环境（MAIN）',
   );

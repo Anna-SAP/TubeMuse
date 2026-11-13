@@ -52,8 +52,9 @@ try {
         { js: 'content-xhs.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'ISOLATED' },
         { js: 'content-email.js', matches: 'https://mail.google.com/*', world: 'ISOLATED' },
         { js: 'content-xyz.js', matches: 'https://www.xiaoyuzhoufm.com/*', world: 'ISOLATED' },
+        { js: 'content-dub.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
       ]),
-    `观看追踪、自动字幕、多语字幕脚本只注入 www.youtube.com，小红书脚本只注入小红书网页版，邮件脚本只注入 mail.google.com，小宇宙脚本只注入小宇宙网页版，片段录制脚本注入 YouTube、小红书、X、酷播、Instagram、抖音、B 站（同一条、只注入一次，后五个站只有它），只有两个页面内助手在页面环境（${scripts.map((/** @type {{ js: string; matches: string; world: string }} */ s) => `${s.js} → ${s.matches} ${s.world}`).join('；')}）`,
+    `观看追踪、自动字幕、多语字幕脚本只注入 www.youtube.com，小红书脚本只注入小红书网页版，邮件脚本只注入 mail.google.com，小宇宙脚本只注入小宇宙网页版，中文配音脚本只注入 www.youtube.com，片段录制脚本注入 YouTube、小红书、X、酷播、Instagram、抖音、B 站（同一条、只注入一次，后五个站只有它），只有两个页面内助手在页面环境（${scripts.map((/** @type {{ js: string; matches: string; world: string }} */ s) => `${s.js} → ${s.matches} ${s.world}`).join('；')}）`,
   );
   check(
     manifest.permissions.includes('alarms') && !['tabs', 'scripting', 'tabCapture', 'offscreen', 'downloads', 'desktopCapture', 'webRequest', 'declarativeNetRequest'].some((p) => manifest.permissions.includes(p)),
