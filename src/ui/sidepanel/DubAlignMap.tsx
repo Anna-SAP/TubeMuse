@@ -5,7 +5,7 @@
 //   斜纹 = 这时只有原声（中文还没开始 / 停下等画面 / 已经放完），红斜纹 = 被跳过的中文；每条色带上写着那一段差多少。
 //   左右拖下面的中文 = 调这一段的偏移（和"中文位置"滑块一样：拖动时实时生效，松手后存下）。
 // 只画跟随本来的规则（core/dub-align.ts，和 dubStep 逐点对照过），不做、也不暗示逐句对齐。
-// 「对齐」区顶部的差距读数（DubGapReadout，DECISIONS §78）和图用同一个播放头（useDubAlignNow），大字写"此刻差多少秒"。
+// 「对齐」区顶部的读数（DubGapReadout，DECISIONS §78、§79）和图用同一个播放头（useDubAlignNow），大字写"还差多少秒没对上"。
 
 import type { RefObject } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -14,8 +14,10 @@ import { clampDelay, formatClockSec, formatSeconds, type DubMap } from '../../co
 import {
   alignNowText,
   alignOverallText,
-  dubGapAt,
-  gapNoteText,
+  dubRemainingAt,
+  remainingKind,
+  remainingNoteText,
+  secondsText,
   alignTotals,
   describeDubAt,
   describeVideoAt,
@@ -109,21 +111,30 @@ export function useDubAlignNow(p: DubAlignInput): AlignNow {
 }
 
 /**
- * 此刻差距（DECISIONS §78）：大字写视频位置 − 中文位置（秒，一位小数，+ = 中文比画面晚，和"这一段的偏移"一个写法），
- * 下面一行写这个数的意思和两边各在哪里。播放推进、跨过对齐点、调偏移时立刻跟着变；往下滚去调的时候吸在顶上
+ * 还差多少没对上（DECISIONS §79，用户手测后定的；§78 原来写的是此刻中文滞后多少）：
+ * 大字 = 全片时长差 − 此刻中文滞后（秒，一位小数）：加对齐点、把中文往后调、中文停下等画面时它变小，全部对完时是 0，抵过头了是负的。
+ * 下面一行写这个数是怎么算出来的（时长精确到 0.1 秒）和两边此刻在哪里。播放推进、跨过对齐点、调偏移时立刻跟着变；往下滚去调的时候吸在顶上
  */
 export function DubGapReadout({ now }: { now: AlignNow }) {
-  const { plan, t } = now;
-  const gap = plan && t !== undefined ? dubGapAt(plan, t) : undefined;
-  const kind = plan?.kind ?? 'none';
+  const { al, plan, t } = now;
+  const r = al && plan && t !== undefined ? dubRemainingAt(al, plan, t) : undefined;
+  const kind = r ? remainingKind(r) : 'none';
+  const note =
+    al && plan && t !== undefined && r
+      ? remainingNoteText(al, plan, t, r)
+      : !al
+        ? '读到视频的时长后显示'
+        : al.dubDuration === undefined
+          ? '读不到中文配音的时长，算不出还差多少：开启配音、载入后再看'
+          : '读不到视频此刻的位置（正在放广告？）';
   return (
-    <div class={`dub-gap ${kind}`} data-testid="dub-gap" data-kind={kind}>
-      <div class="dub-gap-label">此刻差距（视频 − 中文，+ 是中文比画面晚）</div>
+    <div class={`dub-gap ${kind}`} data-testid="dub-gap" data-kind={kind} data-plan={plan?.kind ?? 'none'}>
+      <div class="dub-gap-label">还差多少没对上（全片时长差 − 此刻中文滞后；0 = 全部对完）</div>
       <div class="dub-gap-value" data-testid="dub-gap-value">
-        {gap === undefined ? '—' : signed(gap)}
+        {r ? secondsText(r.remaining) : '—'}
       </div>
       <div class="dub-gap-note" data-testid="dub-gap-note">
-        {plan && t !== undefined ? gapNoteText(plan, t) : now.al ? '读不到视频此刻的位置（正在放广告？）' : '读到视频的时长后显示'}
+        {note}
       </div>
     </div>
   );

@@ -156,28 +156,100 @@ export function alignNowText(plan: DubPlan, t: number): string {
 }
 
 /**
- * 此刻的差距（秒，DECISIONS §78）：视频位置 − 中文位置，正 = 中文比画面晚。中文在放时就是这一段的偏移；
- * 中文停着（还没开始 / 停下等画面 / 已经放完）时，视频照常走、中文不动，差距随播放变大
+ * 此刻中文滞后多少（秒）：视频位置 − 中文位置，正 = 中文比画面晚。中文在放时就是这一段的偏移；
+ * 中文停着（还没开始 / 停下等画面）时，视频照常走、中文不动，滞后随播放变大
  */
 export function dubGapAt(plan: DubPlan, t: number): number {
   return t - plan.dub;
 }
 
-/** 差距读数下面那一行：差距的意思、两边各在哪里、停着时为什么在变 */
-export function gapNoteText(plan: DubPlan, t: number): string {
-  const gap = dubGapAt(plan, t);
+/** 照现在的对齐中文在视频哪里放完（中文比视频先放完时；后面只剩原声） */
+function silentTail(al: DubAlignment): DubHold | undefined {
+  const last = al.holds[al.holds.length - 1];
+  return last && last.kind === 'after-end' && last.v1 >= al.videoDuration - EPS ? last : undefined;
+}
+
+/** 还差多少没对上（DECISIONS §79） */
+export interface DubRemaining {
+  /** 全片时长差：视频时长 − 中文时长（按实际读到的时长） */
+  total: number;
+  /** 此刻中文滞后（已经被开头的偏移、对齐点、中文停下等画面抵掉的） */
+  lag: number;
+  /** 还差 = total − lag：0 = 全部对完（中文和视频同时结束），负 = 抵过头了 */
+  remaining: number;
+}
+
+/**
+ * 还差多少没对上（DECISIONS §79，用户手测后定的）= 全片时长差 − 此刻中文滞后。
+ * 中文在放时就是"全片短多少 − 这一段的偏移"，和对齐图说明里的"还差"同一个数；中文停下等画面（或还没开始）时，
+ * 这几秒正在把差距抵掉，随播放变小、到下一个对齐点正好接上下一段的。
+ * 中文已经放完之后，滞后按它放完的那一刻算（不再随播放变大）：否则一直放下去，到视频结尾就成了 0，像是对完了。
+ * 读不到中文的时长时算不出来
+ */
+export function dubRemainingAt(al: DubAlignment, plan: DubPlan, t: number): DubRemaining | undefined {
+  const D = al.dubDuration;
+  if (D === undefined) return undefined;
+  const total = al.videoDuration - D;
+  const tail = silentTail(al);
+  const lag = tail && (plan.kind === 'after-end' || plan.kind === 'ended') ? tail.v0 - D : dubGapAt(plan, t);
+  return { total, lag, remaining: total - lag };
+}
+
+/** 一位小数的秒数：583.0 秒、−12.0 秒 */
+export const secondsText = (x: number): string => {
+  const r = Number(x.toFixed(1)) || 0;
+  return `${r < 0 ? '−' : ''}${Math.abs(r).toFixed(1)} 秒`;
+};
+
+/** 精确到 0.1 秒的时刻：36:51.6、1:02:03.4（说明时长用，不四舍五入成整秒） */
+export function clockTenths(sec: number): string {
+  const t = Math.max(0, Math.round(sec * 10)) / 10;
+  const whole = Math.floor(t);
+  const tenth = Math.round((t - whole) * 10);
+  return `${formatClockSec(whole)}.${tenth}`;
+}
+
+/** 还差多少的读数状态：还有（left）/ 对完了（done）/ 抵过头了（over） */
+export function remainingKind(r: DubRemaining): 'left' | 'done' | 'over' {
+  return Math.abs(r.remaining) < 0.5 ? 'done' : r.remaining > 0 ? 'left' : 'over';
+}
+
+/**
+ * 读数下面那一行：这个数是怎么算出来的（全片时长差 − 此刻中文滞后，时长精确到 0.1 秒），两边此刻在哪里，
+ * 中文停着时为什么在变；对完了 / 抵过头了时先说结论
+ */
+export function remainingNoteText(al: DubAlignment, plan: DubPlan, t: number, r: DubRemaining): string {
+  const D = al.dubDuration ?? 0;
+  const lagPart = r.lag >= 0 ? `− 此刻中文滞后 ${secondsText(r.lag)}` : `+ 此刻中文超前 ${secondsText(-r.lag)}`;
+  const formula = `= 全片时长差 ${secondsText(r.total)}（英文 ${clockTenths(al.videoDuration)} − 中文 ${clockTenths(D)}）${lagPart}`;
+  const kind = remainingKind(r);
+  const head =
+    kind === 'done'
+      ? '对完了：照现在的对齐，中文和视频差不多同时结束。'
+      : kind === 'over'
+        ? `抵过头了：此刻中文滞后比全片时长差还多 ${secondsText(-r.remaining)}，照这个滞后放到结尾，视频放完时中文还有这么多没放到。`
+        : '';
+  let where: string;
   switch (plan.kind) {
     case 'playing':
-      return `${gapText(gap)} · 视频 ${clock(t)} ↔ 中文 ${clock(plan.dub)}`;
+      where = `视频 ${clock(t)} ↔ 中文 ${clock(plan.dub)}`;
+      break;
     case 'wait':
-      return `中文这一段已经说完、停在 ${clock(plan.dub)} 等画面（只有原声），差距随播放变大；视频到 ${clock(plan.until ?? t)} 的对齐点再接着放`;
+      where = `中文停在 ${clock(plan.dub)} 等画面（只有原声），这几秒正在抵掉差距；视频到 ${clock(plan.until ?? t)} 的对齐点再接着放`;
+      break;
     case 'before-start':
-      return `中文还没开始（视频到 ${clock(plan.until ?? t)} 时从中文 ${clock(plan.dub)} 开始），差距随播放变大`;
-    case 'after-end':
-      return `中文已经放完（只有原声），差距随播放变大`;
+      where = `中文还没开始（视频到 ${clock(plan.until ?? t)} 时开始），开头的推后正在抵掉差距`;
+      break;
+    case 'after-end': {
+      const tail = silentTail(al);
+      where = tail ? `中文在视频 ${clock(tail.v0)} 已经放完，后面只有原声` : '中文已经放完';
+      break;
+    }
     case 'ended':
-      return '视频放完了';
+      where = '视频放完了';
+      break;
   }
+  return `${head}${formula} · ${where}`;
 }
 
 /**
@@ -188,8 +260,7 @@ export function alignOverallText(al: DubAlignment): string | undefined {
   const D = al.dubDuration;
   if (D === undefined) return undefined;
   const V = al.videoDuration;
-  const last = al.holds[al.holds.length - 1];
-  const tail = last && last.kind === 'after-end' && last.v1 >= V - EPS ? last : undefined;
+  const tail = silentTail(al);
   const unplayed = al.skips.find((s) => s.kind === 'tail');
   if (tail) {
     const rest = V - tail.v0;

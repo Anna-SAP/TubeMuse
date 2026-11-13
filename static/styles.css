@@ -1968,7 +1968,7 @@ a.db-title:hover {
   margin-left: -14px;
 }
 
-/* 此刻差距（DECISIONS §78）：大字写视频 − 中文差多少秒；往下滚去调的时候吸在头部（和固定着的导航栏）下面，只在"对齐"一栏里吸 */
+/* 还差多少没对上（DECISIONS §78、§79）：大字写全片时长差 − 此刻中文滞后；往下滚去调的时候吸在头部（和固定着的导航栏）下面，只在"对齐"一栏里吸 */
 .dub-gap {
   position: sticky;
   top: calc(var(--top-h, 0px) + var(--nav-h, 0px));
@@ -2003,23 +2003,23 @@ a.db-title:hover {
   font-size: 12px;
   line-height: 1.4;
 }
-/* 中文停着（还没开始 / 等画面 / 放完）：差距在随播放变大，换成提醒色 */
-.dub-gap.wait,
-.dub-gap.before-start,
-.dub-gap.after-end {
+/* 还差多少（DECISIONS §79）：还有 = 强调色；对完了 = 绿；抵过头了 = 提醒色；算不出 = 灰 */
+.dub-gap.done {
+  border-color: var(--ok);
+}
+.dub-gap.done .dub-gap-value {
+  color: var(--ok);
+}
+.dub-gap.over {
   border-color: var(--warn);
 }
-.dub-gap.wait .dub-gap-value,
-.dub-gap.before-start .dub-gap-value,
-.dub-gap.after-end .dub-gap-value {
+.dub-gap.over .dub-gap-value {
   color: var(--warn);
 }
-.dub-gap.none,
-.dub-gap.ended {
+.dub-gap.none {
   border-color: var(--border);
 }
-.dub-gap.none .dub-gap-value,
-.dub-gap.ended .dub-gap-value {
+.dub-gap.none .dub-gap-value {
   color: var(--muted);
 }
 
