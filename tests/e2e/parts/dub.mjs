@@ -200,6 +200,67 @@ export async function dub(t) {
   await panel.getByRole('button', { name: '+10 秒', exact: true }).click();
   r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (x.anchors?.[0]?.video - 10)) < 0.05, '这一段 +10 秒');
   check(r.delaySec === 0 && ((await panel.getByTestId('dub-segment').textContent()) ?? '').includes('第 1 个对齐点之后'), '+10 秒只改对齐点之后这一段（改的是这个对齐点的中文位置），开头那段的偏移不变');
+
+  console.log('\n[中文配音：对齐图——两条音轨画出此刻的对齐状态（DECISIONS §77）：此刻差多少、全片还差多少；指着哪里说哪里；拖下面的中文调这一段]');
+  const mapText = async (/** @type {string} */ id) => ((await panel.getByTestId(id).textContent()) ?? '').replace(/\s+/g, ' ');
+  const waitMapText = async (/** @type {string} */ id, /** @type {(s: string) => boolean} */ ok, /** @type {string} */ what) => {
+    for (let i = 0; i < 50; i++) {
+      const x = await mapText(id);
+      if (ok(x)) return x;
+      await page.waitForTimeout(100);
+    }
+    throw new Error(`对齐图等不到：${what}（最后：${await mapText(id)}）`);
+  };
+  let now = await waitMapText('dub-map-now', (x) => x.includes('视频 1:10 ↔ 中文 1:00'), '此刻');
+  check(now.includes('此刻：视频 1:10 ↔ 中文 1:00，中文比画面晚 10 秒'), `此刻两边各在哪里、差多少：${now}`);
+  let overall = await mapText('dub-map-overall');
+  check(/中文在视频 1:4[12] 放完/.test(overall) && overall.includes('全片中文短') && !/逐句|逐词/.test(overall), `全片：照现在的对齐中文在哪里放完、后面还差多少：${overall}`);
+  const holdKinds = await panel.getByTestId('dub-map-hold').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
+  check(JSON.stringify(holdKinds) === JSON.stringify(['wait', 'after-end']), `全片图上标出中文停下等画面（1:00–1:10）和中文放完之后只有原声的地方：${holdKinds.join(', ')}`);
+  check(
+    (await panel.getByTestId('dub-map-overview-anchor').count()) === 1 && (await panel.getByTestId('dub-map-anchor').count()) === 1 && (await mapText('dub-map-anchor')) === '1',
+    '对齐点画在两条音轨之间，编号和"第 1 个对齐点"一样',
+  );
+  check((await panel.getByTestId('dub-anchor').first().evaluate((el) => /** @type {HTMLLIElement} */ (el).value)) === 1, '列表里的对齐点也从 1 编号（"开头"不占编号）');
+  check((await mapText('dub-map-now-gap')) === '+10.0 秒', '附近图上播放头旁写着这一段差多少');
+  // 指着上面英文的 1:05（中文停下等画面的那 10 秒里）
+  const detail = panel.getByTestId('dub-map-detail');
+  const box = /** @type {{ x: number, y: number, width: number, height: number }} */ (await detail.boundingBox());
+  const pxPerSec = (box.width - 36) / 120;
+  const centerX = box.x + 30 + (box.width - 36) / 2;
+  await panel.mouse.move(centerX - 5 * pxPerSec, box.y + 26);
+  const hover = await waitMapText('dub-map-hover', (x) => x.includes('视频 1:05'), '指着 1:05');
+  check(hover.includes('视频 1:05：中文停下等画面，只有原声') && hover.includes('视频到 1:10 的对齐点再接着放'), `指着英文那条：说出这时听到的是什么（${hover}）`);
+  await panel.mouse.move(centerX + 3 * pxPerSec, box.y + 90);
+  const hoverZh = await waitMapText('dub-map-hover', (x) => x.startsWith('中文 1:03'), '指着中文 1:03');
+  check(hoverZh.includes('中文 1:03 → 在视频 1:13 放（第 1 个对齐点之后）'), `指着中文那条：说出这一句在视频哪里放（${hoverZh}）`);
+  // 拖下面的中文往右 40 像素：这一段的中文推后 40 / 每秒像素 秒——拖动时页面里的配音实时跟着，松手后存下
+  const dragBy = 40;
+  const wantOff = Math.round((10 + dragBy / pxPerSec) * 10) / 10;
+  const y0 = box.y + 95;
+  await panel.mouse.move(centerX, y0);
+  await panel.mouse.down();
+  await panel.mouse.move(centerX + dragBy / 2, y0, { steps: 4 });
+  s = await waitState((x) => x.delaySec > 10.3 && x.delaySec < wantOff, '拖动时实时生效');
+  const anchorVideo = r.anchors[0].video;
+  check(Math.abs((await storedRec()).anchors[0].dub - (anchorVideo - 10)) < 0.05, `拖到一半：页面里的配音已经按 ${s.delaySec} 秒跟着，还没存`);
+  await panel.mouse.move(centerX + dragBy, y0, { steps: 4 });
+  await panel.mouse.up();
+  r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - wantOff)) < 0.15, '拖完存下');
+  check(r.delaySec === 0 && Math.abs(r.anchors[0].video - 70) < 0.3, `在对齐图上把中文往右拖 ${dragBy} 像素 = 这一段推后 ${(wantOff - 10).toFixed(1)} 秒：松手后存成对齐点 视频 ${r.anchors[0].video} ↔ 中文 ${r.anchors[0].dub}（开头那段不变）`);
+  now = await waitMapText('dub-map-now', (x) => !x.includes('晚 10 秒'), '拖完图跟着变');
+  check(now.includes(`中文比画面晚 ${Number(wantOff.toFixed(1))} 秒`), `拖完图上的说法跟着变：${now}`);
+  check((await mapText('dub-delay-value')).includes(`+${wantOff.toFixed(1)} 秒`), '上面的"这一段的偏移"也跟着变');
+  // 改回 +10 秒，后面接着测分段跟随
+  await panel.getByTestId('dub-delay-input').fill('10');
+  await panel.getByTestId('dub-delay-input').press('Enter');
+  await panel.getByTestId('dub-delay-input').blur();
+  r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - 10)) < 0.05, '改回 +10 秒');
+  await waitMapText('dub-map-now', (x) => x.includes('中文比画面晚 10 秒'), '改回 +10 秒后图跟着变');
+  await panel.getByTestId('dub-map-zoom').filter({ hasText: '30 秒' }).click();
+  check((await panel.getByTestId('dub-map-zoom').filter({ hasText: '30 秒' }).getAttribute('aria-pressed')) === 'true', '附近可以放大到 30 秒');
+  await panel.getByTestId('dub-map').screenshot({ path: join(shots, '72-dub-align-map.png') });
+  await panel.getByTestId('dub-map-zoom').filter({ hasText: '2 分' }).click();
   await page.evaluate(() => {
     const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
     v.currentTime = 75;
@@ -222,6 +283,14 @@ export async function dub(t) {
   await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 67));
   s = await waitState((x) => x.playing && x.videoTime > 71, '过了对齐点', 15000);
   check(Math.abs(s.videoTime + 10 - s.dubTime) < 0.4, `中文这一段说得慢：画面到了 1:10 就跳到 1:20 接着放（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
+  // 对齐图：中文说得慢的那一段——视频先到了对齐点，没说完的 10 秒被跳过；播放中播放头跟着走
+  overall = await waitMapText('dub-map-overall', (x) => x.includes('中文在视频 1:2'), '跳过之后全片');
+  const skipKinds = await panel.getByTestId('dub-map-skip').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
+  check(JSON.stringify(skipKinds) === JSON.stringify(['cut']) && /中文在视频 1:2[12] 放完/.test(overall), `对齐图标出被跳过的中文（1:10–1:20），中文更早放完：${overall}`);
+  const nowA = await mapText('dub-map-now');
+  await page.waitForTimeout(1500);
+  const nowB = await mapText('dub-map-now');
+  check(nowA !== nowB && nowB.includes('中文比画面早 10 秒'), `播放中图跟着走：${nowA} → ${nowB}`);
   const list = (await panel.getByTestId('dub-anchors').textContent()) ?? '';
   check(list.includes('开头：不偏移') && list.includes('视频 1:10 ↔ 中文 1:20'), `对齐点列表：${list.replace(/\s+/g, ' ').slice(0, 80)}`);
   await panel.screenshot({ path: join(shots, '71-dub-anchors.png'), fullPage: true });

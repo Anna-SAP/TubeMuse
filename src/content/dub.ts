@@ -390,7 +390,9 @@ function tabState(): DubTabState {
     ...(loading?.size ? { progress: Math.min(1, loading.received / loading.size) } : {}),
     playing: !!audio && !audio.paused && !playPending,
     ...(title ? { title } : {}),
-    ...(v && Number.isFinite(v.duration) && v.duration > 0 && !adShowing() ? { videoTime: v.currentTime, videoDuration: v.duration } : {}),
+    ...(v && Number.isFinite(v.duration) && v.duration > 0 && !adShowing()
+      ? { videoTime: v.currentTime, videoDuration: v.duration, videoPlaying: !v.paused && !v.seeking && !v.ended, videoRate: v.playbackRate }
+      : {}),
     ...(audio ? { dubTime: audio.currentTime, ...(Number.isFinite(audio.duration) ? { dubDuration: audio.duration } : {}) } : {}),
     ...(v && active ? { volume: { user: duck.userVolume ?? v.volume, now: v.volume, ducked: duck.ducked, blocked: duck.blocked, muted: v.muted } } : {}),
     ...(error && active ? { error } : {}),

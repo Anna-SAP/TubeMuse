@@ -2,7 +2,7 @@
 // 还有侧边栏顶部的一行提示（DubPrompt）：当前视频有中文配音、还没开启时显示。
 // 状态来自注入 YouTube 页面的配音脚本（只在本扩展内部传递）；对应关系在本机存储，音频在扩展自己的 IndexedDB。
 
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { DUB } from '../../config/defaults';
 import {
   DUB_MSG,
@@ -15,6 +15,7 @@ import {
   formatClockSec,
   misorderedAnchors,
   segmentOffsetText,
+  withSegmentOffset,
   type DubMark,
   type DubRecord,
   type DubTabState,
@@ -22,6 +23,7 @@ import {
 import { addDubAnchor, attachDub, checkDubStorage, removeDub, removeDubAnchor, setDubSegmentOffset } from '../../services/dub-service';
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
+import { DubAlignMap } from './DubAlignMap';
 import { Notice } from '../shared/components';
 import { openInCurrentTab } from '../shared/download';
 import { useActiveTabState } from '../shared/tab-state';
@@ -100,11 +102,35 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
   const dubDuration = state.dubDuration ?? rec.durationSec;
   const position = draftPos ?? state.target;
 
+  // 对齐图（DECISIONS §77）：按此刻的实时偏移画——拖"中文位置"、按微调按钮、在图上拖中文时，图立刻跟着变
+  const liveOffset = draft && draft.index === seg.index ? draft.offset : draftPos !== undefined && state.videoTime !== undefined ? clampDelay(state.videoTime - draftPos) : seg.offset;
+  const liveMap = useMemo(() => {
+    const base = dubMapOf(rec);
+    return seg.index < base.anchors.length ? withSegmentOffset(base, seg.index, liveOffset) : base;
+  }, [rec, seg.index, liveOffset]);
+  // 读到这一份状态的时刻：两次读位置之间，图上的播放头按倍速往前推
+  const stamp = useMemo(() => performance.now(), [state]);
+  const previewTimer = useRef<ReturnType<typeof setTimeout>>();
+  const previewWant = useRef<number>();
   const commit = (value: number) => {
     const c = clampDelay(value);
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewTimer.current = undefined;
     setDraft({ index: seg.index, offset: c });
     void setDubSegmentOffset(ctx, rec.videoId, seg.index, c);
   };
+  /** 在对齐图上拖中文：图立刻跟着变；页面里的配音每 80 毫秒跟一次（不必每个像素都让它跳一下） */
+  const previewOffset = (value: number) => {
+    const c = clampDelay(value);
+    setDraft({ index: seg.index, offset: c });
+    previewWant.current = c;
+    if (previewTimer.current) return;
+    previewTimer.current = setTimeout(() => {
+      previewTimer.current = undefined;
+      if (previewWant.current !== undefined) void previewSegment(tabId, { videoId: rec.videoId, segment: seg.index, offset: previewWant.current });
+    }, 80);
+  };
+  useEffect(() => () => previewTimer.current && clearTimeout(previewTimer.current), []);
   const nudge = (by: number) => commit(offset + by);
   const previewPos = (dubAt: number) => {
     setDraftPos(dubAt);
@@ -166,6 +192,18 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
           现在在：{where}
         </span>
       </div>
+      <DubAlignMap
+        map={liveMap}
+        {...(state.videoDuration ?? rec.videoDurationSec ? { videoDuration: state.videoDuration ?? rec.videoDurationSec } : {})}
+        {...(dubDuration !== undefined ? { dubDuration } : {})}
+        {...(state.videoTime !== undefined ? { videoTime: state.videoTime } : {})}
+        stamp={stamp}
+        playing={!!state.videoPlaying}
+        rate={state.videoRate ?? 1}
+        segment={seg.index}
+        onPreview={previewOffset}
+        onCommit={commit}
+      />
       <div class="row">
         <span>这一段的偏移</span>
         <span class="dub-delay-value" data-testid="dub-delay-value">
@@ -234,11 +272,11 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
       </p>
       {problem && <ProblemBox problem={problem} onClose={() => setProblem(undefined)} />}
       <ol class="dub-anchors" data-testid="dub-anchors">
-        <li class={seg.index < 0 ? 'on' : ''}>
+        <li class={`dub-anchor-start${seg.index < 0 ? ' on' : ''}`}>
           <span>开头：{delayText(rec.delaySec)}</span>
         </li>
         {anchors.map((a, k) => (
-          <li class={seg.index === k ? 'on' : ''} data-testid="dub-anchor">
+          <li class={seg.index === k ? 'on' : ''} data-testid="dub-anchor" {...(k === 0 ? { value: 1 } : {})}>
             <span>
               视频 {formatClockSec(a.video)} ↔ 中文 {formatClockSec(a.dub)}（{signed(Number((a.video - a.dub).toFixed(1)))}）
               {bad.includes(k) && <strong class="warn-text"> 中文位置不比前一个靠后：前一段的中文会被整段跳过</strong>}

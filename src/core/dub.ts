@@ -573,6 +573,9 @@ export interface DubTabState {
   title?: string;
   videoTime?: number;
   videoDuration?: number;
+  /** 视频在不在放（不是暂停、跳转、放完、广告）与倍速：侧边栏的对齐图在两次读位置之间据此把播放头往前推（DECISIONS §77） */
+  videoPlaying?: boolean;
+  videoRate?: number;
   dubTime?: number;
   dubDuration?: number;
   /** 视频此刻所在那一段的偏移（拖动"中文位置"时是实时值） */
