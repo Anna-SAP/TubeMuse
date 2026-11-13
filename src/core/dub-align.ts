@@ -156,6 +156,31 @@ export function alignNowText(plan: DubPlan, t: number): string {
 }
 
 /**
+ * 此刻的差距（秒，DECISIONS §78）：视频位置 − 中文位置，正 = 中文比画面晚。中文在放时就是这一段的偏移；
+ * 中文停着（还没开始 / 停下等画面 / 已经放完）时，视频照常走、中文不动，差距随播放变大
+ */
+export function dubGapAt(plan: DubPlan, t: number): number {
+  return t - plan.dub;
+}
+
+/** 差距读数下面那一行：差距的意思、两边各在哪里、停着时为什么在变 */
+export function gapNoteText(plan: DubPlan, t: number): string {
+  const gap = dubGapAt(plan, t);
+  switch (plan.kind) {
+    case 'playing':
+      return `${gapText(gap)} · 视频 ${clock(t)} ↔ 中文 ${clock(plan.dub)}`;
+    case 'wait':
+      return `中文这一段已经说完、停在 ${clock(plan.dub)} 等画面（只有原声），差距随播放变大；视频到 ${clock(plan.until ?? t)} 的对齐点再接着放`;
+    case 'before-start':
+      return `中文还没开始（视频到 ${clock(plan.until ?? t)} 时从中文 ${clock(plan.dub)} 开始），差距随播放变大`;
+    case 'after-end':
+      return `中文已经放完（只有原声），差距随播放变大`;
+    case 'ended':
+      return '视频放完了';
+  }
+}
+
+/**
  * 全片：照现在的对齐，中文在视频的哪一刻放完、后面还有多少只有原声（或者视频放完时中文还剩多少）。
  * 中文比视频短时再说全片差多少、现在的偏移和对齐点已经抵掉多少——剩下的要往后继续加对齐点
  */

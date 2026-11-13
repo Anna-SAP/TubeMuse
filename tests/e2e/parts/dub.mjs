@@ -211,8 +211,23 @@ export async function dub(t) {
     }
     throw new Error(`对齐图等不到：${what}（最后：${await mapText(id)}）`);
   };
-  let now = await waitMapText('dub-map-now', (x) => x.includes('视频 1:10 ↔ 中文 1:00'), '此刻');
-  check(now.includes('此刻：视频 1:10 ↔ 中文 1:00，中文比画面晚 10 秒'), `此刻两边各在哪里、差多少：${now}`);
+  // 此刻差距（DECISIONS §78）：「对齐」区顶上大字写视频 − 中文差多少秒，下面一行写意思和两边各在哪里
+  const gapOf = (/** @type {string} */ x) => Number(x.replace('−', '-').replace(/[^\d.+-]/g, ''));
+  let gapNow = await waitMapText('dub-gap-value', (x) => x === '+10.0 秒', '差距读数 +10.0 秒');
+  const gapNote = await mapText('dub-gap-note');
+  check(
+    gapNote === '中文比画面晚 10 秒 · 视频 1:10 ↔ 中文 1:00' && (await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'playing',
+    `「对齐」区顶上大字写此刻差多少秒：${gapNow}（${gapNote}）`,
+  );
+  const gapLook = await panel.evaluate(() => {
+    const g = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-gap]'));
+    const v = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-gap-value]'));
+    const cs = getComputedStyle(v);
+    const align = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-align]'));
+    const map = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-map]'));
+    return { size: parseFloat(cs.fontSize), weight: Number(cs.fontWeight), inAlign: align.contains(g), beforeMap: !!(g.compareDocumentPosition(map) & Node.DOCUMENT_POSITION_FOLLOWING) };
+  });
+  check(gapLook.size >= 28 && gapLook.weight >= 700 && gapLook.inAlign && gapLook.beforeMap, `读数又大又醒目（${gapLook.size}px、粗 ${gapLook.weight}），在"对齐"一栏的最上面、对齐图之前`);
   let overall = await mapText('dub-map-overall');
   check(/中文在视频 1:4[12] 放完/.test(overall) && overall.includes('全片中文短') && !/逐句|逐词/.test(overall), `全片：照现在的对齐中文在哪里放完、后面还差多少：${overall}`);
   const holdKinds = await panel.getByTestId('dub-map-hold').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
@@ -242,25 +257,43 @@ export async function dub(t) {
   await panel.mouse.down();
   await panel.mouse.move(centerX + dragBy / 2, y0, { steps: 4 });
   s = await waitState((x) => x.delaySec > 10.3 && x.delaySec < wantOff, '拖动时实时生效');
+  const gapMid = gapOf(await mapText('dub-gap-value'));
+  check(gapMid > 10.3 && gapMid < wantOff, `拖到一半：差距读数已经跟着变（${gapMid} 秒）`);
   const anchorVideo = r.anchors[0].video;
   check(Math.abs((await storedRec()).anchors[0].dub - (anchorVideo - 10)) < 0.05, `拖到一半：页面里的配音已经按 ${s.delaySec} 秒跟着，还没存`);
   await panel.mouse.move(centerX + dragBy, y0, { steps: 4 });
   await panel.mouse.up();
   r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - wantOff)) < 0.15, '拖完存下');
   check(r.delaySec === 0 && Math.abs(r.anchors[0].video - 70) < 0.3, `在对齐图上把中文往右拖 ${dragBy} 像素 = 这一段推后 ${(wantOff - 10).toFixed(1)} 秒：松手后存成对齐点 视频 ${r.anchors[0].video} ↔ 中文 ${r.anchors[0].dub}（开头那段不变）`);
-  now = await waitMapText('dub-map-now', (x) => !x.includes('晚 10 秒'), '拖完图跟着变');
-  check(now.includes(`中文比画面晚 ${Number(wantOff.toFixed(1))} 秒`), `拖完图上的说法跟着变：${now}`);
+  gapNow = await waitMapText('dub-gap-value', (x) => x === `+${wantOff.toFixed(1)} 秒`, '拖完读数跟着变');
+  check((await mapText('dub-gap-note')).includes(`中文比画面晚 ${Number(wantOff.toFixed(1))} 秒`), `拖完差距读数跟着变：${gapNow}`);
   check((await mapText('dub-delay-value')).includes(`+${wantOff.toFixed(1)} 秒`), '上面的"这一段的偏移"也跟着变');
   // 改回 +10 秒，后面接着测分段跟随
   await panel.getByTestId('dub-delay-input').fill('10');
   await panel.getByTestId('dub-delay-input').press('Enter');
   await panel.getByTestId('dub-delay-input').blur();
   r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - 10)) < 0.05, '改回 +10 秒');
-  await waitMapText('dub-map-now', (x) => x.includes('中文比画面晚 10 秒'), '改回 +10 秒后图跟着变');
+  await waitMapText('dub-gap-value', (x) => x === '+10.0 秒', '改回 +10 秒后读数跟着变');
   await panel.getByTestId('dub-map-zoom').filter({ hasText: '30 秒' }).click();
   check((await panel.getByTestId('dub-map-zoom').filter({ hasText: '30 秒' }).getAttribute('aria-pressed')) === 'true', '附近可以放大到 30 秒');
   await panel.getByTestId('dub-map').screenshot({ path: join(shots, '72-dub-align-map.png') });
   await panel.getByTestId('dub-map-zoom').filter({ hasText: '2 分' }).click();
+  // 往下滚去按微调按钮时，读数吸在头部下面，一直看得见
+  await panel.getByTestId('dub-anchor-add').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await page.waitForTimeout(200);
+  const stuck = await panel.evaluate(() => {
+    const head = /** @type {HTMLElement} */ (document.querySelector('header.top')).getBoundingClientRect().bottom;
+    const g = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-gap]')).getBoundingClientRect();
+    const title = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-segment]')).getBoundingClientRect();
+    const add = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-anchor-add]')).getBoundingClientRect();
+    return { head, top: g.top, bottom: g.bottom, titleTop: title.top, addTop: add.top, h: innerHeight };
+  });
+  check(
+    stuck.titleTop < stuck.head && Math.abs(stuck.top - stuck.head) < 2 && stuck.bottom < stuck.addTop && stuck.addTop < stuck.h,
+    `往下滚到微调按钮时，"对齐"的标题已经滚出去，差距读数吸在头部下面、不挡按钮（读数 ${Math.round(stuck.top)}–${Math.round(stuck.bottom)}，头部到 ${Math.round(stuck.head)}，按钮在 ${Math.round(stuck.addTop)}）`,
+  );
+  await panel.screenshot({ path: join(shots, '73-dub-gap-sticky.png') });
+  await panel.evaluate(() => scrollTo(0, 0));
   await page.evaluate(() => {
     const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
     v.currentTime = 75;
@@ -273,8 +306,15 @@ export async function dub(t) {
   await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 57));
   s = await waitState((x) => !x.playing && x.status.includes('等画面到 1:10 的对齐点'), '中文说完等画面', 10000);
   check(Math.abs(s.dubTime - (r.anchors[0].dub)) < 0.35 && s.videoTime < 70, `中文这一段先说完：停在中文 ${s.dubTime.toFixed(2)} 秒等画面（视频 ${s.videoTime.toFixed(2)}，原声照常）`);
+  const holdNote = await waitMapText('dub-gap-note', (x) => x.includes('停在 1:00 等画面'), '读数：中文停着等');
+  // 测试里侧边栏是后台标签页，浏览器不给它动画帧：读数只随每秒一次的读位置变（真正的侧边栏看得见，会连续变），所以等它变大，不只看固定的一小段
+  const g1 = gapOf(await mapText('dub-gap-value'));
+  const g2 = gapOf(await waitMapText('dub-gap-value', (x) => gapOf(x) > g1 + 0.5, '停着等画面时差距变大'));
+  check(g2 > g1 + 0.5 && g2 < 10 && (await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'wait', `中文停着等画面：差距读数随播放变大（${g1} → ${g2} 秒），换成提醒色并说明（${holdNote}）`);
   s = await waitState((x) => x.playing && x.videoTime > 70.8, '到对齐点接着放', 20000);
   check(Math.abs(s.videoTime - 10 - s.dubTime) < 0.4, `画面到了 1:10 的对齐点：中文从停下的地方接着放（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
+  gapNow = await waitMapText('dub-gap-value', (x) => x === '+10.0 秒', '跨过对齐点后读数');
+  check((await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'playing', `跨过对齐点：读数回到这一段的偏移 ${gapNow}`);
   // 说得慢就跳过去：把这一段改成中文提前 10 秒（开头那段的中文要放到 1:20，视频到 1:10 时还没说完）
   await panel.getByRole('button', { name: '−10 秒', exact: true }).click();
   await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - 70) < 0.05, '−10 秒');
@@ -287,10 +327,10 @@ export async function dub(t) {
   overall = await waitMapText('dub-map-overall', (x) => x.includes('中文在视频 1:2'), '跳过之后全片');
   const skipKinds = await panel.getByTestId('dub-map-skip').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
   check(JSON.stringify(skipKinds) === JSON.stringify(['cut']) && /中文在视频 1:2[12] 放完/.test(overall), `对齐图标出被跳过的中文（1:10–1:20），中文更早放完：${overall}`);
-  const nowA = await mapText('dub-map-now');
+  const noteA = await mapText('dub-gap-note');
   await page.waitForTimeout(1500);
-  const nowB = await mapText('dub-map-now');
-  check(nowA !== nowB && nowB.includes('中文比画面早 10 秒'), `播放中图跟着走：${nowA} → ${nowB}`);
+  const noteB = await mapText('dub-gap-note');
+  check(noteA !== noteB && (await mapText('dub-gap-value')) === '−10.0 秒' && noteB.includes('中文比画面早 10 秒'), `中文提前时读数是负的；播放中两边的位置跟着走：${noteA} → ${noteB}`);
   const list = (await panel.getByTestId('dub-anchors').textContent()) ?? '';
   check(list.includes('开头：不偏移') && list.includes('视频 1:10 ↔ 中文 1:20'), `对齐点列表：${list.replace(/\s+/g, ' ').slice(0, 80)}`);
   await panel.screenshot({ path: join(shots, '71-dub-anchors.png'), fullPage: true });

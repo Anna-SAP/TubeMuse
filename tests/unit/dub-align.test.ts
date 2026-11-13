@@ -10,7 +10,9 @@ import {
   describeDubAt,
   describeVideoAt,
   dubAlignment,
+  dubGapAt,
   dubPlanAt,
+  gapNoteText,
   gapText,
   mapTickStep,
 } from '../../src/core/dub-align';
@@ -167,6 +169,47 @@ describe('对齐图：摊开成两条音轨', () => {
         expect(step.seekTo, `t=${t.toFixed(2)}`).toBeUndefined();
       }
     }
+  });
+});
+
+describe('此刻差距（DECISIONS §78）：视频位置 − 中文位置', () => {
+  const al = dubAlignment(USER, V, D);
+  const at = (t: number) => {
+    const plan = dubPlanAt(al, USER, t);
+    return { gap: Number(dubGapAt(plan, t).toFixed(2)), note: gapNoteText(plan, t), kind: plan.kind };
+  };
+
+  it('中文在放：就是这一段的偏移，播放推进时不变；跨过对齐点换成下一段的', () => {
+    expect(at(111)).toEqual({ gap: 25, kind: 'playing', note: '中文比画面晚 25 秒 · 视频 1:51 ↔ 中文 1:26' });
+    expect(at(140).gap).toBe(25);
+    expect(at(40)).toMatchObject({ gap: 8, kind: 'playing' });
+    expect(at(37.9)).toMatchObject({ kind: 'wait' });
+    expect(at(38)).toMatchObject({ gap: 8, kind: 'playing' });
+  });
+
+  it('中文停着等画面：差距随播放变大，到对齐点变成下一段的偏移', () => {
+    expect(at(60)).toMatchObject({ gap: 13, kind: 'wait' });
+    expect(at(62)).toMatchObject({ gap: 15, kind: 'wait' });
+    expect(at(62).note).toBe('中文这一段已经说完、停在 0:47 等画面（只有原声），差距随播放变大；视频到 1:08 的对齐点再接着放');
+    expect(at(68)).toMatchObject({ gap: 21, kind: 'playing' });
+  });
+
+  it('还没开始、已经放完：差距同样随播放变大，说明原因', () => {
+    expect(at(2)).toMatchObject({ gap: 2, kind: 'before-start' });
+    expect(at(2).note).toBe('中文还没开始（视频到 0:05 时从中文 0:00 开始），差距随播放变大');
+    expect(at(5)).toMatchObject({ gap: 5, kind: 'playing' });
+    expect(at(2000)).toMatchObject({ gap: 461, kind: 'after-end', note: '中文已经放完（只有原声），差距随播放变大' });
+  });
+
+  it('调偏移：差距立刻变成新的偏移（中文提前时是负的）', () => {
+    const live = withSegmentOffset(USER, 4, 71);
+    const plan = dubPlanAt(dubAlignment(live, V, D), live, 309);
+    expect(dubGapAt(plan, 309)).toBeCloseTo(71, 6);
+    expect(gapNoteText(plan, 309)).toBe('中文比画面晚 1 分 11 秒 · 视频 5:09 ↔ 中文 3:58');
+    const early: DubMap = { delaySec: 0, anchors: [{ video: 70, dub: 80 }] };
+    const p2 = dubPlanAt(dubAlignment(early, 120, 92), early, 75);
+    expect(dubGapAt(p2, 75)).toBeCloseTo(-10, 6);
+    expect(gapNoteText(p2, 75)).toBe('中文比画面早 10 秒 · 视频 1:15 ↔ 中文 1:25');
   });
 });
 
