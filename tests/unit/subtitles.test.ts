@@ -39,11 +39,12 @@ import { mergeSettings, stores, subtitleTrackStore } from '../../src/services/re
 import { memoryKV, memoryLocker } from '../../src/services/storage';
 import { recognitionPlan, saveTextCue, subtitleSession, subtitleSpend, subtitleTranslationModel, transcribeSegment, translateCue, validateSegment } from '../../src/services/subtitle-service';
 import { mapVideoMeta } from '../../src/services/youtube-mappers';
+import { fakeSecret } from './fake-secrets';
 
 const RATE = SUBTITLES.sampleRate;
 const NOW = Date.parse('2026-11-01T04:00:00Z'); // 北京时间 12:00
-const OPENAI_KEY = 'sk-proj-subtitleTestKey0123456789abcdefghijklmnop';
-const ANTHROPIC_KEY = 'sk-ant-subtitle-test-0123456789abcdefghijklmn';
+const OPENAI_KEY = fakeSecret('sk-proj-', 'subtitleTestKey0123456789abcdefghijklmnop');
+const ANTHROPIC_KEY = fakeSecret('sk-ant-', 'subtitle-test-0123456789abcdefghijklmn');
 
 /** 一段"人声"（带谐波的正弦，能量明显高于阈值）或静音 */
 function tone(sec: number, amp = 0.25): Float32Array {

@@ -30,6 +30,7 @@ import { mergeSettings, stores, subtitleTrackStore } from '../../src/services/re
 import { memoryKV, memoryLocker } from '../../src/services/storage';
 import { createFakeApi, type FakeVideo } from './fake-api';
 import { NOW } from './helpers';
+import { fakeSecret } from './fake-secrets';
 
 const VID = 'dQw4w9WgXcQ';
 const XHS_ID = '6ae9a4e000000000140281c6';
@@ -459,13 +460,13 @@ describe('咨询包里不出现 Key / 令牌', () => {
 
   it('看起来像 Key / 令牌的内容换掉（页面文字、问题里的都算）', () => {
     const leaks = [
-      'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv',
-      'sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345',
-      'sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789',
-      'AIzaSyA1234567890abcdefghijklmnopqrstuvw',
-      'ya29.a0AfH6SMBxxxxxxxxxxxxxxxxxxxxxxxx',
-      'GOCSPX-abcdefghijklmnopqrstuvwx',
-      '1//0abcdefghijklmnopqrstuvwxyz0123456789',
+      fakeSecret('sk-ant-', 'api03-AbCdEfGhIjKlMnOpQrStUv'),
+      fakeSecret('sk-proj-', 'AbCdEfGhIjKlMnOpQrStUvWxYz012345'),
+      fakeSecret('sk-', 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'),
+      fakeSecret('AIza', 'SyA1234567890abcdefghijklmnopqrstuvw'),
+      fakeSecret('ya29.', 'a0AfH6SMBxxxxxxxxxxxxxxxxxxxxxxxx'),
+      fakeSecret('GOCSPX-', 'abcdefghijklmnopqrstuvwx'),
+      fakeSecret('1//', '0abcdefghijklmnopqrstuvwxyz0123456789'),
     ];
     for (const leak of leaks) {
       const r = redactMuse(`前面 ${leak} 后面`);

@@ -1167,6 +1167,7 @@ node tests/e2e/run-e2e.mjs --shard=clips
 ```
 
 - **测试不出网**：单测把全局 `fetch` 换成直接报错的函数，所有外部服务都用注入的假实现；e2e 把所有外部服务指向本机 mock（127.0.0.1:47321），其他任何请求都会被拦截并判失败。
+- **仓库里不放像 Key 的字符串**（[DECISIONS.md](DECISIONS.md) §73）：真 Key 只在设置页填、只存本机。测试要用像 Key 的假值（例如验证脱敏）时，用 `tests/unit/fake-secrets.ts` 的 `fakeSecret('sk-proj-', 'test…')` 在运行时拼出来——整串写在源码里的话，GitHub 的密钥扫描分不出真假，会当成真 Key 报"已公开泄露"。`npm test` 会把仓库里每个文件（已提交的，加上没提交也没被 `.gitignore` 忽略的）按 `scripts/secret-patterns.mjs` 的格式查一遍，查到就失败，只报文件、行号和开头几个字符。
 - **CI**：指向 `main` 的 PR 和 `main` 上的 push 都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上跑和 `npm run verify` 同一套检查：类型检查、单元测试、e2e、正式版冒烟，以及 Firefox 版的 e2e 与安装包冒烟（这一个 job 在 Ubuntu 上跑）。为了快，CI 把它们拆成几个 job 同时跑（类型检查 + 单测 + 冒烟一个，e2e 每组一个，Firefox 一个，发布用安装包的打包与 `.crx` 安装冒烟一个），最后由 `verify` 汇总，全部通过才算过。合并进 `main` 后的那一次：文件树和 PR 里验过的一模一样时不重跑，运行摘要里写明是哪一次运行验过的；不一样（例如验完以后 `main` 又进了别的改动）就照常全跑。CI 不需要任何 Secret，扩展密钥在 runner 上临时生成（只有发布要 `CRX_PRIVATE_KEY`，见下）。`main` 有分支保护：`verify` 不通过不能合并，也不能直接 push，管理员不例外。提交前先在本地跑 `npm run verify`。失败时的截图在这次运行的 Artifacts 里（每组一份），保留 7 天。分组与取舍见 DECISIONS §61。
 - **自动发布**（[.github/workflows/release.yml](.github/workflows/release.yml)，[DECISIONS.md](DECISIONS.md) §70）：每次有改动合并进 `main`，`main` 上的 CI 一通过（这棵文件树在 PR 里验过时只要十几秒），就跑 `npm run package` 打出 Chrome 的 `.zip` / `.crx` 和 Firefox 的 `.xpi`，让真的 Chromium 按策略下载、校验、安装一遍这个 `.crx`，然后发布到 [Releases](https://github.com/Anna-SAP/TubeMuse/releases)：标签 `v<版本>`，版本号是 `package.json` 的版本加上这个提交在 `main` 上的提交数（例如 `0.1.0.137`，只增不减）。说明里写着扩展 ID、授权回跳地址和安装方法，后面附上自上一版以来合并的 PR。也可以在 Actions → **Release** → **Run workflow**（分支选 `main`）手动发布当前的 `main`；同一个版本发布过就不再重复。
   - **要先配一个 Secret**：`.crx` 要用私钥签名，`.zip` 里 manifest 的 key 也来自它；用你本机 `local/extension-key.pem` 签，装上后的扩展 ID 就和你自己构建的一样，Google Cloud 不用改。到仓库 **Settings → Secrets and variables → Actions → New repository secret**，名字 `CRX_PRIVATE_KEY`，值粘贴 `local/extension-key.pem` 的全文（`-----BEGIN PRIVATE KEY-----` 到 `-----END PRIVATE KEY-----`）。没配时发布失败，运行摘要里写明要怎么做；配好后对那次运行点 **Re-run jobs**，或手动运行一次。私钥只交给发布工作流里载入它的那一步，只写在那台 runner 上；构建脚本会检查安装包里没有私钥。
@@ -1204,9 +1205,9 @@ src/background.ts  service worker（Firefox 版是事件页）：闹钟、补算
 src/platform.ts    这份构建是 Chrome 版还是 Firefox 版（构建时注入），以及两边不同的说法
 scripts/           构建（含 Firefox 版与 .xpi 打包：firefox.mjs、zip.mjs）、生成扩展密钥、生成图标；
                    发布用的打包（package.mjs）、CRX3 签名与校验（crx.mjs）、版本号（version.mjs）、从仓库 Secret 载入签名密钥（release-key.mjs）、
-                   Firefox 版交 Mozilla 签名并核对（sign-firefox.mjs）
+                   Firefox 版交 Mozilla 签名并核对（sign-firefox.mjs）、像真 Key / 令牌的格式（secret-patterns.mjs，构建自检与仓库自检共用）
 tools/amo/         Mozilla 的 web-ext（签名与校验用），单独的 package.json 与锁文件，只给 CI 和发布用
-tests/unit/        单元与服务层测试
+tests/unit/        单元与服务层测试；测试用的假 Key / 令牌在运行时拼出来（fake-secrets.ts），仓库自检见 secret-hygiene.test.mjs
 tests/e2e/smoke-crx.mjs  让真的 Chromium 按策略下载、校验、安装发布用的 .crx（只在 Linux 上跑）
 tests/e2e/sign-firefox-mock.mjs  Firefox 签名流程：真的 web-ext 对着本机的假 AMO 走一遍
 tests/e2e/         mock 服务（含可播放的 mock 播放页、"说话"音频与 mock 语音转写、仿小红书网页版页面 xhs-pages.mjs、仿 X 页面 x-pages.mjs、仿酷播页面 kubb-pages.mjs、仿 Instagram 页面 ig-pages.mjs、仿抖音页面 douyin-pages.mjs、仿 B 站页面 bili-pages.mjs）、e2e 主流程、正式版冒烟测试

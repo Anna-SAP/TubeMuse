@@ -59,6 +59,7 @@ import type { AppContext } from '../../src/services/context';
 import { mergeSettings, stores, xyzTranscriptStore } from '../../src/services/repo';
 import { memoryKV, memoryLocker } from '../../src/services/storage';
 import { ingestXyzListen, mediaFetcher, polishXyzRange, readAudioWindow, transcribeXyzSegment, xyzSession, type XyzDown } from '../../src/services/xyz-service';
+import { fakeSecret } from './fake-secrets';
 
 const EID = '6af02451b4a4e20202f67f19';
 const PID = '670f3da40d2f24f28978736f';
@@ -400,8 +401,8 @@ describe('片段快照', () => {
 // ── 后台流程 ──
 
 const NOW = Date.parse('2026-11-13T04:00:00Z');
-const OPENAI_KEY = 'sk-proj-xyzTestKey0123456789abcdefghijklmnopqrst';
-const ANTHROPIC_KEY = 'sk-ant-xyz-test-0123456789abcdefghijklmnopq';
+const OPENAI_KEY = fakeSecret('sk-proj-', 'xyzTestKey0123456789abcdefghijklmnopqrst');
+const ANTHROPIC_KEY = fakeSecret('sk-ant-', 'xyz-test-0123456789abcdefghijklmnopq');
 const AUDIO = `${ENDPOINTS.xyzMedia}/${PID}/tones.m4a`;
 
 interface Rec {

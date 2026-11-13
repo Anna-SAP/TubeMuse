@@ -13,11 +13,12 @@ import { importTakeout } from '../../src/services/takeout-service';
 import { exportAll } from '../../src/services/data-service';
 import type { WatchSession } from '../../src/core/types';
 import { createFakeApi, type FakeVideo } from './fake-api';
+import { fakeSecret } from './fake-secrets';
 
 const TZ = 'Asia/Shanghai';
 const NOW = Date.parse('2026-10-24T02:00:00Z'); // 北京时间 10:00
 const HOUR = 3_600_000;
-const KEY = 'sk-ant-test-0123456789abcdefghijklmn';
+const KEY = fakeSecret('sk-ant-', 'test-0123456789abcdefghijklmn');
 
 const V: FakeVideo[] = [
   { id: 'vidComplete1', title: 'Transformer 原理讲解', channelId: 'UClearn01', channelTitle: '学习频道', publishedAt: '2026-10-20T00:00:00Z', duration: 'PT10M', views: 1, likes: 1, categoryId: '27' },
@@ -61,7 +62,7 @@ function setup(opts: { key?: boolean; connected?: boolean } = {}) {
   let now = NOW;
   const auth: AuthProvider = {
     configured: () => true,
-    getToken: async () => 'ya29.fake-token-for-tests-1234567',
+    getToken: async () => fakeSecret('ya29.', 'fake-token-for-tests-1234567'),
     invalidate: async () => {},
     status: async () => (opts.connected === false ? 'disconnected' : 'connected'),
     disconnect: async () => ({ revoked: false }),

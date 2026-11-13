@@ -16,10 +16,11 @@ import { isAnthropicWorkspaceId } from '../../src/services/llm';
 import { recordCall, EMPTY_LEDGER } from '../../src/core/quota';
 import { createFakeApi, type FakeVideo } from './fake-api';
 import { DAY, NOW, RAW_1, RAW_2, UTTERANCE_1, UTTERANCE_2 } from './helpers';
+import { fakeSecret } from './fake-secrets';
 
-const ANTHROPIC_KEY = 'sk-ant-test-0123456789abcdefghijklmn';
+const ANTHROPIC_KEY = fakeSecret('sk-ant-', 'test-0123456789abcdefghijklmn');
 const OPENAI_KEY = 'sk-test-openai-0123456789abcdefghij';
-const TOKEN = 'ya29.fake-youtube-access-token-123456';
+const TOKEN = fakeSecret('ya29.', 'fake-youtube-access-token-123456');
 
 function fakeAuth(): AuthProvider {
   return {
