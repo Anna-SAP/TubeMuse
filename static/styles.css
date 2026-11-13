@@ -1963,3 +1963,222 @@ a.db-title:hover {
 .dub-anchors li.on {
   background: var(--accent-soft);
 }
+.dub-anchors li.dub-anchor-start {
+  list-style: none;
+  margin-left: -14px;
+}
+
+/* 对齐图（DECISIONS §77）：上英文原声、下中文配音；色带连着的是同时听到的 */
+.dub-map {
+  margin: 8px 0 10px;
+  padding: 8px 0 4px;
+  border-bottom: 1px solid var(--border);
+}
+.dub-map-head {
+  justify-content: space-between;
+  gap: 8px;
+}
+.dub-map-now {
+  margin: 4px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.dub-map-overall {
+  margin: 0 0 6px;
+}
+.dub-map-sub {
+  margin: 6px 0 2px;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dub-map-zoom {
+  display: inline-flex;
+  gap: 2px;
+}
+.dub-map-zoom .btn.on {
+  background: var(--text);
+  color: var(--surface);
+  border-color: var(--text);
+}
+.dub-map-svg {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-y;
+  font-family: inherit;
+}
+.dub-map-svg text {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.dub-map-lbl {
+  fill: var(--muted);
+}
+.dub-map-bar.en {
+  fill: var(--info-soft);
+  stroke: var(--border);
+}
+.dub-map-bar.zh {
+  fill: var(--surface-2);
+  stroke: var(--border);
+}
+.dub-map-bar.zh.open {
+  stroke-dasharray: 3 2;
+}
+.dub-map-en-on {
+  fill: var(--info);
+  fill-opacity: 0.45;
+}
+.dub-map-zh-on {
+  fill: var(--accent);
+  fill-opacity: 0.7;
+}
+.dub-map-zh-on.odd {
+  fill-opacity: 0.5;
+}
+.dub-map-zh-on.cur {
+  fill-opacity: 0.95;
+}
+.dub-map-rib {
+  fill: var(--accent);
+  fill-opacity: 0.12;
+}
+.dub-map-rib.odd {
+  fill-opacity: 0.2;
+}
+.dub-map-rib.cur {
+  fill-opacity: 0.32;
+}
+.dub-map-rib-lbl {
+  fill: var(--text);
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+}
+.dub-map-rib-lbl.cur {
+  fill: var(--accent);
+}
+.dub-map-in-lbl {
+  fill: var(--text);
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+}
+.dub-map-in-lbl.skip {
+  fill: var(--no);
+}
+.hatch-bg.hold {
+  fill: var(--surface);
+}
+.hatch.hold {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+.hatch-bg.end {
+  fill: var(--warn-soft);
+}
+.hatch.end {
+  stroke: var(--warn);
+  stroke-width: 1.5;
+}
+.hatch-bg.skip {
+  fill: var(--no-soft);
+}
+.hatch.skip {
+  stroke: var(--no);
+  stroke-width: 1.5;
+}
+.dub-map-tick {
+  stroke: var(--muted);
+}
+.dub-map-tick-lbl {
+  fill: var(--muted);
+}
+.dub-map-anchor line,
+.dub-map-anchor-tick {
+  stroke: var(--text);
+  stroke-width: 1;
+}
+.dub-map-anchor line.link {
+  stroke-dasharray: 2 2;
+}
+.dub-map-anchor circle {
+  fill: var(--surface);
+  stroke: var(--text);
+}
+.dub-map-anchor text {
+  fill: var(--text);
+  font-size: 9px;
+  font-weight: 600;
+}
+.dub-map-window {
+  fill: none;
+  stroke: var(--text);
+  stroke-opacity: 0.55;
+  stroke-dasharray: 2 2;
+}
+.dub-map-ph line {
+  stroke: var(--text);
+  stroke-width: 2;
+}
+.dub-map-ph line.link {
+  stroke-width: 1.5;
+}
+.dub-map-ph line.link.held {
+  stroke-dasharray: 4 3;
+}
+.dub-map-ph .chip {
+  fill: var(--text);
+}
+.dub-map-ph .chip-lbl {
+  fill: var(--surface);
+  font-weight: 600;
+}
+.dub-map-hover-line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 2;
+}
+.dub-map-drag {
+  fill: transparent;
+}
+.dub-map-svg.can-drag .dub-map-drag {
+  cursor: ew-resize;
+}
+.dub-map-svg.dragging,
+.dub-map-svg.dragging .dub-map-drag {
+  cursor: grabbing;
+}
+.dub-map-hover {
+  min-height: 2.6em;
+  margin: 4px 0 0;
+}
+.dub-map-key {
+  display: inline-block;
+  width: 14px;
+  height: 9px;
+  margin: 0 3px 0 8px;
+  vertical-align: -1px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.dub-map-key:first-child {
+  margin-left: 0;
+}
+.dub-map-key.rib {
+  background: color-mix(in srgb, var(--accent) 30%, var(--surface));
+}
+.dub-map-key.hold {
+  background: repeating-linear-gradient(45deg, var(--muted) 0 1.5px, var(--surface) 1.5px 4px);
+}
+.dub-map-key.end {
+  background: repeating-linear-gradient(45deg, var(--warn) 0 1.5px, var(--warn-soft) 1.5px 4px);
+}
+.dub-map-key.skip {
+  background: repeating-linear-gradient(45deg, var(--no) 0 1.5px, var(--no-soft) 1.5px 4px);
+}

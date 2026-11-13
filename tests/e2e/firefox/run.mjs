@@ -576,6 +576,18 @@ try {
   const ffVol = await b.exec(`return document.querySelector('video').volume;`);
   await b.switchTo(handles.panel);
   check(Math.abs(ffVol - 0.8) < 0.005, `Firefox：原声降 20%（${ffVol}）`);
+  // 对齐图（DECISIONS §77）：Firefox 里一样画出两条音轨、跟着播放走
+  await b.waitFor(`(document.querySelector('[data-testid=dub-map-now]')?.textContent ?? '').includes('中文和画面同步')`, { what: '对齐图' });
+  const mapNow = () => b.run(`return document.querySelector('[data-testid=dub-map-now]')?.textContent ?? '';`);
+  const ffNowA = await mapNow();
+  await sleep(1500);
+  const ffNowB = await mapNow();
+  const ffOverall = await b.run(`return document.querySelector('[data-testid=dub-map-overall]')?.textContent ?? '';`);
+  const ffShapes = await b.run(`return document.querySelectorAll('[data-testid=dub-map-overview] polygon, [data-testid=dub-map-detail] polygon, [data-testid=dub-map-hold]').length;`);
+  check(
+    ffNowA !== ffNowB && /中文在视频 1:3[12] 放完/.test(ffOverall) && ffShapes >= 3,
+    `Firefox：对齐图画出两条音轨、跟着播放走（${ffNowA} → ${ffNowB}；${ffOverall.slice(0, 24)}…）`,
+  );
   // 配音开着时录片段（DECISIONS §76）：录下的是双语混音。两个内容脚本在 Firefox 里也共用同一个隔离环境，录制脚本拿得到配音的 <audio>
   await tapText('片段', '[role=tab]');
   await b.waitFor(`document.querySelector('[data-testid=clip-dub]')?.textContent.includes('双语混音')`, { what: '片段页写明会录双语混音' });

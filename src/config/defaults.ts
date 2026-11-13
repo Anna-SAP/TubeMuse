@@ -958,6 +958,12 @@ export const DUB = {
   mixLimiter: { knee: 0.9, headroom: 2, points: 8193 },
   /** 原声混音倍数变化时的平滑时间常数（秒）：配音开 / 关、广告前后不咔哒一下 */
   mixRampSec: 0.02,
+  /**
+   * 对齐图（DECISIONS §77）：「附近」可选的窗口宽度（秒）与默认值；两次读到播放位置之间（侧边栏每秒问一次）
+   * 播放头按视频的倍速往前推，最多推这么久（页面没回话时停住，不乱跑）；刻度之间至少这么宽（像素）；
+   * 色块比这窄时不写字
+   */
+  map: { zoomsSec: [30, 120, 600], defaultZoomSec: 120, extrapolateMaxSec: 1.5, minTickPx: 56, labelMinPx: 44 },
 } as const;
 
 /** Anthropic 服务端拒答回退：'default' 在不支持的模型上等于不回退，安全。 */
