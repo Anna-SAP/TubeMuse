@@ -39,6 +39,8 @@ import { IS_FIREFOX, SPEECH_PLATFORM } from '../platform';
 type XyzSettings = typeof DEFAULT_SETTINGS.xyz;
 
 const TICK_MS = 400;
+/** 字幕层刷新间隔：比主循环快，换句不晚于 0.1 秒（主循环要读页面、算进度，不必这么频繁） */
+const RENDER_MS = 100;
 const NOTICE_MS = 6_000;
 /** 致命错误（没有 Key、预算用完）后停下，过这么久或你改了设置再试 */
 const FATAL_RETRY_MS = 5 * 60_000;
@@ -711,6 +713,11 @@ function ensureOverlay(): NonNullable<typeof overlay> {
   return overlay;
 }
 
+/** 文字变了才写（字幕层每 0.1 秒刷新一次，不重复改动 DOM） */
+function setText(el: HTMLElement, text: string): void {
+  if (el.textContent !== text) el.textContent = text;
+}
+
 function removeOverlay(): void {
   overlay?.host.remove();
   overlay = undefined;
@@ -742,14 +749,14 @@ function render(): void {
   o.cap.style.setProperty('--fs', String(settings.fontScale || 1));
   const st = on ? statusLine() : undefined;
   o.status.hidden = !st;
-  o.statusMain.textContent = st?.text ?? '';
-  o.statusHint.textContent = st?.hint ?? '';
+  setText(o.statusMain, st?.text ?? '');
+  setText(o.statusHint, st?.hint ?? '');
   const cue = on && t !== undefined && display !== 'off' ? pickXyzCue(s.cues, t) : undefined;
   const lines = cue ? cueLines(cue) : undefined;
   const zh = lines && display !== 'en' ? lines.zh : '';
   const en = lines && display !== 'zh' ? lines.en : '';
-  o.zh.textContent = zh;
-  o.en.textContent = en;
+  setText(o.zh, zh);
+  setText(o.en, en);
   o.box.hidden = !zh && !en;
   o.box.classList.toggle('pending', !!lines?.pending);
   o.cap.hidden = !on || (o.box.hidden && o.status.hidden);
@@ -773,8 +780,8 @@ function render(): void {
     o.pinB.style.left = `${b}px`;
     o.tagA.style.left = `${a}px`;
     o.tagB.style.left = `${b}px`;
-    o.tagA.textContent = formatXyzTime(mark.from);
-    o.tagB.textContent = formatXyzTime(mark.to);
+    setText(o.tagA, formatXyzTime(mark.from));
+    setText(o.tagB, formatXyzTime(mark.to));
   } else {
     o.marks.hidden = true;
   }
@@ -962,10 +969,13 @@ function tick(): void {
 }
 
 let timer: ReturnType<typeof setInterval> | undefined;
+let renderTimer: ReturnType<typeof setInterval> | undefined;
 
 function teardown(): void {
   if (timer) clearInterval(timer);
+  if (renderTimer) clearInterval(renderTimer);
   timer = undefined;
+  renderTimer = undefined;
   try {
     s?.port?.disconnect();
   } catch {
@@ -1088,4 +1098,8 @@ window.addEventListener('pagehide', flushListen);
 window.addEventListener('resize', () => render());
 
 timer = setInterval(tick, TICK_MS);
+renderTimer = setInterval(() => {
+  if (!alive()) return teardown();
+  if (overlay) render();
+}, RENDER_MS);
 tick();

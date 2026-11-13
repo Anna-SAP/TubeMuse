@@ -73,9 +73,10 @@ export async function xyz(t) {
   const seen = [];
   for (let i = 0; i < 4; i++) {
     const s = await sample();
-    // 第 k 段从 toneStart(k) − 0.2 秒（句首留白）显示到结束后 0.6 秒
+    // 第 k 段的字幕从 toneStart(k) − 0.23 秒（切句时留的句首）开始，到音停后 0.22 秒（句尾）再留 0.6 秒（lingerSec）；
+    // 字幕层每 0.1 秒刷新，再给 0.15 秒读数的余量
     if (!Number.isNaN(s.k)) {
-      aligned.push(s.t >= toneStart(s.k) - 0.35 && s.t <= toneStart(s.k) + 1.8 + 0.7);
+      aligned.push(s.t >= toneStart(s.k) - 0.23 - 0.15 && s.t <= toneStart(s.k) + 1.8 + 0.22 + 0.6 + 0.15);
       seen.push(`${s.t.toFixed(1)}s→第${s.k}段`);
     }
     await page.waitForTimeout(900);
