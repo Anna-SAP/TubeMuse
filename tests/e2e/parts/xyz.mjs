@@ -101,9 +101,17 @@ export async function xyz(t) {
   await panel.getByTestId('xyz-display-bilingual').click();
 
   console.log('\n[小宇宙：点一句字幕跳过去；整集生成；下载]');
-  await panel.getByTestId('xyz-cue-list').locator('li').nth(5).click();
-  await page.waitForFunction(() => Math.abs(/** @type {HTMLAudioElement} */ (document.querySelector('audio')).currentTime - 15.27) < 1.5, null, { timeout: 5000 });
-  check(true, '点第 6 句：页面上的播放位置跳到这一句（约 15 秒）');
+  // 先暂停：播放位置不再往前走，跳转后的位置可以精确核对（慢的机器上，从点下去到核对之间也不会走过头）
+  await page.evaluate(() => /** @type {HTMLAudioElement} */ (document.querySelector('audio')).pause());
+  const line5 = panel.getByTestId('xyz-cue-list').locator('li', { hasText: '这是第5段' }).first();
+  await line5.waitFor({ timeout: 10000 });
+  await line5.click();
+  // 第 5 段音从 15.5 秒起，字幕句首留 0.23 秒
+  const jumped = await page
+    .waitForFunction(() => Math.abs(/** @type {HTMLAudioElement} */ (document.querySelector('audio')).currentTime - (15.5 - 0.23)) < 0.3, null, { timeout: 5000 })
+    .then(() => true, () => false);
+  const jumpedTo = await page.evaluate(() => /** @type {HTMLAudioElement} */ (document.querySelector('audio')).currentTime);
+  check(jumped, `点"第 5 段"那一句：页面上的播放位置跳到这一句的开头（${jumpedTo.toFixed(2)} 秒）`);
   await panel.getByTestId('xyz-whole').click();
   const estimate = (await panel.getByTestId('xyz-whole-estimate').textContent()) ?? '';
   check(/预计约 \$\d/.test(estimate), `生成整集前先给预计花费：${estimate}`);
