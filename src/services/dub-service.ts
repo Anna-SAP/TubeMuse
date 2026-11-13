@@ -1,4 +1,4 @@
-// 中文配音（DECISIONS §73）：关联 / 换 / 移除本地 .m4a、存偏移、把音频分块交给 YouTube 页面里的配音脚本。
+// 中文配音（DECISIONS §74）：关联 / 换 / 移除本地 .m4a、存偏移、把音频分块交给 YouTube 页面里的配音脚本。
 // 音频进出都只在本机：从你选的文件读进 IndexedDB，开启时由后台从 IndexedDB 读出来交给那个标签页。不发任何网络请求。
 
 import { DUB } from '../config/defaults';

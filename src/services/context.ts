@@ -16,7 +16,7 @@ export interface AppContext {
   timeZone: string;
   /** Chrome 自带的本地翻译；浏览器不支持时为空 */
   translator?: LocalTranslator;
-  /** 中文配音的音频文件（扩展自己的 IndexedDB，DECISIONS §73）；没有 IndexedDB 的环境为空 */
+  /** 中文配音的音频文件（扩展自己的 IndexedDB，DECISIONS §74）；没有 IndexedDB 的环境为空 */
   dubAudio?: DubAudioStore;
 }
 

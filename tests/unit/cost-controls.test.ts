@@ -22,12 +22,13 @@ import { saveTextCue, subtitleSpend, transcribeSegment, translateCue } from '../
 import { generateDailySummary, runScheduledJobs } from '../../src/services/summary-service';
 import { encodeWav } from '../../src/core/subtitles';
 import { createFakeApi, type FakeVideo } from './fake-api';
+import { fakeSecret } from './fake-secrets';
 
 const NOW = Date.parse('2026-10-24T02:00:00Z');
 const DAY_KEY = '2026-10-24';
-const KEY = 'sk-ant-test-0123456789abcdefghijklmn';
+const KEY = fakeSecret('sk-ant-', 'test-0123456789abcdefghijklmn');
 const XTOKEN = 'AAAAFakeXBearerTokenForTests0123456789';
-const auth: AuthProvider = { configured: () => true, getToken: async () => 'ya29.fake-token-for-tests-1234567', invalidate: async () => {}, status: async () => 'connected', disconnect: async () => ({ revoked: false }) };
+const auth: AuthProvider = { configured: () => true, getToken: async () => fakeSecret('ya29.', 'fake-token-for-tests-1234567'), invalidate: async () => {}, status: async () => 'connected', disconnect: async () => ({ revoked: false }) };
 
 const cluster = (id: string, name: string): InterestCluster => ({ id, name, description: '', keywords: [name, `${name}2`], channelIds: [], weight: 1, locked: false, source: 'llm', updatedAt: NOW });
 

@@ -7,6 +7,7 @@ import { mergeClusterOutput, moveChannel, editCluster } from '../../src/core/clu
 import { containsTerm, dominantScript } from '../../src/core/text';
 import { NOW, makeCluster } from './helpers';
 import { mergeSettings } from '../../src/services/repo';
+import { fakeSecret } from './fake-secrets';
 
 describe('时间与格式', () => {
   it('ISO 8601 时长', () => {
@@ -35,7 +36,7 @@ describe('时间与格式', () => {
 
 describe('脱敏：密钥与令牌不进入报错信息', () => {
   it('已知密钥值与常见格式都被替换', () => {
-    const key = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
+    const key = fakeSecret('sk-ant-', 'api03-abcdefghijklmnopqrstuvwxyz');
     const msg = `401 invalid x-api-key: ${key}; Authorization: Bearer ya29.a0AfB_byC123456789 url?key=AIzaSyA1234567890abcdefghij&x=1`;
     const out = redact(msg, [key]);
     expect(out).not.toContain('abcdefghijklmnop');

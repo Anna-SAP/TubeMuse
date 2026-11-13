@@ -219,7 +219,7 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
     showClipBadge(sender.tab.id, (m as { state?: ClipTabState }).state);
     return false;
   }
-  // 中文配音（DECISIONS §73）：这个视频有配音时在工具栏图标上标"中"（提示有中文版；开启后变绿）
+  // 中文配音（DECISIONS §74）：这个视频有配音时在工具栏图标上标"中"（提示有中文版；开启后变绿）
   if (m?.type === DUB_MSG.badge) {
     if (!fromTrackedSite(sender) || sender.tab?.id === undefined) return false;
     const d = m as { available?: unknown; active?: unknown };
@@ -279,7 +279,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // 自动字幕：YouTube 播放页里的字幕脚本经长连接送来切好的音频片段，这里转写、翻译后回传。
 // 小宇宙：单集页的脚本经另一条长连接要音频、送切好的句子，这里读音频、转写、校对 / 翻译后回传（DECISIONS §72）
 chrome.runtime.onConnect.addListener((port) => {
-  // 中文配音（DECISIONS §73）：YouTube 页面里的配音脚本要音频，从扩展自己的 IndexedDB 分块读出来交过去（不出本机）
+  // 中文配音（DECISIONS §74）：YouTube 页面里的配音脚本要音频，从扩展自己的 IndexedDB 分块读出来交过去（不出本机）
   if (port.name === DUB_PORT) {
     if (!port.sender || !fromTrackedSite(port.sender)) return port.disconnect();
     let open = true;

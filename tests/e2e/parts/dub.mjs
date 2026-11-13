@@ -1,5 +1,5 @@
 // @ts-check
-// 中文配音（DECISIONS §73）：给 YouTube 视频选一个本地 .m4a → 存进扩展的 IndexedDB → 下次打开同一视频时提示 →
+// 中文配音（DECISIONS §74）：给 YouTube 视频选一个本地 .m4a → 存进扩展的 IndexedDB → 下次打开同一视频时提示 →
 // 开启后在页面里叠加播放，跟随播放 / 暂停 / 拖动 / 倍速与偏移 → 原声降 20%（你改音量、广告、关闭时的处理）→ 移除。
 // 全程不发任何新的网络请求。
 import { readFileSync } from 'node:fs';

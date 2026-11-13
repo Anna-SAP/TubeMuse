@@ -14,11 +14,12 @@ import { refreshHotspots, xSpend } from '../../src/services/hotspot-service';
 import { dismissCreator, runDiscovery } from '../../src/services/discovery-service';
 import type { InterestCluster, XPost } from '../../src/core/types';
 import { createFakeApi, type FakeVideo } from './fake-api';
+import { fakeSecret } from './fake-secrets';
 
 const NOW = Date.parse('2026-10-24T02:00:00Z');
 const DAY = 86_400_000;
-const KEY = 'sk-ant-test-0123456789abcdefghijklmn';
-const XTOKEN = 'AAAAAAAAAAAAAAAAAAAAAFakeXBearerTokenForTests0123456789';
+const KEY = fakeSecret('sk-ant-', 'test-0123456789abcdefghijklmn');
+const XTOKEN = fakeSecret('AAAAAAAAAAAAAAAAAAAA', 'AFakeXBearerTokenForTests0123456789');
 
 const cluster = (over: Partial<InterestCluster>): InterestCluster => ({
   id: 'k',
@@ -135,7 +136,7 @@ function setup(opts: { xToken?: boolean; budget?: number; xStatus?: number } = {
       return { posts: Array.from({ length: 30 }, (_, i) => ({ id: `${xCalls.length}${String(i).padStart(4, '0')}`, text: `post ${i} about ${query.slice(0, 20)}`, likes: 100 - i, reposts: 10, hoursAgo: 2 })) };
     },
   });
-  const auth: AuthProvider = { configured: () => true, getToken: async () => 'ya29.fake-token-for-tests-1234567', invalidate: async () => {}, status: async () => 'connected', disconnect: async () => ({ revoked: false }) };
+  const auth: AuthProvider = { configured: () => true, getToken: async () => fakeSecret('ya29.', 'fake-token-for-tests-1234567'), invalidate: async () => {}, status: async () => 'connected', disconnect: async () => ({ revoked: false }) };
   const kv = memoryKV({
     secrets: { anthropicApiKey: KEY, ...(opts.xToken === false ? {} : { xBearerToken: XTOKEN }) },
     settings: { x: { dailyBudgetUsd: opts.budget ?? 0.5 } },

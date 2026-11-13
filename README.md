@@ -706,7 +706,7 @@ YouTube Data API 自 2026-06-01 起分桶计配额：
     - **页面内助手**跑在 YouTube 页面自己的环境里（只有那里能拿到播放器对象），只做两件事：读播放器的字幕轨列表与当前字幕状态；调用播放器自带的字幕开关——为拿到播放器的字幕请求短暂打开一次，叠加显示期间关掉原生字幕，关闭多语字幕时恢复成你原来的选择（期间你自己按过 `C` 就不再替你恢复）。它不发网络请求、不往页面插元素、不读页面文字、不碰 Cookie 和本地存储，构建时会自动检查。
     - **取字幕与画字幕层的脚本**：YouTube 的字幕接口要带播放器生成的令牌（`pot`），所以它复用播放器自己发出的那个字幕请求（从浏览器的资源计时记录里看到地址），**只换语言参数**（`lang`、`kind`、YouTube 自动翻译的 `tlang`），向同源的 `www.youtube.com/api/timedtext` 取你选的语言——和你在播放器字幕菜单里换语言时播放器发的请求相同。YouTube 的字幕接口出错（5xx、限流）、60 秒不回或连不上时，隔 5 / 15 / 30 秒最多重试 3 次，之后停下并说明。字幕只存在这个标签页的内存里，换视频即丢，不经过扩展后台、不发给大模型、不进导出。它在播放器里加**一层**只读字幕（不改动、不隐藏 YouTube 自己的任何元素），自身只有这一处网络请求，不用 HTML 字符串写页面、不碰 Cookie、不触发下载，构建时会自动检查。
     - 偏好里有"视频原声语言"、而视频没有自动生成的字幕时，后台用官方 YouTube Data API 查一次视频的语言（`videos.list`，1 unit，与自动字幕、观看记录共用缓存）。
-  - **中文配音**（你在 2026-11-13 要求新增，[DECISIONS.md](DECISIONS.md) §73）：只在你从侧边栏开启后工作。你选的 `.m4a` 存在扩展自己的 IndexedDB 里（YouTube 页面碰不到）；开启时由扩展后台从那里读出来，经扩展内部的连接分块交给这个脚本，在这个标签页的内存里拼成文件，交给一个**不放进页面**的 `<audio>` 播放。它读视频的播放状态（位置、暂停、跳转、缓冲、倍速、是否广告）来跟随，**改 `<video>` 的音量**（配音开着时降到你的音量的 80%，关闭、换视频、离开页面时恢复；YouTube 一再把音量改回去时停手并在侧边栏说明，不跟它抢），读页面标题（列表里显示）。**不发任何网络请求**、不往页面插入任何元素、不点击、不采集视频的声音，构建时自动检查。
+  - **中文配音**（你在 2026-11-13 要求新增，[DECISIONS.md](DECISIONS.md) §74）：只在你从侧边栏开启后工作。你选的 `.m4a` 存在扩展自己的 IndexedDB 里（YouTube 页面碰不到）；开启时由扩展后台从那里读出来，经扩展内部的连接分块交给这个脚本，在这个标签页的内存里拼成文件，交给一个**不放进页面**的 `<audio>` 播放。它读视频的播放状态（位置、暂停、跳转、缓冲、倍速、是否广告）来跟随，**改 `<video>` 的音量**（配音开着时降到你的音量的 80%，关闭、换视频、离开页面时恢复；YouTube 一再把音量改回去时停手并在侧边栏说明，不跟它抢），读页面标题（列表里显示）。**不发任何网络请求**、不往页面插入任何元素、不点击、不采集视频的声音，构建时自动检查。
 - **自动字幕的声音去向**（设置页 **12.** 选，侧边栏 **字幕** 页和播放器里都写明）：
   - **浏览器识别（默认）**：声音交给浏览器自带的语音识别。装了本地语音包时**在本机识别，声音不离开电脑**；没装时由 Chrome 自己发往 Google 的语音服务（和你在地址栏用语音搜索一样，扩展自己不发送音频）。**Firefox 版只在本机识别**，没有云端：这个语言没有本机模型时停下说明，不会把声音发到任何地方。识别出的文字一行一行交给扩展后台存下、翻译。
   - **OpenAI 转写**：声音按停顿切成几秒一段，由扩展后台发往 OpenAI（`api.openai.com/v1/audio/transcriptions`），**用完即丢、不保存、不进导出**；请求里只有这段音频、模型名和前几句已转写的文字，没有视频 ID、标题或你的账号信息。
@@ -1202,6 +1202,7 @@ node tests/e2e/run-e2e.mjs --shard=clips
 ```
 
 - **测试不出网**：单测把全局 `fetch` 换成直接报错的函数，所有外部服务都用注入的假实现；e2e 把所有外部服务指向本机 mock（127.0.0.1:47321），其他任何请求都会被拦截并判失败。
+- **仓库里不放像 Key 的字符串**（[DECISIONS.md](DECISIONS.md) §73）：真 Key 只在设置页填、只存本机。测试要用像 Key 的假值（例如验证脱敏）时，用 `tests/unit/fake-secrets.ts` 的 `fakeSecret('sk-proj-', 'test…')` 在运行时拼出来——整串写在源码里的话，GitHub 的密钥扫描分不出真假，会当成真 Key 报"已公开泄露"。`npm test` 会把仓库里每个文件（已提交的，加上没提交也没被 `.gitignore` 忽略的）按 `scripts/secret-patterns.mjs` 的格式查一遍，查到就失败，只报文件、行号和开头几个字符。
 - **CI**：指向 `main` 的 PR 和 `main` 上的 push 都由 GitHub Actions（[.github/workflows/ci.yml](.github/workflows/ci.yml)）在 Windows 上跑和 `npm run verify` 同一套检查：类型检查、单元测试、e2e、正式版冒烟，以及 Firefox 版的 e2e 与安装包冒烟（这一个 job 在 Ubuntu 上跑）。为了快，CI 把它们拆成几个 job 同时跑（类型检查 + 单测 + 冒烟一个，e2e 每组一个，Firefox 一个，发布用安装包的打包与 `.crx` 安装冒烟一个），最后由 `verify` 汇总，全部通过才算过。合并进 `main` 后的那一次：文件树和 PR 里验过的一模一样时不重跑，运行摘要里写明是哪一次运行验过的；不一样（例如验完以后 `main` 又进了别的改动）就照常全跑。CI 不需要任何 Secret，扩展密钥在 runner 上临时生成（只有发布要 `CRX_PRIVATE_KEY`，见下）。`main` 有分支保护：`verify` 不通过不能合并，也不能直接 push，管理员不例外。提交前先在本地跑 `npm run verify`。失败时的截图在这次运行的 Artifacts 里（每组一份），保留 7 天。分组与取舍见 DECISIONS §61。
 - **自动发布**（[.github/workflows/release.yml](.github/workflows/release.yml)，[DECISIONS.md](DECISIONS.md) §70）：每次有改动合并进 `main`，`main` 上的 CI 一通过（这棵文件树在 PR 里验过时只要十几秒），就跑 `npm run package` 打出 Chrome 的 `.zip` / `.crx` 和 Firefox 的 `.xpi`，让真的 Chromium 按策略下载、校验、安装一遍这个 `.crx`，然后发布到 [Releases](https://github.com/Anna-SAP/TubeMuse/releases)：标签 `v<版本>`，版本号是 `package.json` 的版本加上这个提交在 `main` 上的提交数（例如 `0.1.0.137`，只增不减）。说明里写着扩展 ID、授权回跳地址和安装方法，后面附上自上一版以来合并的 PR。也可以在 Actions → **Release** → **Run workflow**（分支选 `main`）手动发布当前的 `main`；同一个版本发布过就不再重复。
   - **要先配一个 Secret**：`.crx` 要用私钥签名，`.zip` 里 manifest 的 key 也来自它；用你本机 `local/extension-key.pem` 签，装上后的扩展 ID 就和你自己构建的一样，Google Cloud 不用改。到仓库 **Settings → Secrets and variables → Actions → New repository secret**，名字 `CRX_PRIVATE_KEY`，值粘贴 `local/extension-key.pem` 的全文（`-----BEGIN PRIVATE KEY-----` 到 `-----END PRIVATE KEY-----`）。没配时发布失败，运行摘要里写明要怎么做；配好后对那次运行点 **Re-run jobs**，或手动运行一次。私钥只交给发布工作流里载入它的那一步，只写在那台 runner 上；构建脚本会检查安装包里没有私钥。
@@ -1239,9 +1240,9 @@ src/background.ts  service worker（Firefox 版是事件页）：闹钟、补算
 src/platform.ts    这份构建是 Chrome 版还是 Firefox 版（构建时注入），以及两边不同的说法
 scripts/           构建（含 Firefox 版与 .xpi 打包：firefox.mjs、zip.mjs）、生成扩展密钥、生成图标；
                    发布用的打包（package.mjs）、CRX3 签名与校验（crx.mjs）、版本号（version.mjs）、从仓库 Secret 载入签名密钥（release-key.mjs）、
-                   Firefox 版交 Mozilla 签名并核对（sign-firefox.mjs）
+                   Firefox 版交 Mozilla 签名并核对（sign-firefox.mjs）、像真 Key / 令牌的格式（secret-patterns.mjs，构建自检与仓库自检共用）
 tools/amo/         Mozilla 的 web-ext（签名与校验用），单独的 package.json 与锁文件，只给 CI 和发布用
-tests/unit/        单元与服务层测试
+tests/unit/        单元与服务层测试；测试用的假 Key / 令牌在运行时拼出来（fake-secrets.ts），仓库自检见 secret-hygiene.test.mjs
 tests/e2e/smoke-crx.mjs  让真的 Chromium 按策略下载、校验、安装发布用的 .crx（只在 Linux 上跑）
 tests/e2e/sign-firefox-mock.mjs  Firefox 签名流程：真的 web-ext 对着本机的假 AMO 走一遍
 tests/e2e/         mock 服务（含可播放的 mock 播放页、"说话"音频与 mock 语音转写、仿小红书网页版页面 xhs-pages.mjs、仿 X 页面 x-pages.mjs、仿酷播页面 kubb-pages.mjs、仿 Instagram 页面 ig-pages.mjs、仿抖音页面 douyin-pages.mjs、仿 B 站页面 bili-pages.mjs）、e2e 主流程、正式版冒烟测试
@@ -1272,7 +1273,7 @@ tests/fixtures/    单测与 e2e 共用的夹具（豆瓣评论 RSS，结构照�
 - X 热点来自"用兴趣关键词检索的高互动帖子"，不是 X 的全站趋势榜（那与兴趣无关，也没有原文链接）；与你兴趣无关的大事件不会出现。
 - "跟随当前标签页"只认 `www.douban.com` 上的地址（评论 RSS、`www.douban.com/subject/<ID>/`）。`movie.douban.com` 等子域名上的条目页看不到网址，不会跟随——要支持得给扩展加这些子域名的权限，属于网络出口红线的变更，没有擅自加。
 - 豆瓣评论 RSS 不是有文档的公开接口：只有最新约 8 篇、每篇只附正文开头的一小段（豆瓣在服务端就截断了），"评价"一栏常为空；豆瓣改版或下线 RSS 时这一页会报错（不会静默显示为空）。海报多半会被豆瓣的防盗链拒绝（实测在干净的浏览器里直接打开也返回 418），届时显示本地生成的封面。
-- **中文配音**（[DECISIONS.md](DECISIONS.md) §73）：只跟随播放状态加手动偏移；中文与原视频长度、停顿不同，越往后可能差得越多，要边看边调。降原声是直接改 `<video>` 的音量（不经过 YouTube 的音量设置，YouTube 的音量条仍显示你的音量）：YouTube 如果一再改回去，TubeMuse 会停手并说明（原声不降，配音照常）——这一点只在 mock 页面上测过，真实 YouTube 上以你的实测为准。开启时整份音频载入那个标签页的内存（一小时约 50 MB）。页面从没被点过时浏览器可能不让配音出声：侧边栏会说明，在页面上点一下即可。只支持 `.m4a`（AAC 编码的最稳；ALAC 等无损编码浏览器放不了，会说明）。
+- **中文配音**（[DECISIONS.md](DECISIONS.md) §74）：只跟随播放状态加手动偏移；中文与原视频长度、停顿不同，越往后可能差得越多，要边看边调。降原声是直接改 `<video>` 的音量（不经过 YouTube 的音量设置，YouTube 的音量条仍显示你的音量）：YouTube 如果一再改回去，TubeMuse 会停手并说明（原声不降，配音照常）——这一点只在 mock 页面上测过，真实 YouTube 上以你的实测为准。开启时整份音频载入那个标签页的内存（一小时约 50 MB）。页面从没被点过时浏览器可能不让配音出声：侧边栏会说明，在页面上点一下即可。只支持 `.m4a`（AAC 编码的最稳；ALAC 等无损编码浏览器放不了，会说明）。
 - 小红书：
   - 发布时间读的是小红书网页版 2026-11 的页面数据（`window.__INITIAL_STATE__` 里个人主页笔记列表的 `noteCard.time`、笔记详情的 `time`）与卡片结构（`section.note-item`、作者那一行 `.author-wrapper`）。小红书改版后可能读不到：读不到页面数据时退回由笔记 ID 推算（标"≈"，侧边栏会说明）；连卡片都认不出时页面上不会出现时间和按钮，侧边栏显示"找到 0 张笔记卡片"。
   - "≈"的时间是笔记创建的时刻，定时发布、审核后发布的笔记实际发布时间更晚（实测 6 篇里有 2 篇晚 2–3 小时）。首页、搜索结果的页面数据里没有发布时间，只能这样推算；要精确时间得另外请求每篇笔记的详情，那是网页抓取，没有做。

@@ -11,6 +11,7 @@ import type { AppContext } from '../../src/services/context';
 import { AppError } from '../../src/services/errors';
 import { EXPORT_EXCLUDED_KEYS, stores, type YouTubeAuthState } from '../../src/services/repo';
 import { memoryKV, memoryLocker, type KV, type Locker } from '../../src/services/storage';
+import { fakeSecret } from './fake-secrets';
 
 const AUTHORIZE = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN = 'https://oauth2.googleapis.com/token';
@@ -288,7 +289,7 @@ describe('连接 YouTube（交互授权）', () => {
       [undefined, () => ({ status: 401, body: { error: 'invalid_client' } }), /不认这个 Client Secret/],
       [undefined, () => ({ status: 400, body: { error: 'redirect_uri_mismatch' } }), /回跳地址/],
       [undefined, () => new TypeError('Failed to fetch'), /连不上 Google 换取令牌/],
-      [undefined, () => ({ status: 200, body: { access_token: 'ya29.no-refresh-abcdefghij', expires_in: 3599, scope: GOOGLE_OAUTH_SCOPE } }), /没有发放刷新令牌/],
+      [undefined, () => ({ status: 200, body: { access_token: fakeSecret('ya29.', 'no-refresh-abcdefghij'), expires_in: 3599, scope: GOOGLE_OAUTH_SCOPE } }), /没有发放刷新令牌/],
       [undefined, () => ({ status: 200, body: { access_token: 'ya29.x-abcdefghijklmnop', refresh_token: '1//0r', scope: 'openid' } }), /没有包含/],
     ];
     for (const [launch, fault, re] of cases) {
@@ -395,8 +396,8 @@ describe('自动续期（刷新令牌，不弹窗）', () => {
     const s = setup();
     await s.auth.getToken(true);
     s.advance(HOUR);
-    s.setFault((f) => (f.grant_type === 'refresh_token' ? { status: 200, body: { access_token: 'ya29.rotated-abcdefghijklmnop', expires_in: 3599, refresh_token: '1//0rotated-abcdefghijklmnopqrstu', scope: GOOGLE_OAUTH_SCOPE } } : undefined));
-    expect(await s.auth.getToken(false)).toBe('ya29.rotated-abcdefghijklmnop');
+    s.setFault((f) => (f.grant_type === 'refresh_token' ? { status: 200, body: { access_token: fakeSecret('ya29.', 'rotated-abcdefghijklmnop'), expires_in: 3599, refresh_token: '1//0rotated-abcdefghijklmnopqrstu', scope: GOOGLE_OAUTH_SCOPE } } : undefined));
+    expect(await s.auth.getToken(false)).toBe(fakeSecret('ya29.', 'rotated-abcdefghijklmnop'));
     expect((await read(s.kv))?.refreshToken).toBe('1//0rotated-abcdefghijklmnopqrstu');
   });
 
@@ -519,13 +520,13 @@ describe('自动续期（刷新令牌，不弹窗）', () => {
 });
 
 describe('旧版（隐式授权）记录', () => {
-  const legacy = (expiresAt: number): YouTubeAuthState => ({ accessToken: 'ya29.legacy-abcdefghijklmnop', expiresAt, scope: GOOGLE_OAUTH_SCOPE, connectedAt: T0 - 9 * 24 * HOUR });
+  const legacy = (expiresAt: number): YouTubeAuthState => ({ accessToken: fakeSecret('ya29.', 'legacy-abcdefghijklmnop'), expiresAt, scope: GOOGLE_OAUTH_SCOPE, connectedAt: T0 - 9 * 24 * HOUR });
 
   it('还没过期：照常可用；过期后直接说"旧版授权、重新授权一次"，不开窗口、不发请求', async () => {
     const s = setup();
     await stores.youtubeAuth.write(s.kv, legacy(T0 + HOUR));
     expect(await s.auth.status()).toBe('connected');
-    expect(await s.auth.getToken(false)).toBe('ya29.legacy-abcdefghijklmnop');
+    expect(await s.auth.getToken(false)).toBe(fakeSecret('ya29.', 'legacy-abcdefghijklmnop'));
     s.advance(HOUR);
     expect(await s.auth.status()).toBe('expired');
     const e = await fail(s.auth.getToken(false));
@@ -564,7 +565,7 @@ describe('断开与导出', () => {
 
   it('断开旧版记录：令牌已过期时不发请求，如实返回没有吊销', async () => {
     const { auth, kv, requests } = setup();
-    await stores.youtubeAuth.write(kv, { accessToken: 'ya29.old-abcdefghijklmnop', expiresAt: T0 - 1, connectedAt: T0 - HOUR });
+    await stores.youtubeAuth.write(kv, { accessToken: fakeSecret('ya29.', 'old-abcdefghijklmnop'), expiresAt: T0 - 1, connectedAt: T0 - HOUR });
     expect(await auth.disconnect()).toEqual({ revoked: false });
     expect(requests).toHaveLength(0);
   });

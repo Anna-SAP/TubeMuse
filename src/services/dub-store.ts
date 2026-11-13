@@ -1,4 +1,4 @@
-// 中文配音的音频文件（DECISIONS §73）：存在扩展自己的 IndexedDB 里（文件大，不放 chrome.storage.local）。
+// 中文配音的音频文件（DECISIONS §74）：存在扩展自己的 IndexedDB 里（文件大，不放 chrome.storage.local）。
 // 只有扩展自己的页面（侧边栏、设置页）和后台能打开它；注入网页的脚本用的是网页自己的存储，碰不到这里。
 // 视频与文件的对应关系、偏移在 chrome.storage.local 的 dubs 键（stores.dubs），随导出、清空一起处理。
 

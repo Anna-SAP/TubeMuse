@@ -69,7 +69,7 @@ export const WATCH_VIDEOS = [
   { id: 'p2Glance0002', seconds: 900, title: '搞笑合集 第 8 期', channelId: 'UCp2fun', channelTitle: '快乐每一天', categoryId: '24' },
   { id: 'p2Half000003', seconds: 1200, title: '神经网络课程 第 2 讲', channelId: 'UCp2learn', channelTitle: '机器学习课堂', categoryId: '27' },
 ];
-/** 中文配音（DECISIONS §73）用的播放页：两分钟的静音视频，配音用 tests/fixtures/xyz-tones.m4a（约 92 秒） */
+/** 中文配音（DECISIONS §74）用的播放页：两分钟的静音视频，配音用 tests/fixtures/xyz-tones.m4a（约 92 秒） */
 export const DUB_VIDEO = { id: 'dubVideo0001', seconds: 120 };
 /**
  * 自动字幕用的播放页：captions 决定播放器字幕按钮的样子（属性取自 2026-11 实测的 YouTube 播放器）。

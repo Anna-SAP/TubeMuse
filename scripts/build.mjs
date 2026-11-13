@@ -13,6 +13,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extensionIdFromPublicKey } from './gen-key.mjs';
 import { FIREFOX_ADDON_ID, FIREFOX_DATA_COLLECTION, FIREFOX_E2E_ADDON_ID, FIREFOX_MIN_VERSION, firefoxRedirectUrl } from './firefox.mjs';
+import { SECRET_PATTERNS } from './secret-patterns.mjs';
 import { isManifestVersion } from './version.mjs';
 import { zipDirectory } from './zip.mjs';
 
@@ -206,7 +207,7 @@ const manifest = {
   // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
   // eMails（DECISIONS §44）：只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"，不发网络请求，不写页面
   // 小宇宙（DECISIONS §72）：只认单集页；读这一集的信息、看 <audio> 的播放状态，向后台要音频段、送切好的句子，在页面上叠一层只读字幕。不发网络请求
-  // 中文配音（DECISIONS §73）：你开启后，把后台从扩展 IndexedDB 交来的本地 .m4a 交给一个不放进页面的 <audio>，跟着视频播放、暂停、拖动；
+  // 中文配音（DECISIONS §74）：你开启后，把后台从扩展 IndexedDB 交来的本地 .m4a 交给一个不放进页面的 <audio>，跟着视频播放、暂停、拖动；
   // 配音开着时原声降 20%。不发网络请求，不往页面插元素
   // 问 muse（DECISIONS §60、§63）：没有新脚本。片段录制脚本在你点「问 muse」时把当前这条视频 / 帖子读一次交给侧边栏；
   // 多语字幕脚本交出位置前后的字幕——已经读到的，或为这一次提问取一种语言（仍是下面检查的那唯一一处同源 /api/timedtext 请求）
@@ -242,13 +243,8 @@ function walk(dir) {
   });
 }
 const forbidden = [
-  { re: /sk-ant-[A-Za-z0-9_-]{16,}/, what: 'Anthropic API Key' },
-  { re: /\bsk-(?:proj-)?[A-Za-z0-9]{32,}/, what: 'OpenAI API Key' },
-  { re: /AIza[0-9A-Za-z_-]{35}/, what: 'Google API Key' },
-  { re: /ya29\.[0-9A-Za-z_-]{20,}/, what: 'Google 访问令牌' },
-  { re: /GOCSPX-[0-9A-Za-z_-]{20,}/, what: 'Google OAuth Client Secret' },
-  { re: /\b1\/\/0[0-9A-Za-z_-]{30,}/, what: 'Google 刷新令牌' },
-  { re: /AAAAAAAAAAAAAAAAAAAA[A-Za-z0-9%]{30,}/, what: 'X Bearer Token' },
+  // 各家 Key / 令牌的格式与仓库自检（tests/unit/secret-hygiene.test.mjs）共用一份（DECISIONS §73）
+  ...SECRET_PATTERNS,
   // 给 .crx 签名的私钥（local/extension-key.pem，发布时来自仓库 Secret，DECISIONS §70）只该用来签名，绝不能进安装包
   { re: /-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----/, what: '私钥' },
 ];
@@ -434,7 +430,7 @@ for (const bad of [
 // 小宇宙的音频 CDN 是新增的网络出口：只允许这一个，别的小宇宙域名（网站本身、图片 CDN）都不进 connect-src / host_permissions
 if (origins.some((o) => /xiaoyuzhoufm\.com|image\.xyzcdn\.net/i.test(o))) fail('小宇宙网站与图片 CDN 不应出现在网络出口里：扩展只读 media.xyzcdn.net 上的音频。');
 
-// 中文配音（2026-11-13 新增，DECISIONS §73）：注入 YouTube 的配音脚本只播放你为这个视频选的本地音频（由后台从扩展的 IndexedDB 交来）、
+// 中文配音（2026-11-13 新增，DECISIONS §74）：注入 YouTube 的配音脚本只播放你为这个视频选的本地音频（由后台从扩展的 IndexedDB 交来）、
 // 改 <video> 的音量（原声降 20%）。不得发任何网络请求、不得往页面插入元素或写 HTML（<audio> 不放进页面）、不得碰 Cookie / 页面存储、
 // 不得点击或模拟事件、不得录音录屏或采集视频的声音、不得触发下载、不得直接写扩展存储、不得动态执行代码
 const dubScript = readFileSync(join(outdir, 'content-dub.js'), 'utf8');

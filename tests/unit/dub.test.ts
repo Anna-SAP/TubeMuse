@@ -1,4 +1,4 @@
-// 中文配音（DECISIONS §73）：文件检查、跟随判定、原声降音量、说法、关联 / 换 / 移除、IndexedDB 里的音频交给页面、导出与清空。
+// 中文配音（DECISIONS §74）：文件检查、跟随判定、原声降音量、说法、关联 / 换 / 移除、IndexedDB 里的音频交给页面、导出与清空。
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { DUB } from '../../src/config/defaults';

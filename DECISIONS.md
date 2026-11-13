@@ -1707,7 +1707,28 @@ Web Speech API。检测 `SpeechRecognition.available({processLocally:true})`：�
   - 转写与校对的真实质量只能在用户的账号上验证（打卡清单列了逐项步骤）。
 - **日后如何替换**：转写模型改 `subtitles.asrModel`；校对模型改 `subtitles.translationModels`；切句参数、窗口大小、提前量在 `config/defaults.ts` 的 `XYZ`；格式支持在 `core/podcast-audio.ts`（要支持别的容器，只需新增一种索引和 `planWindow / extractWindow` 的分支）；想用实时流式转写，替换 `transcribeXyzSegment` 一处。
 
-## 73. 中文配音：给 YouTube 视频叠加播放本地中文配音（2026-11-13，用户要求）
+## 73. 安全：GitHub 密钥扫描告警 #1——测试里像真 Key 的假值（2026-11-13，用户要求）
+
+- **需求**：仓库的 Secret scanning 报了一条告警（#1，类型 OpenAI API Key，位置 `tests/unit/xyz.test.ts:403`，标签 Public leak）。要把风险真正消除，并让这条告警能有依据地关闭。
+- **先核实的事实**
+  - 告警指的那一行是 §72（PR #40）加的测试夹具 `OPENAI_KEY`（`sk-proj-` 后面接 `xyzTestKey0123456789` 和 a 到 t 的字母表，这里故意不写成整串），是写给单测里假 OpenAI 端点用的假值。单测把全局 `fetch` 换成直接报错的函数，它从没发往任何真实服务。真的 OpenAI Key 是随机字符，不会长这样。用户的真 Key 只在设置页填、存在浏览器本地（`secrets`，不进导出），从来不进仓库。
+  - 全部历史里（`git log --all -G 'sk-proj'`）只有三处 `sk-proj-` 字符串，都是测试夹具：这一个；§60（PR #27）`muse.test.ts` 的 `sk-proj-AbCdEf…`；自动字幕（§30）`subtitles.test.ts` 的 `sk-proj-subtitleTestKey…`。另有 27 处别的像 Key / 令牌的测试假值（Anthropic Key；Google 的访问令牌、API Key、Client Secret、刷新令牌；X Bearer Token），GitHub 暂时没报，但同样符合扫描规则。
+  - GitHub 的密钥扫描只看文字、分不出真假；从当前文件里删掉也不会自动关闭告警（历史里还在），要在告警页手动关闭并选原因。
+  - `main` 有分支保护、不能强推，管理员不例外；合并过的 PR 的提交，GitHub 还留在 `refs/pull/*/head` 里，改写 `main` 的历史也删不掉。
+- **选了什么**
+  - **测试里所有像 Key 的假值改成运行时拼接**：`tests/unit/fake-secrets.ts` 的 `fakeSecret('sk-proj-', 'xyzTestKey…')`，前缀和后面的部分分开写，源码里没有整串；运行时的值和原来逐字相同，测试行为不变（11 个测试文件、30 处）。没有换成不像 Key 的字符串：脱敏测试（`misc`、`muse`）要验证的正是"按格式认出 Key"，假值必须像真的。
+  - **格式规则只有一份**：`scripts/secret-patterns.mjs`，两处共用：构建自检（安装包里出现就构建失败，原来就有）和新加的仓库自检 `tests/unit/secret-hygiene.test.mjs`。仓库自检用 `git ls-files` 列出已提交的文件，加上没提交、也没被 `.gitignore` 忽略的文件（`local/` 被忽略，那里放着本机真的私钥，不查），逐个查文本，查到就单测失败。`npm test` 是 `npm run verify` 和 CI `checks` job 的一部分，所以提交前、合并前都会拦下来，CI 的配置不用改。报出来的只有文件、行号和开头 10 个字符，疑似 Key 不会整串抄进 CI 日志。`package-lock.json` 里的 `sha512-…` 是公开的包摘要，查之前先去掉，免得碰巧凑成某种 Key 的样子。
+  - **顺手补强构建自检**：原来的 OpenAI 规则 `sk-(?:proj-)?[A-Za-z0-9]{32,}` 要求紧接着有 32 个连续的字母或数字，可真的项目 Key 里有 `-` 和 `_`，开头 32 个字符里出现一个就认不出来。现在加了一条 `sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}`，另加 GitHub 令牌（发布工作流会用到）。私钥两边要求不同：仓库自检要"开头那一行 + 正文"才算，因为报错提示里本来就要写"以 -----BEGIN PRIVATE KEY----- 开头"；安装包照旧连开头那一行都不许有。
+  - **单测守着**：告警 #1 的那个值（运行时拼出来的）认得出；各家格式都认得，行号对，只露开头；正则本身、带连字符的词、私钥格式说明、`fakeSecret(…)` 的写法不误报。另外手动验证过：把原来那一行放回仓库，单测失败，并指出文件和行号。
+- **放弃了什么**
+  - **用 `.github/secret_scanning.yml` 的 `paths-ignore` 排除 `tests/`**：告警会消失，可以后真有人把真 Key 写进测试也不报了，这是把风险藏起来，不是消除。
+  - **gitleaks / secretlint**：都成熟，但前者要在 CI 和本机各装一份二进制，后者多一串 npm 依赖。这里要认的只有项目实际用到的几家，几行正则就够、能单测，还和构建自检共用。日后想查得更全，可以在 CI 加一步 gitleaks。
+  - **改写 git 历史（filter-repo）并强推 `main`**：不可逆，要临时解除分支保护；PR 的提交 GitHub 仍然保留，别人的克隆里也还在。对一个假值没有意义；真 Key 泄露时唯一有效的是撤销它，改写历史挡不住已经被人看到的。要不要做由用户决定，没做。
+- **用户要做的**（代码做不到）：在告警页关闭 #1，原因选 **Used in tests**，备注写上这个 PR；到 OpenAI 后台核对自己的 Key 没有一把是这个值（列表里每把 Key 只显示开头和末尾几位，这个假值以 `qrst` 结尾）；在仓库设置里打开 Push protection，以后推送里带像 Key 的字符串时 GitHub 当场拦下。
+- **已知限制 / 风险**：规则只认项目用到的几家的格式，别家的 Key（例如 AWS）认不出来，由 GitHub 自己的扫描兜底。有人刻意把真 Key 拆开再拼也绕得过去；这道自检防的是误贴，不防故意。
+- **日后如何替换**：加一种格式只改 `scripts/secret-patterns.mjs`（构建自检和仓库自检同时生效），并在 `secret-hygiene.test.mjs` 里补一个样本。换成 gitleaks 时，删掉 `secret-hygiene.test.mjs` 里扫描仓库的那一节，在 CI 加一步。
+
+## 74. 中文配音：给 YouTube 视频叠加播放本地中文配音（2026-11-13，用户要求）
 
 - **需求**：新增"中文配音"功能区：为当前视频选一个本地 `.m4a`，扩展记住 videoId → 文件，下次打开同一视频时自动提示有中文版；播放时中文跟随原视频的播放、暂停和拖动进度；配音开启时原声降 20%，配音保持正常音量；偏移滑块手动对齐第一句；开关；移除已关联的文件。用户给的例子：小宇宙 #817 ↔ Lance Martin 的视频 `ys6YQ2yfBpM`（原视频 1:03:49，用户说中文 1:04:02）。
 - **用户划的边界**：中文是重新录制的克隆音频，同步只做"跟随播放状态 + 手动偏移"，不实现也不暗示逐词对齐；音频存 IndexedDB，不存 `chrome.storage.local`；不建后端、不发任何新的网络请求、不接小宇宙接口、不新增域名和权限；不下载视频、不转码、不导出合成视频；不调 LLM、不花钱；不改动其他已有功能。用户的指令里明确要求实现，这一节同时把新增的注入用途写进 CLAUDE.md 第 1、2 节（与前几次新增功能的做法一致）。

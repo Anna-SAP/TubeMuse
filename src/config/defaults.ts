@@ -249,7 +249,7 @@ export const DEFAULT_SETTINGS = {
     tracking: true,
   },
   /**
-   * 中文配音（用户 2026-11-13 要求，见 DECISIONS §73）：给 YouTube 视频关联一个本地 .m4a，开启后在播放页叠加播放，
+   * 中文配音（用户 2026-11-13 要求，见 DECISIONS §74）：给 YouTube 视频关联一个本地 .m4a，开启后在播放页叠加播放，
    * 跟随视频的播放、暂停、拖动与倍速，加上你手动设的偏移；开启时原声降 20%。音频只存在本机（IndexedDB），不发任何网络请求。
    */
   dub: {
@@ -909,7 +909,7 @@ export const LLM_LIMITS = {
   utteranceMaxChars: 500,
 } as const;
 
-/** 中文配音的内部参数（DECISIONS §73） */
+/** 中文配音的内部参数（DECISIONS §74） */
 export const DUB = {
   /** 配音开启时原声的音量倍数：降 20%（用户 2026-11-13 指定）；配音本身保持正常音量（1） */
   originalVolume: 0.8,
