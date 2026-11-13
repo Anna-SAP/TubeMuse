@@ -4,6 +4,7 @@ import { ENDPOINTS, type Endpoints } from '../config/endpoints';
 import { chromeAuth, type AuthProvider } from './auth';
 import { chromeLocalTranslator, type LocalTranslator } from './local-translator';
 import { chromeKV, webLocker, type KV, type Locker } from './storage';
+import { indexedDbDubStore, type DubAudioStore } from './dub-store';
 
 export interface AppContext {
   kv: KV;
@@ -15,6 +16,8 @@ export interface AppContext {
   timeZone: string;
   /** Chrome 自带的本地翻译；浏览器不支持时为空 */
   translator?: LocalTranslator;
+  /** 中文配音的音频文件（扩展自己的 IndexedDB，DECISIONS §73）；没有 IndexedDB 的环境为空 */
+  dubAudio?: DubAudioStore;
 }
 
 export function createBrowserContext(): AppContext {
@@ -31,6 +34,7 @@ export function createBrowserContext(): AppContext {
     endpoints: ENDPOINTS,
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     ...(translator ? { translator } : {}),
+    ...(typeof indexedDB !== 'undefined' ? { dubAudio: indexedDbDubStore() } : {}),
   };
 }
 

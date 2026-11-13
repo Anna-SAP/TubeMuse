@@ -22,6 +22,8 @@ import { toAppError } from './services/errors';
 import { XHS_MSG } from './core/xhs';
 import { applyXhsFromPage, type XhsReply } from './services/xhs-service';
 import { IS_FIREFOX } from './platform';
+import { DUB_MSG, DUB_PORT, type DubPortReply, type DubTabState } from './core/dub';
+import { streamDubAudio } from './services/dub-service';
 
 const ctx = createBrowserContext();
 const TICK = 'tubemuse-tick';
@@ -217,23 +219,84 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
     showClipBadge(sender.tab.id, (m as { state?: ClipTabState }).state);
     return false;
   }
+  // 中文配音（DECISIONS §73）：这个视频有配音时在工具栏图标上标"中"（提示有中文版；开启后变绿）
+  if (m?.type === DUB_MSG.badge) {
+    if (!fromTrackedSite(sender) || sender.tab?.id === undefined) return false;
+    const d = m as { available?: unknown; active?: unknown };
+    dubBadges.set(sender.tab.id, { available: d.available === true, active: d.active === true });
+    renderBadge(sender.tab.id);
+    return false;
+  }
   return false;
 });
+
+/** 各标签页的片段录制徽标（REC / !）与中文配音徽标（中）：录制的优先，录完再显示"中" */
+const clipBadges = new Map<number, { text: string; color: string; title: string }>();
+const dubBadges = new Map<number, { available: boolean; active: boolean }>();
 
 /** 正在录：红色 REC；自动暂停中：灰色 REC；录制失败（例如快捷键在不是视频页的页面上按下）：橙色 !；其余不显示 */
 function showClipBadge(tabId: number, state: ClipTabState | undefined): void {
   const recording = state?.phase === 'recording';
   const text = recording ? 'REC' : state?.error && state.phase === 'idle' ? '!' : '';
   const color = recording ? (state?.waiting ? '#6d6862' : '#c8364a') : '#c77700';
-  void chrome.action.setBadgeText({ tabId, text }).catch(() => undefined);
-  if (text) void chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(() => undefined);
   const title = recording ? `TubeMuse · 正在录制片段（${state?.status ?? ''}）` : state?.error && state.phase === 'idle' ? `TubeMuse · ${state.error.message}` : 'TubeMuse';
-  void chrome.action.setTitle({ tabId, title }).catch(() => undefined);
+  if (text) clipBadges.set(tabId, { text, color, title });
+  else clipBadges.delete(tabId);
+  // 后台休眠过、不知道这个标签页有没有配音：问一下那个页面里的配音脚本
+  if (!text && !dubBadges.has(tabId)) {
+    void chrome.tabs
+      .sendMessage(tabId, { type: DUB_MSG.getState })
+      .then((s: DubTabState | undefined) => {
+        if (s && !dubBadges.has(tabId)) dubBadges.set(tabId, { available: s.available, active: s.active });
+      })
+      .catch(() => undefined)
+      .finally(() => renderBadge(tabId));
+    return;
+  }
+  renderBadge(tabId);
 }
+
+function renderBadge(tabId: number): void {
+  const clip = clipBadges.get(tabId);
+  const dub = dubBadges.get(tabId);
+  const shown =
+    clip ??
+    (dub?.active
+      ? { text: '中', color: '#2e7d32', title: 'TubeMuse · 中文配音已开启（在侧边栏「配音」页关闭或调偏移）' }
+      : dub?.available
+        ? { text: '中', color: '#6d6862', title: 'TubeMuse · 这个视频有中文配音（在侧边栏「配音」页开启）' }
+        : { text: '', color: '', title: 'TubeMuse' });
+  void chrome.action.setBadgeText({ tabId, text: shown.text }).catch(() => undefined);
+  if (shown.text) void chrome.action.setBadgeBackgroundColor({ tabId, color: shown.color }).catch(() => undefined);
+  void chrome.action.setTitle({ tabId, title: shown.title }).catch(() => undefined);
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clipBadges.delete(tabId);
+  dubBadges.delete(tabId);
+});
 
 // 自动字幕：YouTube 播放页里的字幕脚本经长连接送来切好的音频片段，这里转写、翻译后回传。
 // 小宇宙：单集页的脚本经另一条长连接要音频、送切好的句子，这里读音频、转写、校对 / 翻译后回传（DECISIONS §72）
 chrome.runtime.onConnect.addListener((port) => {
+  // 中文配音（DECISIONS §73）：YouTube 页面里的配音脚本要音频，从扩展自己的 IndexedDB 分块读出来交过去（不出本机）
+  if (port.name === DUB_PORT) {
+    if (!port.sender || !fromTrackedSite(port.sender)) return port.disconnect();
+    let open = true;
+    port.onDisconnect.addListener(() => (open = false));
+    const post = (m: DubPortReply): boolean => {
+      if (!open) return false;
+      try {
+        port.postMessage(m);
+        return true;
+      } catch {
+        open = false;
+        return false;
+      }
+    };
+    port.onMessage.addListener((m) => void keepAlive(() => streamDubAudio(ctx, m, post)).catch((e) => post({ type: 'error', message: '读配音文件出错', hint: e instanceof Error ? e.message : String(e) })));
+    return;
+  }
   if (port.name === XYZ_PORT) {
     if (!port.sender || !fromXyzPage(port.sender)) return port.disconnect();
     let alive = true;

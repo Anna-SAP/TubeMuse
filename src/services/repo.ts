@@ -14,6 +14,7 @@ import { emptyXhsState, sanitizeXhsState, type XhsState } from '../core/xhs';
 import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState, type EmailVerdicts } from '../core/email';
 import { emptyXyzSaved, sanitizeXyzSaved, type XyzListen, type XyzSaved, type XyzSnapshotRecord, type XyzTranscript } from '../core/xyz';
 import type { Mp3Scan } from '../core/podcast-audio';
+import { sanitizeDubIndex, type DubIndex } from '../core/dub';
 import type {
   Adjustment,
   ClusterState,
@@ -123,6 +124,7 @@ export function mergeSettings(stored: unknown): Settings {
     email: { ...d.email, ...(s.email as object) },
     muse: { ...d.muse, ...(s.muse as object) },
     xyz: { ...d.xyz, ...(s.xyz as object) },
+    dub: { ...d.dub, ...(s.dub as object) },
     ui: { ...d.ui, ...(s.ui as object) },
   } as Settings;
 }
@@ -223,6 +225,10 @@ export const stores = {
   xyzSnapshots: new Store<XyzSnapshotRecord[]>('xyzSnapshots', () => []),
   /** 小宇宙：可变码率 mp3 的帧位置索引（音频地址 → 扫描结果；只有帧的位置，没有音频） */
   xyzScans: new Store<Record<string, { scan: Mp3Scan; at: number }>>('xyzScans', () => ({})),
+  /**
+   * 中文配音：视频 ID → 关联的本地 .m4a（文件名、大小、时长、偏移；音频本身在 IndexedDB，见 services/dub-store.ts，不进导出）
+   */
+  dubs: new Store<DubIndex>('dubs', () => ({}), sanitizeDubIndex),
   /** YouTube 授权：访问令牌、刷新令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
   /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */

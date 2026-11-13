@@ -535,6 +535,65 @@ try {
   await b.screenshot(join(shots, '05-xyz.png'));
   await closeTab(xyzPage);
 
+  console.log('\n[中文配音：侧边栏选 .m4a → 存进扩展的 IndexedDB → 事件页读出来交给页面 → 页面里用 blob 地址播放、跟随、原声降 20%]');
+  await b.switchTo(handles.panel);
+  await tapText('配音', '[role=tab]');
+  const dubPage = await openActiveTab(`${MOCK}/watch?v=dubVideo0001`);
+  await b.switchTo(dubPage);
+  await b.waitFor(`(document.querySelector('video')?.readyState ?? 0) >= 2`, { timeout: 30_000, what: '视频可以播放' });
+  await b.switchTo(handles.panel);
+  await b.waitFor(`!!document.querySelector('[data-testid=dub-pick]')`, { what: '可以选文件' });
+  // 测试里没有文件对话框：把文件放进文件框（和你在对话框里选中一样触发 change）
+  await b.exec(
+    `const bytes = Uint8Array.from(atob(arguments[0]), (c) => c.charCodeAt(0));
+     const dt = new DataTransfer(); dt.items.add(new File([bytes], 'xyz-tones.m4a', { type: 'audio/mp4' }));
+     const input = document.querySelector('[data-testid=dub-file]'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true;`,
+    [readFileSync(join(root, 'tests', 'fixtures', 'xyz-tones.m4a')).toString('base64')],
+  );
+  await b.waitFor(`!!document.querySelector('[data-testid=dub-done]')`, { timeout: 15_000, what: '关联好了' });
+  const dubRec = await b.run(`return (await browser.storage.local.get('dubs')).dubs?.dubVideo0001;`);
+  const dubIdb = await b.run(
+    `return await new Promise((res) => { const r = indexedDB.open('tubemuse-dub'); r.onsuccess = () => { const q = r.result.transaction('audio').objectStore('audio').getAll(); q.onsuccess = () => { res(q.result.map((x) => x.size)); r.result.close(); }; }; });`,
+  );
+  check(dubRec?.durationSec > 91 && JSON.stringify(dubIdb) === JSON.stringify([readFileSync(join(root, 'tests', 'fixtures', 'xyz-tones.m4a')).length]), `Firefox：音频存进扩展的 IndexedDB、时长读出来了（${dubRec?.durationSec} 秒）`);
+  const dubTab = await b.run(`const [t] = (await browser.tabs.query({})).filter((x) => String(x.url).includes('dubVideo0001')); return t.id;`);
+  const dubState = () => b.run(`return await browser.tabs.sendMessage(args[0], { type: 'tubemuse:dub:get-state' });`, [dubTab]);
+  await tap('[data-testid=dub-toggle]');
+  await b.switchTo(dubPage);
+  await b.click('video');
+  await b.run(`await document.querySelector('video').play();`);
+  await b.switchTo(handles.panel);
+  let dubS = await dubState();
+  for (let i = 0; i < 60 && !(dubS?.playing && dubS.phase === 'ready'); i++) {
+    await sleep(250);
+    dubS = await dubState();
+  }
+  check(dubS?.playing === true && dubS.dubDuration > 91, `Firefox：后台（事件页）读 IndexedDB 分块交给页面，页面里的 <audio> 用 blob 地址放起来了：${dubS?.status}`);
+  await sleep(1500);
+  dubS = await dubState();
+  check(Math.abs(dubS.dubTime - dubS.videoTime) < 0.5, `Firefox：跟着视频走（视频 ${Number(dubS.videoTime).toFixed(2)} · 中文 ${Number(dubS.dubTime).toFixed(2)}）`);
+  await b.switchTo(dubPage);
+  const ffVol = await b.exec(`return document.querySelector('video').volume;`);
+  await b.exec(`document.querySelector('video').pause(); return true;`);
+  await b.switchTo(handles.panel);
+  check(Math.abs(ffVol - 0.8) < 0.005, `Firefox：原声降 20%（${ffVol}）`);
+  for (let i = 0; i < 20 && (await dubState())?.playing; i++) await sleep(150);
+  check((await dubState())?.playing === false, 'Firefox：视频暂停，配音跟着停');
+  await tap('[data-testid=dub-toggle]');
+  await b.switchTo(dubPage);
+  let ffBack = 0;
+  for (let i = 0; i < 20 && Math.abs(ffBack - 1) > 0.005; i++) {
+    ffBack = await b.exec(`return document.querySelector('video').volume;`);
+    if (Math.abs(ffBack - 1) > 0.005) await sleep(150);
+  }
+  await b.switchTo(handles.panel);
+  check(Math.abs(ffBack - 1) < 0.005, `Firefox：关闭配音，原声恢复（${ffBack}）`);
+  await tap('[data-testid=dub-remove]');
+  await tap('[data-testid=dub-remove-yes]');
+  await b.waitFor(`!!document.querySelector('[data-testid=dub-pick]')`, { what: '移除后回到选文件' });
+  check(JSON.stringify(await b.run(`return (await browser.storage.local.get('dubs')).dubs;`)) === '{}', 'Firefox：移除后对应关系清空');
+  await closeTab(dubPage);
+
   console.log('\n[工具栏图标 → 打开 / 关上 Firefox 的侧边栏]');
   // Firefox 新装的扩展按钮收在"扩展"面板里：先固定到工具栏（就像你右键"固定到工具栏"），再真的点一下
   const widgetId = `${FIREFOX_E2E_ADDON_ID.toLowerCase().replace(/[^a-z0-9_-]/g, '_')}-browser-action`;

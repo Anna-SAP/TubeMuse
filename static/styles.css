@@ -1899,3 +1899,50 @@ a.db-title:hover {
 .xyz-listen .row {
   align-items: flex-start;
 }
+
+/* ── 中文配音（DECISIONS §73）── */
+.dub-delay {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.dub-delay-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+}
+.dub-range {
+  width: 100%;
+  margin: 6px 0 0;
+  accent-color: var(--accent);
+}
+.dub-range-ends {
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.dub-delay .input.num {
+  width: 72px;
+}
+.dub-progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.dub-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dub-list li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.dub-list li:last-child {
+  border-bottom: none;
+}
+.dub-notes {
+  margin: 0;
+  padding-left: 18px;
+}
+.dub-notes li {
+  margin: 2px 0;
+}
