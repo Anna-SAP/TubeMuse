@@ -1946,3 +1946,20 @@ a.db-title:hover {
 .dub-notes li {
   margin: 2px 0;
 }
+
+/* 对齐点（DECISIONS §75） */
+.dub-anchors {
+  margin: 8px 0 0;
+  padding-left: 22px;
+  font-size: 12px;
+}
+.dub-anchors li {
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+.dub-anchors li > span {
+  margin-right: 4px;
+}
+.dub-anchors li.on {
+  background: var(--accent-soft);
+}

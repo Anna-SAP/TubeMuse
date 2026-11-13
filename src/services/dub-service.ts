@@ -3,7 +3,20 @@
 
 import { DUB } from '../config/defaults';
 import { bytesToBase64 } from '../core/clips';
-import { DubFileError, checkDubFile, clampDelay, isDubPortRequest, probeM4a, type DubIndex, type DubPortReply, type DubRecord } from '../core/dub';
+import {
+  DubFileError,
+  checkDubFile,
+  clampDelay,
+  dubMapOf,
+  isDubPortRequest,
+  probeM4a,
+  withAnchor,
+  withSegmentOffset,
+  type DubAnchor,
+  type DubIndex,
+  type DubPortReply,
+  type DubRecord,
+} from '../core/dub';
 import type { AppContext } from './context';
 import type { DubAudioStore } from './dub-store';
 import { newId, stores } from './repo';
@@ -26,7 +39,7 @@ export const blobReader = (blob: Blob) => async (start: number, end: number) => 
 
 /**
  * 给这个视频关联一个 .m4a：检查格式、读出时长，存进 IndexedDB，再记下对应关系。
- * 已经关联过的视频换成新文件（偏移保留：同一个视频换一版配音，开头多半还是那样），旧文件随后删掉。
+ * 已经关联过的视频换成新文件（偏移和对齐点保留：同一个视频换一版配音，多半还是那样），旧文件随后删掉。
  */
 export async function attachDub(ctx: AppContext, input: AttachInput): Promise<DubRecord> {
   checkDubFile(input.fileName, input.file.type, input.file.size);
@@ -51,6 +64,8 @@ export async function attachDub(ctx: AppContext, input: AttachInput): Promise<Du
       size: input.file.size,
       mime: input.file.type || 'audio/mp4',
       delaySec: old?.delaySec ?? 0,
+      // 同一个视频换一版配音：偏移和对齐点多半还能用，保留（界面上说明，不对再删）
+      ...(old?.anchors?.length ? { anchors: old.anchors } : {}),
       addedAt: ctx.now(),
       ...(probe.durationSec ? { durationSec: probe.durationSec } : {}),
       ...(input.videoDurationSec && Number.isFinite(input.videoDurationSec) ? { videoDurationSec: Math.round(input.videoDurationSec * 1000) / 1000 } : old?.videoDurationSec ? { videoDurationSec: old.videoDurationSec } : {}),
@@ -74,11 +89,56 @@ export async function removeDub(ctx: AppContext, videoId: string): Promise<void>
   if (fileId) await audioStore(ctx).delete(fileId);
 }
 
-/** 存偏移（秒，正 = 中文推后） */
+/** 存开头那一段的偏移（秒，正 = 中文推后） */
 export async function setDubDelay(ctx: AppContext, videoId: string, delaySec: number): Promise<void> {
   await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
     const rec = index[videoId];
     return rec ? { ...index, [videoId]: { ...rec, delaySec: clampDelay(delaySec) } } : index;
+  });
+}
+
+function withMap(rec: DubRecord, map: { delaySec: number; anchors: readonly DubAnchor[] }): DubRecord {
+  const { anchors: _old, ...rest } = rec;
+  return { ...rest, delaySec: map.delaySec, ...(map.anchors.length ? { anchors: [...map.anchors] } : {}) };
+}
+
+/** 存某一段的偏移（DECISIONS §75）：segment −1 = 开头那段；k = 第 k 个对齐点之后那段（改这个对齐点的中文位置，视频位置不动） */
+export async function setDubSegmentOffset(ctx: AppContext, videoId: string, segment: number, offset: number): Promise<void> {
+  await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
+    const rec = index[videoId];
+    if (!rec || segment >= (rec.anchors?.length ?? 0)) return index;
+    return { ...index, [videoId]: withMap(rec, withSegmentOffset(dubMapOf(rec), segment, offset)) };
+  });
+}
+
+/**
+ * 加一个对齐点：视频的这一刻对应中文的这一刻。离已有的不到 1 秒时替换那一个。
+ * 最多 DUB.maxAnchors 个，满了说明原因、不加。返回加完后的记录
+ */
+export async function addDubAnchor(ctx: AppContext, videoId: string, anchor: DubAnchor): Promise<DubRecord | undefined> {
+  let saved: DubRecord | undefined;
+  let full = false;
+  await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
+    const rec = index[videoId];
+    if (!rec || !Number.isFinite(anchor.video) || !Number.isFinite(anchor.dub) || anchor.video <= 0) return index;
+    const anchors = withAnchor(rec.anchors ?? [], anchor);
+    if (anchors.length > DUB.maxAnchors) {
+      full = true;
+      return index;
+    }
+    saved = withMap(rec, { delaySec: rec.delaySec, anchors });
+    return { ...index, [videoId]: saved };
+  });
+  if (full) throw new DubFileError(`对齐点已经有 ${DUB.maxAnchors} 个了`, '先删掉几个用不上的再加。');
+  return saved;
+}
+
+/** 删第 k 个对齐点：它前面那一段一直延续到下一个对齐点 */
+export async function removeDubAnchor(ctx: AppContext, videoId: string, k: number): Promise<void> {
+  await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
+    const rec = index[videoId];
+    if (!rec?.anchors || k < 0 || k >= rec.anchors.length) return index;
+    return { ...index, [videoId]: withMap(rec, { delaySec: rec.delaySec, anchors: rec.anchors.filter((_, i) => i !== k) }) };
   });
 }
 

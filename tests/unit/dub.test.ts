@@ -12,20 +12,28 @@ import {
   cleanVideoTitle,
   delayText,
   dubReasonText,
+  dubSegmentAt,
   dubStep,
   durationNote,
+  misorderedAnchors,
+  sanitizeAnchors,
+  segmentOffsetText,
+  withAnchor,
+  withSegmentOffset,
   formatClockSec,
   isDubPortRequest,
   probeM4a,
   sanitizeDubIndex,
+  type DubAnchor,
   type DubAudioSample,
+  type DubMap,
   type DubPortReply,
   type DubVideoSample,
 } from '../../src/core/dub';
 import type { AuthProvider } from '../../src/services/auth';
 import type { AppContext } from '../../src/services/context';
 import { clearAll, exportAll } from '../../src/services/data-service';
-import { attachDub, blobReader, checkDubStorage, removeDub, setDubDelay, streamDubAudio } from '../../src/services/dub-service';
+import { addDubAnchor, attachDub, blobReader, checkDubStorage, removeDub, removeDubAnchor, setDubDelay, setDubSegmentOffset, streamDubAudio } from '../../src/services/dub-service';
 import { memoryDubStore } from '../../src/services/dub-store';
 import { stores } from '../../src/services/repo';
 import { memoryKV, memoryLocker } from '../../src/services/storage';
@@ -93,44 +101,155 @@ describe('中文配音：文件检查', () => {
 
 const video = (over: Partial<DubVideoSample> = {}): DubVideoSample => ({ currentTime: 100, paused: false, ended: false, seeking: false, canPlay: true, rate: 1, ad: false, ...over });
 const audio = (over: Partial<DubAudioSample> = {}): DubAudioSample => ({ currentTime: 100, paused: false, duration: 3842, rate: 1, ...over });
+const m = (delaySec: number, anchors: DubAnchor[] = []): DubMap => ({ delaySec, anchors });
 
 describe('中文配音：跟随', () => {
   it('视频在放、位置对得上：继续放，不跳', () => {
-    expect(dubStep(video(), audio(), 0)).toEqual({ play: true, reason: 'playing', target: 100 });
-    expect(dubStep(video(), audio({ currentTime: 100.2 }), 0).seekTo).toBeUndefined();
+    expect(dubStep(video(), audio(), m(0))).toMatchObject({ play: true, reason: 'playing', target: 100 });
+    expect(dubStep(video(), audio({ currentTime: 100.2 }), m(0)).seekTo).toBeUndefined();
   });
 
   it('拖动进度后差得多：把配音拉到视频位置 − 偏移', () => {
-    expect(dubStep(video({ currentTime: 1800 }), audio({ currentTime: 100 }), 2.5)).toMatchObject({ play: true, seekTo: 1797.5 });
+    expect(dubStep(video({ currentTime: 1800 }), audio({ currentTime: 100 }), m(2.5))).toMatchObject({ play: true, seekTo: 1797.5 });
     // 偏移为负（中文提前）：配音在视频前面
-    expect(dubStep(video({ currentTime: 60 }), audio({ currentTime: 0 }), -3)).toMatchObject({ play: true, seekTo: 63 });
+    expect(dubStep(video({ currentTime: 60 }), audio({ currentTime: 0 }), m(-3))).toMatchObject({ play: true, seekTo: 63 });
   });
 
   it('视频暂停 / 跳转中 / 缓冲 / 广告 / 放完：配音停；暂停时也把位置对好', () => {
-    expect(dubStep(video({ paused: true }), audio({ currentTime: 50 }), 0)).toMatchObject({ play: false, reason: 'paused', seekTo: 100 });
-    expect(dubStep(video({ paused: true }), audio(), 0)).toEqual({ play: false, reason: 'paused', target: 100 });
-    expect(dubStep(video({ seeking: true }), audio(), 0)).toMatchObject({ play: false, reason: 'seeking' });
-    expect(dubStep(video({ canPlay: false }), audio(), 0)).toMatchObject({ play: false, reason: 'buffering' });
-    expect(dubStep(video({ ad: true, currentTime: 5 }), audio(), 0)).toEqual({ play: false, reason: 'ad', target: 5 });
-    expect(dubStep(video({ ended: true }), audio(), 0)).toMatchObject({ play: false, reason: 'ended' });
+    expect(dubStep(video({ paused: true }), audio({ currentTime: 50 }), m(0))).toMatchObject({ play: false, reason: 'paused', seekTo: 100 });
+    expect(dubStep(video({ paused: true }), audio(), m(0))).toMatchObject({ play: false, reason: 'paused', target: 100 });
+    expect(dubStep(video({ paused: true }), audio(), m(0)).seekTo).toBeUndefined();
+    expect(dubStep(video({ seeking: true }), audio(), m(0))).toMatchObject({ play: false, reason: 'seeking' });
+    expect(dubStep(video({ canPlay: false }), audio(), m(0))).toMatchObject({ play: false, reason: 'buffering' });
+    expect(dubStep(video({ ad: true, currentTime: 5 }), audio(), m(0))).toMatchObject({ play: false, reason: 'ad', target: 5 });
+    expect(dubStep(video({ ended: true }), audio(), m(0))).toMatchObject({ play: false, reason: 'ended' });
   });
 
   it('中文推后时，视频还没放到偏移处：配音停在开头等着', () => {
-    expect(dubStep(video({ currentTime: 1 }), audio({ currentTime: 30 }), 2)).toEqual({ play: false, reason: 'before-start', target: -1, seekTo: 0 });
-    expect(dubStep(video({ currentTime: 1 }), audio({ currentTime: 0 }), 2)).toEqual({ play: false, reason: 'before-start', target: -1 });
-    expect(dubReasonText('before-start', 2)).toContain('视频放到 0:02 时中文才开始');
+    expect(dubStep(video({ currentTime: 1 }), audio({ currentTime: 30 }), m(2))).toMatchObject({ play: false, reason: 'before-start', target: -1, seekTo: 0 });
+    expect(dubStep(video({ currentTime: 1 }), audio({ currentTime: 0 }), m(2))).toMatchObject({ play: false, reason: 'before-start', target: -1, wakeIn: 1 });
+    expect(dubStep(video({ currentTime: 1 }), audio({ currentTime: 0 }), m(2)).seekTo).toBeUndefined();
+    expect(dubReasonText('before-start', { offset: 2 })).toContain('视频放到 0:02 时中文才开始');
   });
 
   it('原视频比中文长：中文放完就停', () => {
-    expect(dubStep(video({ currentTime: 3850 }), audio({ duration: 3842 }), 0)).toMatchObject({ play: false, reason: 'after-end' });
+    expect(dubStep(video({ currentTime: 3850 }), audio({ duration: 3842 }), m(0))).toMatchObject({ play: false, reason: 'after-end' });
     // 时长还不知道（NaN）时照常跟随
-    expect(dubStep(video({ currentTime: 3850 }), audio({ duration: NaN, currentTime: 3850 }), 0)).toMatchObject({ play: true });
+    expect(dubStep(video({ currentTime: 3850 }), audio({ duration: NaN, currentTime: 3850 }), m(0))).toMatchObject({ play: true });
   });
 
   it('倍速跟着视频；从暂停开始放时先对准（差 0.08 秒以上就跳）', () => {
-    expect(dubStep(video({ rate: 1.5 }), audio(), 0).rate).toBe(1.5);
-    expect(dubStep(video(), audio({ paused: true, currentTime: 99.85 }), 0).seekTo).toBe(100);
-    expect(dubStep(video(), audio({ paused: true, currentTime: 99.95 }), 0).seekTo).toBeUndefined();
+    expect(dubStep(video({ rate: 1.5 }), audio(), m(0)).rate).toBe(1.5);
+    expect(dubStep(video(), audio({ paused: true, currentTime: 99.85 }), m(0)).seekTo).toBe(100);
+    expect(dubStep(video(), audio({ paused: true, currentTime: 99.95 }), m(0)).seekTo).toBeUndefined();
+  });
+});
+
+describe('中文配音：对齐点（分段跟随，DECISIONS §75）', () => {
+  // 手测的例子：原视频 1:01:43（3703 秒），中文 46:02（2762 秒）；开头中文推后 3 秒，
+  // 视频 12:30 ↔ 中文 9:25，视频 30:00 ↔ 中文 22:40
+  const anchors: DubAnchor[] = [
+    { video: 750, dub: 565 },
+    { video: 1800, dub: 1360 },
+  ];
+  const map = m(3, anchors);
+
+  it('找出视频此刻落在哪一段：开头那段用开头的偏移，对齐点之后用"视频位置 − 中文位置"', () => {
+    expect(dubSegmentAt(map, 100)).toEqual({ index: -1, fromVideo: 0, offset: 3, nextVideo: 750, dubEnd: 565 });
+    expect(dubSegmentAt(map, 750)).toEqual({ index: 0, fromVideo: 750, offset: 185, nextVideo: 1800, dubEnd: 1360 });
+    expect(dubSegmentAt(map, 3000)).toEqual({ index: 1, fromVideo: 1800, offset: 440 });
+    expect(dubSegmentAt(m(3), 3000)).toEqual({ index: -1, fromVideo: 0, offset: 3 });
+  });
+
+  it('对齐点之后按这一段的偏移跟随：拖到 20:00 → 中文 20:00 − 185 秒', () => {
+    expect(dubStep(video({ currentTime: 1200 }), audio({ currentTime: 0 }), map)).toMatchObject({ play: true, seekTo: 1015, segment: { index: 0 } });
+    expect(dubStep(video({ currentTime: 2000 }), audio({ currentTime: 1560 }), map)).toMatchObject({ play: true, target: 1560, segment: { index: 1 } });
+  });
+
+  it('中文这一段先说完：停在这一段的末尾等画面，到下一个对齐点再接着放', () => {
+    // 开头那段中文到 565 秒为止；视频 600 秒时按偏移该放 597 秒——已经越过，停在 565 等
+    const hold = dubStep(video({ currentTime: 600 }), audio({ currentTime: 568 }), map);
+    expect(hold).toMatchObject({ play: false, reason: 'segment-end', seekTo: 565, wakeIn: 150 });
+    expect(dubReasonText('segment-end', hold.segment)).toContain('等画面到 12:30 的对齐点再接着放');
+    // 停着、位置也对：不再跳
+    expect(dubStep(video({ currentTime: 700 }), audio({ currentTime: 565, paused: true }), map).seekTo).toBeUndefined();
+    // 视频到了 12:30：从 565 接着放，不用跳
+    const resume = dubStep(video({ currentTime: 750.05 }), audio({ currentTime: 565, paused: true }), map);
+    expect(resume).toMatchObject({ play: true, reason: 'playing' });
+    expect(resume.seekTo).toBeUndefined();
+  });
+
+  it('中文这一段说得慢、视频先到了下一个对齐点：跳到下一段的位置', () => {
+    // 第一段中文（565 → 1360）还在 1200 秒处，视频已经到 30:00：跳到 1360
+    expect(dubStep(video({ currentTime: 1800.1 }), audio({ currentTime: 1200 }), map)).toMatchObject({ play: true, seekTo: 1360.1, segment: { index: 1 } });
+  });
+
+  it('放着的时候算好"再过多久要换做法"（这一段中文说完、或到下一个对齐点），到点立刻处理', () => {
+    expect(dubStep(video({ currentTime: 560 }), audio({ currentTime: 557 }), map).wakeIn).toBeCloseTo(8); // 中文 557 → 565
+    expect(dubStep(video({ currentTime: 1795 }), audio({ currentTime: 1300 }), map).wakeIn).toBeCloseTo(5); // 视频 → 1800
+    expect(dubStep(video({ currentTime: 3000 }), audio({ currentTime: 2560 }), map).wakeIn).toBeUndefined();
+  });
+
+  it('加对齐点：按视频时间排好，离已有的不到 1 秒就替换它；读存储时丢掉坏的', () => {
+    const a = withAnchor(anchors, { video: 1200.123, dub: 900.456 });
+    expect(a.map((x) => x.video)).toEqual([750, 1200.12, 1800]);
+    expect(a[1]).toEqual({ video: 1200.12, dub: 900.46 });
+    expect(withAnchor(a, { video: 1200.5, dub: 905 }).filter((x) => x.video > 1199 && x.video < 1201)).toEqual([{ video: 1200.5, dub: 905 }]);
+    expect(withAnchor([], { video: 10, dub: -3 })).toEqual([{ video: 10, dub: 0 }]);
+    expect(sanitizeAnchors([{ video: 1800, dub: 1360 }, { video: 750, dub: 565 }, { video: 'x', dub: 1 }, { video: -1, dub: 1 }, null])).toEqual(anchors);
+    expect(sanitizeAnchors('nope')).toEqual([]);
+  });
+
+  it('改某一段的偏移：开头那段改 delaySec，对齐点那段只改它的中文位置（视频位置不动）', () => {
+    expect(withSegmentOffset(map, -1, 4.04)).toEqual({ delaySec: 4, anchors });
+    expect(withSegmentOffset(map, 0, 200).anchors[0]).toEqual({ video: 750, dub: 550 });
+    expect(withSegmentOffset(map, 1, 2000).anchors[1]).toEqual({ video: 1800, dub: 0 });
+    expect(segmentOffsetText({ index: 0, offset: 185 })).toBe('这一段中文比画面晚 3 分 05 秒');
+    expect(segmentOffsetText({ index: 0, offset: -2 })).toBe('这一段中文比画面早 2 秒');
+    expect(segmentOffsetText({ index: -1, offset: 3 })).toContain('中文推后 3 秒');
+  });
+
+  it('前后颠倒的对齐点（中文位置不比前一个靠后）标出来', () => {
+    expect(misorderedAnchors(map)).toEqual([]);
+    expect(misorderedAnchors(m(0, [{ video: 100, dub: 90 }, { video: 200, dub: 80 }]))).toEqual([1]);
+    // 开头中文提前 10 秒：视频 0 秒时已经放到中文 10 秒，第一个对齐点的中文位置要在它后面
+    expect(misorderedAnchors(m(-10, [{ video: 100, dub: 5 }]))).toEqual([0]);
+  });
+
+  it('前后颠倒时也有确定的行为：前一段整段停着等（不会乱跳）', () => {
+    const bad = m(0, [{ video: 100, dub: 90 }, { video: 200, dub: 80 }]);
+    expect(dubStep(video({ currentTime: 150 }), audio({ currentTime: 95 }), bad)).toMatchObject({ play: false, reason: 'segment-end', seekTo: 80 });
+  });
+
+  it('存下、删除对齐点，改某一段的偏移；最多 200 个', async () => {
+    const { ctx } = setup();
+    await attachDub(ctx, { videoId: VID, file: m4aBlob(), fileName: 'a.m4a' });
+    await setDubDelay(ctx, VID, 3);
+    await addDubAnchor(ctx, VID, { video: 1800, dub: 1360 });
+    const rec = await addDubAnchor(ctx, VID, { video: 750, dub: 565 });
+    expect(rec?.anchors).toEqual(anchors);
+    await setDubSegmentOffset(ctx, VID, 0, 200);
+    await setDubSegmentOffset(ctx, VID, -1, 2.5);
+    let stored = (await stores.dubs.read(ctx.kv))[VID]!;
+    expect(stored).toMatchObject({ delaySec: 2.5, anchors: [{ video: 750, dub: 550 }, { video: 1800, dub: 1360 }] });
+    await removeDubAnchor(ctx, VID, 0);
+    stored = (await stores.dubs.read(ctx.kv))[VID]!;
+    expect(stored.anchors).toEqual([{ video: 1800, dub: 1360 }]);
+    await removeDubAnchor(ctx, VID, 0);
+    expect((await stores.dubs.read(ctx.kv))[VID]!.anchors).toBeUndefined();
+    // 段号对不上（例如对齐点刚被删掉）：不改
+    await setDubSegmentOffset(ctx, VID, 3, 100);
+    expect((await stores.dubs.read(ctx.kv))[VID]!.delaySec).toBe(2.5);
+    for (let i = 1; i <= DUB.maxAnchors; i++) await addDubAnchor(ctx, VID, { video: i * 2, dub: i });
+    await expect(addDubAnchor(ctx, VID, { video: 9999, dub: 9000 })).rejects.toThrow(/已经有 200 个/);
+  });
+
+  it('换文件时偏移和对齐点都保留', async () => {
+    const { ctx } = setup();
+    await attachDub(ctx, { videoId: VID, file: m4aBlob(), fileName: 'a.m4a' });
+    await addDubAnchor(ctx, VID, { video: 750, dub: 565 });
+    const again = await attachDub(ctx, { videoId: VID, file: m4aBlob(), fileName: 'b.m4a' });
+    expect(again.anchors).toEqual([{ video: 750, dub: 565 }]);
   });
 });
 
@@ -192,7 +311,8 @@ describe('中文配音：说法', () => {
     const n = durationNote(3842, 3829)!;
     expect(n).toContain('中文 1:04:02 · 原视频 1:03:49');
     expect(n).toContain('中文长 13 秒');
-    expect(n).toContain('越往后可能差得越多');
+    expect(n).toContain('越往后差得越多');
+    expect(n).toContain('加对齐点');
     expect(n).not.toMatch(/逐句|逐词/);
     expect(durationNote(100, 100.2)).toContain('长度一样');
     expect(durationNote(undefined, 100)).toBeUndefined();

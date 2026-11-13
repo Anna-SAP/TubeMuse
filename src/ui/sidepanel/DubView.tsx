@@ -1,11 +1,25 @@
-// 「配音」页（DECISIONS §74）：给当前 YouTube 视频关联一个本地中文配音（.m4a），开 / 关，调偏移，移除；管理所有关联过的视频。
+// 「配音」页（DECISIONS §74、§75）：给当前 YouTube 视频关联一个本地中文配音（.m4a），开 / 关，调偏移、加对齐点，移除；管理所有关联过的视频。
 // 还有侧边栏顶部的一行提示（DubPrompt）：当前视频有中文配音、还没开启时显示。
 // 状态来自注入 YouTube 页面的配音脚本（只在本扩展内部传递）；对应关系在本机存储，音频在扩展自己的 IndexedDB。
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { DUB } from '../../config/defaults';
-import { DUB_MSG, DubFileError, clampDelay, delayText, durationNote, formatBytes, formatClockSec, type DubRecord, type DubTabState } from '../../core/dub';
-import { attachDub, checkDubStorage, removeDub, setDubDelay } from '../../services/dub-service';
+import {
+  DUB_MSG,
+  DubFileError,
+  clampDelay,
+  delayText,
+  dubMapOf,
+  durationNote,
+  formatBytes,
+  formatClockSec,
+  misorderedAnchors,
+  segmentOffsetText,
+  type DubMark,
+  type DubRecord,
+  type DubTabState,
+} from '../../core/dub';
+import { addDubAnchor, attachDub, checkDubStorage, removeDub, removeDubAnchor, setDubSegmentOffset } from '../../services/dub-service';
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
 import { Notice } from '../shared/components';
@@ -54,58 +68,136 @@ function volumeText(v: NonNullable<DubTabState['volume']>, phase: DubTabState['p
   return `${pct(v.now)}（配音放起来后降 20%）`;
 }
 
-/** 偏移：滑块（拖动时实时生效，松手后存下）、微调按钮与输入框 */
-function DelayControl({ rec, tabId, live }: { rec: DubRecord; tabId: number | undefined; live: number | undefined }) {
+/** 侧边栏 → 配音脚本：某一段的实时偏移（拖动"中文位置"时），回复脚本算好后的状态 */
+async function previewSegment(tabId: number | undefined, msg: { videoId: string; segment: number; offset?: number; dubAt?: number }): Promise<DubTabState | undefined> {
+  if (tabId === undefined) return undefined;
+  try {
+    return (await chrome.tabs.sendMessage(tabId, { type: DUB_MSG.setDelay, ...msg })) as DubTabState | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const signed = (x: number) => `${x > 0.04 ? '+' : x < -0.04 ? '−' : ''}${Math.abs(x).toFixed(1)} 秒`;
+
+/**
+ * 对齐（DECISIONS §75）：视频此刻所在那一段的偏移（微调按钮、输入框、"中文位置"滑块，都只改这一段）、
+ * "在这里加对齐点"、对齐点列表。开头那一段的偏移就是原来的"偏移"。
+ */
+function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: number | undefined; state: DubTabState; onNote: (n: { text: string; undo?: () => void } | undefined) => void }) {
   const ctx = appCtx();
-  const [draft, setDraft] = useState<number>();
-  // 存好的值追上了草稿：草稿作废
+  const seg = state.segment ?? { index: -1, fromVideo: 0, offset: rec.delaySec, count: rec.anchors?.length ?? 0 };
+  const [draft, setDraft] = useState<{ index: number; offset: number }>();
+  const [draftPos, setDraftPos] = useState<number>();
+  const [problem, setProblem] = useState<Problem>();
+  // 存好的值（经配音脚本报回来）追上了草稿，或者已经换到别的段：草稿作废
   useEffect(() => {
-    if (draft !== undefined && clampDelay(draft) === rec.delaySec) setDraft(undefined);
-  }, [rec.delaySec]);
-  const value = draft ?? live ?? rec.delaySec;
-  const preview = (d: number) => {
-    setDraft(d);
-    if (tabId !== undefined) void chrome.tabs.sendMessage(tabId, { type: DUB_MSG.setDelay, videoId: rec.videoId, delaySec: d }).catch(() => undefined);
+    if (draft && (draft.index !== seg.index || Math.abs(draft.offset - seg.offset) < 0.05)) setDraft(undefined);
+  }, [seg.index, seg.offset]);
+  const offset = draft && draft.index === seg.index ? draft.offset : seg.offset;
+  const anchors = rec.anchors ?? [];
+  const bad = misorderedAnchors(dubMapOf(rec));
+  const dubDuration = state.dubDuration ?? rec.durationSec;
+  const position = draftPos ?? state.target;
+
+  const commit = (value: number) => {
+    const c = clampDelay(value);
+    setDraft({ index: seg.index, offset: c });
+    void setDubSegmentOffset(ctx, rec.videoId, seg.index, c);
   };
-  const commit = (d: number) => {
-    const c = clampDelay(d);
-    setDraft(c);
-    void setDubDelay(ctx, rec.videoId, c);
+  const nudge = (by: number) => commit(offset + by);
+  const previewPos = (dubAt: number) => {
+    setDraftPos(dubAt);
+    void previewSegment(tabId, { videoId: rec.videoId, segment: seg.index, dubAt });
   };
-  const nudge = (by: number) => commit(value + by);
-  const range = DUB.delayRangeSec;
+  const commitPos = async (dubAt: number) => {
+    const s = await previewSegment(tabId, { videoId: rec.videoId, segment: seg.index, dubAt });
+    const live = s?.segment;
+    if (live && live.index === seg.index) commit(live.offset);
+    setTimeout(() => setDraftPos(undefined), 1200);
+  };
+  const mark = async () => {
+    setProblem(undefined);
+    let m: DubMark | undefined;
+    try {
+      m = tabId === undefined ? undefined : ((await chrome.tabs.sendMessage(tabId, { type: DUB_MSG.mark })) as DubMark | undefined);
+    } catch {
+      m = undefined;
+    }
+    if (!m) {
+      setProblem({ message: '没拿到此刻的位置', hint: '要在开着配音、正在看这个视频（不是广告）时加对齐点。' });
+      return;
+    }
+    try {
+      await addDubAnchor(ctx, rec.videoId, m);
+      onNote({ text: `已在视频 ${formatClockSec(m.video)}（中文 ${formatClockSec(m.dub)}）加了对齐点：从这里起是新的一段，用上面的按钮或"中文位置"单独调，前面的不受影响。` });
+    } catch (e) {
+      setProblem(await toProblem(e));
+    }
+  };
+  const remove = (k: number) => {
+    const a = anchors[k];
+    if (!a) return;
+    void removeDubAnchor(ctx, rec.videoId, k).then(() =>
+      onNote({
+        text: `已删除视频 ${formatClockSec(a.video)} 的对齐点：它前面那一段一直延续到下一个对齐点。`,
+        undo: () => void addDubAnchor(ctx, rec.videoId, a).then(() => onNote(undefined)),
+      }),
+    );
+  };
+
+  const where =
+    seg.index < 0
+      ? seg.count
+        ? `开头这一段（到视频 ${formatClockSec(anchors[0]?.video ?? 0)} 的对齐点为止）`
+        : '全程一个偏移（还没有对齐点）'
+      : `第 ${seg.index + 1} 个对齐点之后（视频 ${formatClockSec(seg.fromVideo)} 起${seg.nextVideo !== undefined ? `，到 ${formatClockSec(seg.nextVideo)}` : ''}）`;
+  const steps: [number, string][] = [
+    [-60, '−1 分'],
+    [-10, '−10 秒'],
+    [-1, '−1 秒'],
+    [-0.1, '−0.1'],
+  ];
   return (
-    <div class="dub-delay" data-testid="dub-delay">
+    <div class="dub-delay" data-testid="dub-align">
       <div class="row">
-        <strong>偏移</strong>
-        <span class="dub-delay-value" data-testid="dub-delay-value">
-          {value > 0 ? '+' : ''}
-          {value.toFixed(1)} 秒
+        <strong>对齐</strong>
+        <span class="muted small" data-testid="dub-segment">
+          现在在：{where}
         </span>
       </div>
-      <input
-        type="range"
-        class="dub-range"
-        data-testid="dub-delay-range"
-        min={-range}
-        max={range}
-        step={DUB.delayStepSec}
-        value={Math.max(-range, Math.min(range, value))}
-        aria-label="配音偏移（秒）"
-        onInput={(e) => preview(Number(e.currentTarget.value))}
-        onChange={(e) => commit(Number(e.currentTarget.value))}
-      />
-      <div class="row dub-range-ends muted small">
-        <span>← 中文提前</span>
-        <span>中文推后 →</span>
+      <div class="row">
+        <span>这一段的偏移</span>
+        <span class="dub-delay-value" data-testid="dub-delay-value">
+          {signed(offset)}
+        </span>
       </div>
+      {dubDuration !== undefined && position !== undefined && (
+        <>
+          <input
+            type="range"
+            class="dub-range"
+            data-testid="dub-position-range"
+            min={0}
+            max={Math.ceil(dubDuration)}
+            step={1}
+            value={Math.max(0, Math.min(dubDuration, position))}
+            aria-label="此刻放中文的哪里"
+            onInput={(e) => previewPos(Number(e.currentTarget.value))}
+            onChange={(e) => void commitPos(Number(e.currentTarget.value))}
+          />
+          <div class="row dub-range-ends muted small">
+            <span>中文位置 {formatClockSec(Math.max(0, position))}</span>
+            <span>共 {formatClockSec(dubDuration)}</span>
+          </div>
+        </>
+      )}
       <div class="row wrap">
-        <button class="btn small" onClick={() => nudge(-1)}>
-          −1 秒
-        </button>
-        <button class="btn small" onClick={() => nudge(-0.1)}>
-          −0.1
-        </button>
+        {steps.map(([by, label]) => (
+          <button class="btn small" onClick={() => nudge(by)}>
+            {label}
+          </button>
+        ))}
         <input
           class="input num"
           type="number"
@@ -113,23 +205,50 @@ function DelayControl({ rec, tabId, live }: { rec: DubRecord; tabId: number | un
           step={DUB.delayStepSec}
           min={-DUB.maxDelaySec}
           max={DUB.maxDelaySec}
-          value={value}
-          aria-label="偏移（秒）"
+          value={Number(offset.toFixed(1))}
+          aria-label="这一段的偏移（秒）"
           onChange={(e) => commit(Number(e.currentTarget.value))}
         />
-        <button class="btn small" onClick={() => nudge(0.1)}>
-          +0.1
-        </button>
-        <button class="btn small" onClick={() => nudge(1)}>
-          +1 秒
-        </button>
-        <button class="btn link small" disabled={value === 0} onClick={() => commit(0)}>
-          归零
-        </button>
+        {[...steps].reverse().map(([by, label]) => (
+          <button class="btn small" onClick={() => nudge(-by)}>
+            {label.replace('−', '+')}
+          </button>
+        ))}
+        {seg.index < 0 && (
+          <button class="btn link small" disabled={offset === 0} onClick={() => commit(0)}>
+            归零
+          </button>
+        )}
       </div>
       <p class="muted small" data-testid="dub-delay-text">
-        {delayText(value)}。边听边调，让中文的第一句和原视频的第一句同时开始；偏移按视频存下，下次打开直接用。
+        {segmentOffsetText({ index: seg.index, offset })}。＋ 让中文推后（往回退），− 让中文提前（往前跳）；拖"中文位置"直接选此刻放中文的哪里。按视频存下，下次打开直接用。
       </p>
+      <div class="row">
+        <button class="btn primary small" data-testid="dub-anchor-add" disabled={state.phase !== 'ready' || state.videoTime === undefined} onClick={() => void mark()}>
+          在这里加对齐点
+        </button>
+      </div>
+      <p class="muted small">
+        中文和原视频差得多（比如中文短了十几分钟、删掉了一些段落）时：在对不上的地方点"在这里加对齐点"，再把这一段调到中英说的是同一句。
+        对齐点之间中文按正常速度放：中文先说完就停下等画面（这时听到的是原声），说得慢就在下一个对齐点跳过去。
+      </p>
+      {problem && <ProblemBox problem={problem} onClose={() => setProblem(undefined)} />}
+      <ol class="dub-anchors" data-testid="dub-anchors">
+        <li class={seg.index < 0 ? 'on' : ''}>
+          <span>开头：{delayText(rec.delaySec)}</span>
+        </li>
+        {anchors.map((a, k) => (
+          <li class={seg.index === k ? 'on' : ''} data-testid="dub-anchor">
+            <span>
+              视频 {formatClockSec(a.video)} ↔ 中文 {formatClockSec(a.dub)}（{signed(Number((a.video - a.dub).toFixed(1)))}）
+              {bad.includes(k) && <strong class="warn-text"> 中文位置不比前一个靠后：前一段的中文会被整段跳过</strong>}
+            </span>
+            <button class="btn link small" data-testid="dub-anchor-remove" onClick={() => remove(k)}>
+              删除
+            </button>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
@@ -143,6 +262,7 @@ export function DubView() {
   const [busy, setBusy] = useState<string>();
   const [problem, setProblem] = useState<Problem>();
   const [done, setDone] = useState<string>();
+  const [alignNote, setAlignNote] = useState<{ text: string; undo?: () => void }>();
   const [confirmRemove, setConfirmRemove] = useState<string>();
   const [missing, setMissing] = useState<string[]>([]);
 
@@ -190,7 +310,7 @@ export function DubView() {
         ...(state?.title ? { title: state.title } : {}),
         ...(state?.videoDuration ? { videoDurationSec: state.videoDuration } : {}),
       });
-      setDone(`已把 ${saved.fileName} 关联到这个视频。${wasOn ? '' : '点"开启配音"开始播放。'}`);
+      setDone(`已把 ${saved.fileName} 关联到这个视频。${saved.anchors?.length ? '原来的偏移和对齐点保留着：新文件不一样的话在下面删掉重设。' : ''}${wasOn ? '' : '点"开启配音"开始播放。'}`);
     } catch (e) {
       setProblem(await toProblem(e));
     } finally {
@@ -305,7 +425,17 @@ export function DubView() {
               </button>
             </div>
             {removeConfirm(rec.videoId)}
-            <DelayControl key={rec.videoId} rec={rec} tabId={tabId} live={state.delaySec} />
+            <AlignControl key={rec.videoId} rec={rec} tabId={tabId} state={state} onNote={setAlignNote} />
+            {alignNote && (
+              <Notice kind="ok" onClose={() => setAlignNote(undefined)}>
+                <span data-testid="dub-align-note">{alignNote.text}</span>
+                {alignNote.undo && (
+                  <button class="btn link small" data-testid="dub-anchor-undo" onClick={alignNote.undo}>
+                    撤销
+                  </button>
+                )}
+              </Notice>
+            )}
           </>
         )}
         {busy && <p class="muted small" data-testid="dub-busy">{busy}</p>}
@@ -341,7 +471,7 @@ export function DubView() {
                   <div class="muted small">
                     {r.fileName} · {formatBytes(r.size)}
                     {r.durationSec ? ` · ${formatClockSec(r.durationSec)}` : ''} · 偏移 {r.delaySec > 0 ? '+' : ''}
-                    {r.delaySec.toFixed(1)} 秒{missing.includes(r.videoId) ? ' · 本机的音频不见了' : ''}
+                    {r.delaySec.toFixed(1)} 秒{r.anchors?.length ? ` · ${r.anchors.length} 个对齐点` : ''}{missing.includes(r.videoId) ? ' · 本机的音频不见了' : ''}
                   </div>
                   {r.videoId !== videoId && (
                     <>
@@ -362,7 +492,8 @@ export function DubView() {
       <section class="panel">
         <h2>说明</h2>
         <ul class="muted small dub-notes">
-          <li>同步只跟随视频的播放、暂停、拖动进度和倍速，再加上你设的偏移。中文是另外录的，长度和停顿与原视频不一样，不做逐句对齐：越往后可能差得越多，需要时再调偏移。</li>
+          <li>同步只跟随视频的播放、暂停、拖动进度和倍速，再加上你设的偏移和对齐点。中文是另外录的，长度和停顿与原视频不一样（还可能删掉了一些段落），不做逐句对齐：越往后可能差得越多，在对不上的地方加对齐点、单独调那一段。</li>
+          <li>对齐点之间中文始终按正常速度放：中文先说完就停下等画面，说得慢就在下一个对齐点跳过去（会跳过中文没说完的那一点）。</li>
           <li>配音开启时，原声降到你的音量的 80%（降 20%），中文保持正常音量、不跟 YouTube 的音量与静音走；关闭、换视频、离开页面时原声恢复。广告期间配音暂停、原声恢复。</li>
           <li>配音由 YouTube 页面里的 TubeMuse 脚本播放，关掉侧边栏也继续；刷新页面后要重新开启（只提示，不自动出声）。</li>
           <li>音频文件存在这个浏览器里（扩展自己的 IndexedDB），不上传、不发任何网络请求；导出数据时只导出视频与文件名、偏移的对应关系，不含音频本身；"清空全部数据"会一并删除。</li>

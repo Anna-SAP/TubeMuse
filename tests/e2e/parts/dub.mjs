@@ -1,6 +1,6 @@
 // @ts-check
 // 中文配音（DECISIONS §74）：给 YouTube 视频选一个本地 .m4a → 存进扩展的 IndexedDB → 下次打开同一视频时提示 →
-// 开启后在页面里叠加播放，跟随播放 / 暂停 / 拖动 / 倍速与偏移 → 原声降 20%（你改音量、广告、关闭时的处理）→ 移除。
+// 开启后在页面里叠加播放，跟随播放 / 暂停 / 拖动 / 倍速与偏移 → 对齐点分段跟随（DECISIONS §75）→ 原声降 20%（你改音量、广告、关闭时的处理）→ 移除。
 // 全程不发任何新的网络请求。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -157,25 +157,86 @@ export async function dub(t) {
   s = await dubState();
   check(s.delaySec === 2 && Math.abs(s.videoTime - 2 - s.dubTime) < 0.4, `偏移 +2 秒（中文推后）：中文 = 视频 − 2（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}），按视频存下`);
   check(((await panel.getByTestId('dub-delay-text').textContent()) ?? '').includes('中文推后 2 秒'), '偏移的说法：中文推后 2 秒');
-  // 拖滑块：实时生效，松手后存下
-  const range = panel.getByTestId('dub-delay-range');
-  await range.evaluate((el) => {
+  const storedRec = async () => /** @type {any} */ (await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('dubs'))).dubs?.[DUB_VIDEO.id];
+  const waitStored = async (/** @type {(r: any) => boolean} */ ok, /** @type {string} */ what) => {
+    for (let i = 0; i < 50; i++) {
+      const r = await storedRec();
+      if (r && ok(r)) return r;
+      await page.waitForTimeout(100);
+    }
+    throw new Error(`等不到存下：${what}（最后：${JSON.stringify(await storedRec())}）`);
+  };
+  // "中文位置"滑块：选此刻放中文的哪里——拖动时实时生效，松手后按此刻的视频位置换算成这一段的偏移存下
+  const pos = panel.getByTestId('dub-position-range');
+  await pos.waitFor({ timeout: 5000 });
+  s = await dubState();
+  const want = Math.round(s.videoTime + 1.5);
+  await pos.evaluate((el, v) => {
     const r = /** @type {HTMLInputElement} */ (el);
-    r.value = '-1.5';
+    r.value = String(v);
     r.dispatchEvent(new Event('input', { bubbles: true }));
-  });
-  await waitState((x) => x.delaySec === -1.5, '滑块实时生效');
-  await range.evaluate((el) => el.dispatchEvent(new Event('change', { bubbles: true })));
-  for (let i = 0; i < 30; i++) {
-    const d = /** @type {any} */ (await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('dubs'))).dubs?.[DUB_VIDEO.id]?.delaySec;
-    if (d === -1.5) break;
-    await page.waitForTimeout(100);
-  }
+  }, want);
+  await waitState((x) => x.delaySec < -0.5 && x.delaySec > -2.6, '"中文位置"实时生效');
+  await pos.evaluate((el) => el.dispatchEvent(new Event('change', { bubbles: true })));
+  const afterPos = await waitStored((r) => r.delaySec < -0.5 && r.delaySec > -2.6, '"中文位置"松手后存下');
   await page.waitForTimeout(800);
   s = await dubState();
-  check(Math.abs(s.videoTime + 1.5 - s.dubTime) < 0.4, `滑块拖到 −1.5（中文提前）：拖动时实时生效、松手后存下（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
+  check(Math.abs(s.videoTime - afterPos.delaySec - s.dubTime) < 0.4, `拖"中文位置"让中文提前约 1.5 秒：拖动时实时生效、松手后存成偏移 ${afterPos.delaySec} 秒（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
   await panel.getByRole('button', { name: '归零' }).click();
   await waitState((x) => x.delaySec === 0, '归零');
+
+  console.log('\n[中文配音：对齐点——中文比原视频短很多（或删了段落）时分段对齐：先说完就停下等画面，说得慢就跳过去]');
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.pause();
+    v.currentTime = 70;
+  });
+  await waitState((x) => !x.playing && Math.abs(x.videoTime - 70) < 0.3, '停在 1:10');
+  await panel.getByTestId('dub-anchor-add').click();
+  let r = await waitStored((x) => x.anchors?.length === 1, '加对齐点');
+  check(Math.abs(r.anchors[0].video - 70) < 0.3 && Math.abs(r.anchors[0].dub - 70) < 0.3 && r.delaySec === 0, `在视频 1:10 点"在这里加对齐点"：记下视频 ${r.anchors[0].video} ↔ 中文 ${r.anchors[0].dub}（按此刻的偏移，加完听到的不变）`);
+  check(((await panel.getByTestId('dub-align-note').textContent()) ?? '').includes('加了对齐点'), '说明从这里起是新的一段');
+  await panel.getByRole('button', { name: '+10 秒', exact: true }).click();
+  r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (x.anchors?.[0]?.video - 10)) < 0.05, '这一段 +10 秒');
+  check(r.delaySec === 0 && ((await panel.getByTestId('dub-segment').textContent()) ?? '').includes('第 1 个对齐点之后'), '+10 秒只改对齐点之后这一段（改的是这个对齐点的中文位置），开头那段的偏移不变');
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 75;
+    void v.play();
+  });
+  await page.waitForTimeout(1500);
+  s = await dubState();
+  check(s.segment?.index === 0 && Math.abs(s.videoTime - 10 - s.dubTime) < 0.4, `对齐点之后：中文 = 视频 − 10（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
+  // 开头那段的中文到 60 秒为止：从 0:57 放，3 秒后中文说完，停下等画面到 1:10 的对齐点
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 57));
+  s = await waitState((x) => !x.playing && x.status.includes('等画面到 1:10 的对齐点'), '中文说完等画面', 10000);
+  check(Math.abs(s.dubTime - (r.anchors[0].dub)) < 0.35 && s.videoTime < 70, `中文这一段先说完：停在中文 ${s.dubTime.toFixed(2)} 秒等画面（视频 ${s.videoTime.toFixed(2)}，原声照常）`);
+  s = await waitState((x) => x.playing && x.videoTime > 70.8, '到对齐点接着放', 20000);
+  check(Math.abs(s.videoTime - 10 - s.dubTime) < 0.4, `画面到了 1:10 的对齐点：中文从停下的地方接着放（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
+  // 说得慢就跳过去：把这一段改成中文提前 10 秒（开头那段的中文要放到 1:20，视频到 1:10 时还没说完）
+  await panel.getByRole('button', { name: '−10 秒', exact: true }).click();
+  await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - 70) < 0.05, '−10 秒');
+  await panel.getByRole('button', { name: '−10 秒', exact: true }).click();
+  r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - 80) < 0.05, '再 −10 秒');
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 67));
+  s = await waitState((x) => x.playing && x.videoTime > 71, '过了对齐点', 15000);
+  check(Math.abs(s.videoTime + 10 - s.dubTime) < 0.4, `中文这一段说得慢：画面到了 1:10 就跳到 1:20 接着放（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
+  const list = (await panel.getByTestId('dub-anchors').textContent()) ?? '';
+  check(list.includes('开头：不偏移') && list.includes('视频 1:10 ↔ 中文 1:20'), `对齐点列表：${list.replace(/\s+/g, ' ').slice(0, 80)}`);
+  await panel.screenshot({ path: join(shots, '71-dub-anchors.png'), fullPage: true });
+  await panel.getByTestId('dub-anchor-remove').click();
+  await waitStored((x) => !x.anchors, '删除对齐点');
+  await panel.getByTestId('dub-anchor-undo').click();
+  r = await waitStored((x) => x.anchors?.length === 1, '撤销删除');
+  check(Math.abs(r.anchors[0].video - 70) < 0.3 && Math.abs(r.anchors[0].dub - 80) < 0.05, '删除对齐点可以撤销');
+  await panel.getByTestId('dub-anchor-remove').click();
+  await waitStored((x) => !x.anchors, '再删除');
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 20;
+    void v.play();
+  });
+  await waitState((x) => x.playing && x.segment?.index === -1, '回到全程一个偏移');
 
   console.log('\n[中文配音：原声音量——你改音量、广告、关闭]');
   await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).volume = 0.5));
