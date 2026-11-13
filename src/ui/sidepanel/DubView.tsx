@@ -131,7 +131,7 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
     }, 80);
   };
   useEffect(() => () => previewTimer.current && clearTimeout(previewTimer.current), []);
-  // 此刻（DECISIONS §77、§78）：顶上的差距读数和对齐图用同一个播放头
+  // 此刻（DECISIONS §77–§79）：顶上的"还差多少"读数和对齐图用同一个播放头
   const videoDuration = state.videoDuration ?? rec.videoDurationSec;
   const alignNow = useDubAlignNow({
     map: liveMap,
@@ -383,7 +383,8 @@ export function DubView() {
       </div>
     ) : null;
 
-  const dubDuration = rec?.durationSec ?? state?.dubDuration;
+  // 实际放的时长（配音载入后由 <audio> 读出）优先，和对齐区算"还差多少"用的同一个；没载入时用文件里写的（DECISIONS §79）
+  const dubDuration = state?.dubDuration ?? rec?.durationSec;
   const videoDuration = state?.videoDuration ?? rec?.videoDurationSec;
   const note = durationNote(dubDuration, videoDuration);
 

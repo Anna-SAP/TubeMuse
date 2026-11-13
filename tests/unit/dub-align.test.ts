@@ -10,10 +10,14 @@ import {
   describeDubAt,
   describeVideoAt,
   dubAlignment,
+  clockTenths,
   dubGapAt,
   dubPlanAt,
-  gapNoteText,
+  dubRemainingAt,
   gapText,
+  remainingKind,
+  remainingNoteText,
+  secondsText,
   mapTickStep,
 } from '../../src/core/dub-align';
 
@@ -172,44 +176,88 @@ describe('对齐图：摊开成两条音轨', () => {
   });
 });
 
-describe('此刻差距（DECISIONS §78）：视频位置 − 中文位置', () => {
+describe('还差多少没对上（DECISIONS §79）：全片时长差 − 此刻中文滞后', () => {
   const al = dubAlignment(USER, V, D);
-  const at = (t: number) => {
-    const plan = dubPlanAt(al, USER, t);
-    return { gap: Number(dubGapAt(plan, t).toFixed(2)), note: gapNoteText(plan, t), kind: plan.kind };
+  const at = (t: number, map: DubMap = USER, a = al) => {
+    const plan = dubPlanAt(a, map, t);
+    const r = dubRemainingAt(a, plan, t)!;
+    return { lag: Number(r.lag.toFixed(2)), remaining: Number(r.remaining.toFixed(2)), total: r.total, kind: remainingKind(r), plan: plan.kind, note: remainingNoteText(a, plan, t, r) };
   };
 
-  it('中文在放：就是这一段的偏移，播放推进时不变；跨过对齐点换成下一段的', () => {
-    expect(at(111)).toEqual({ gap: 25, kind: 'playing', note: '中文比画面晚 25 秒 · 视频 1:51 ↔ 中文 1:26' });
-    expect(at(140).gap).toBe(25);
-    expect(at(40)).toMatchObject({ gap: 8, kind: 'playing' });
-    expect(at(37.9)).toMatchObject({ kind: 'wait' });
-    expect(at(38)).toMatchObject({ gap: 8, kind: 'playing' });
+  it('用户截图那一刻：原视频 36:51、中文 25:37（差 674 秒），第 19 个对齐点之后中文滞后 91 秒 → 还差 583 秒', () => {
+    const map: DubMap = { delaySec: 5, anchors: [{ video: 356, dub: 265 }] };
+    const a = dubAlignment(map, 36 * 60 + 51, 25 * 60 + 37);
+    const x = at(380, map, a);
+    expect(x).toMatchObject({ total: 674, lag: 91, remaining: 583, kind: 'left', plan: 'playing' });
+    expect(secondsText(583)).toBe('583.0 秒');
+    expect(x.note).toBe('= 全片时长差 674.0 秒（英文 36:51.0 − 中文 25:37.0）− 此刻中文滞后 91.0 秒 · 视频 6:20 ↔ 中文 4:49');
+    // 和对齐图说明里的"还差"是同一个数
+    expect(alignOverallText(a)).toContain('还差 9 分 43 秒');
   });
 
-  it('中文停着等画面：差距随播放变大，到对齐点变成下一段的偏移', () => {
-    expect(at(60)).toMatchObject({ gap: 13, kind: 'wait' });
-    expect(at(62)).toMatchObject({ gap: 15, kind: 'wait' });
-    expect(at(62).note).toBe('中文这一段已经说完、停在 0:47 等画面（只有原声），差距随播放变大；视频到 1:08 的对齐点再接着放');
-    expect(at(68)).toMatchObject({ gap: 21, kind: 'playing' });
+  it('按实际读到的时长算（带小数），不按显示的整秒', () => {
+    const a = dubAlignment(USER, 2211.6, 1538.4);
+    const x = at(111, USER, a);
+    expect(x.total).toBeCloseTo(673.2, 6);
+    expect(x.remaining).toBeCloseTo(648.2, 6);
+    expect(x.note).toContain('全片时长差 673.2 秒（英文 36:51.6 − 中文 25:38.4）');
   });
 
-  it('还没开始、已经放完：差距同样随播放变大，说明原因', () => {
-    expect(at(2)).toMatchObject({ gap: 2, kind: 'before-start' });
-    expect(at(2).note).toBe('中文还没开始（视频到 0:05 时从中文 0:00 开始），差距随播放变大');
-    expect(at(5)).toMatchObject({ gap: 5, kind: 'playing' });
-    expect(at(2000)).toMatchObject({ gap: 461, kind: 'after-end', note: '中文已经放完（只有原声），差距随播放变大' });
+  it('中文在放时：播放推进不变；跨过对齐点、把中文往后调就变小', () => {
+    expect(at(111)).toMatchObject({ total: 673, lag: 25, remaining: 648 });
+    expect(at(140).remaining).toBe(648);
+    expect(at(40)).toMatchObject({ lag: 8, remaining: 665 });
+    expect(at(70)).toMatchObject({ lag: 21, remaining: 652 });
+    const later = withSegmentOffset(USER, 4, 71);
+    expect(at(309, later, dubAlignment(later, V, D))).toMatchObject({ lag: 71, remaining: 602 });
   });
 
-  it('调偏移：差距立刻变成新的偏移（中文提前时是负的）', () => {
-    const live = withSegmentOffset(USER, 4, 71);
-    const plan = dubPlanAt(dubAlignment(live, V, D), live, 309);
-    expect(dubGapAt(plan, 309)).toBeCloseTo(71, 6);
-    expect(gapNoteText(plan, 309)).toBe('中文比画面晚 1 分 11 秒 · 视频 5:09 ↔ 中文 3:58');
+  it('中文停下等画面 / 还没开始：这几秒正在抵掉差距，随播放变小，到对齐点正好接上', () => {
+    expect(at(60)).toMatchObject({ lag: 13, remaining: 660, plan: 'wait' });
+    expect(at(62)).toMatchObject({ lag: 15, remaining: 658, plan: 'wait' });
+    expect(at(62).note).toContain('中文停在 0:47 等画面（只有原声），这几秒正在抵掉差距；视频到 1:08 的对齐点再接着放');
+    expect(at(68)).toMatchObject({ lag: 21, remaining: 652, plan: 'playing' });
+    expect(at(2)).toMatchObject({ lag: 2, remaining: 671, plan: 'before-start' });
+    expect(at(2).note).toContain('开头的推后正在抵掉差距');
+  });
+
+  it('中文已经放完：不再随播放变小（不会放到结尾就成了 0），等于对齐图说明里的"还差"', () => {
+    expect(at(1600)).toMatchObject({ lag: 25, remaining: 648, plan: 'after-end' });
+    expect(at(2100).remaining).toBe(648);
+    expect(at(V)).toMatchObject({ remaining: 648, plan: 'ended' });
+    expect(at(1600).note).toContain('中文在视频 26:04 已经放完，后面只有原声');
+  });
+
+  it('全部对完是 0；抵过头了是负的，并说明', () => {
+    // 视频 16:40 加一个对齐点、调到中文滞后 673 秒（= 全片时长差）
+    const done: DubMap = { ...USER, anchors: [...USER.anchors, { video: 1000, dub: 327 }] };
+    const d = at(1500, done, dubAlignment(done, V, D));
+    expect(d).toMatchObject({ remaining: 0, kind: 'done' });
+    expect(d.note.startsWith('对完了：')).toBe(true);
+    const over: DubMap = { ...USER, anchors: [...USER.anchors, { video: 1000, dub: 300 }] };
+    const o = at(1500, over, dubAlignment(over, V, D));
+    expect(o).toMatchObject({ remaining: -27, kind: 'over' });
+    expect(secondsText(-27)).toBe('−27.0 秒');
+    expect(o.note).toContain('抵过头了：此刻中文滞后比全片时长差还多 27.0 秒');
+  });
+
+  it('中文比画面早（负的滞后）：写成"+ 此刻中文超前"', () => {
     const early: DubMap = { delaySec: 0, anchors: [{ video: 70, dub: 80 }] };
-    const p2 = dubPlanAt(dubAlignment(early, 120, 92), early, 75);
-    expect(dubGapAt(p2, 75)).toBeCloseTo(-10, 6);
-    expect(gapNoteText(p2, 75)).toBe('中文比画面早 10 秒 · 视频 1:15 ↔ 中文 1:25');
+    const a = dubAlignment(early, 120, 92);
+    const x = at(75, early, a);
+    expect(x).toMatchObject({ lag: -10, remaining: 38 });
+    expect(x.note).toContain('+ 此刻中文超前 10.0 秒');
+  });
+
+  it('读不到中文的时长：算不出', () => {
+    const a = dubAlignment(USER, V);
+    expect(dubRemainingAt(a, dubPlanAt(a, USER, 111), 111)).toBeUndefined();
+  });
+
+  it('滞后（视频 − 中文）本身照旧：在放时就是这一段的偏移', () => {
+    expect(dubGapAt(dubPlanAt(al, USER, 111), 111)).toBe(25);
+    expect(clockTenths(2211.64)).toBe('36:51.6');
+    expect(clockTenths(3723.4)).toBe('1:02:03.4');
   });
 });
 

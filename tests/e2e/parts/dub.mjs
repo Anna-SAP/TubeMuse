@@ -213,11 +213,22 @@ export async function dub(t) {
   };
   // 此刻差距（DECISIONS §78）：「对齐」区顶上大字写视频 − 中文差多少秒，下面一行写意思和两边各在哪里
   const gapOf = (/** @type {string} */ x) => Number(x.replace('−', '-').replace(/[^\d.+-]/g, ''));
-  let gapNow = await waitMapText('dub-gap-value', (x) => x === '+10.0 秒', '差距读数 +10.0 秒');
+  // 大字是"还差多少没对上"（DECISIONS §79）= 全片时长差 − 此刻中文滞后，按页面实际读到的两段时长算
+  const durs = await dubState();
+  const total = durs.videoDuration - durs.dubDuration;
+  const near = (/** @type {string} */ x, /** @type {number} */ want) => Math.abs(gapOf(x) - want) < 0.11;
+  let gapNow = await waitMapText('dub-gap-value', (x) => near(x, total - 10), `还差 ${(total - 10).toFixed(1)} 秒`);
   const gapNote = await mapText('dub-gap-note');
   check(
-    gapNote === '中文比画面晚 10 秒 · 视频 1:10 ↔ 中文 1:00' && (await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'playing',
-    `「对齐」区顶上大字写此刻差多少秒：${gapNow}（${gapNote}）`,
+    (await mapText('dub-gap')).includes('还差多少没对上（全片时长差 − 此刻中文滞后；0 = 全部对完）') &&
+      gapNote.includes(`= 全片时长差 ${total.toFixed(1)} 秒`) &&
+      gapNote.includes('− 此刻中文滞后 10.0 秒 · 视频 1:10 ↔ 中文 1:00') &&
+      (await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'left',
+    `「对齐」区顶上大字写还差多少没对上 = 全片时长差 ${total.toFixed(2)} 秒 − 此刻中文滞后 10 秒：${gapNow}（${gapNote}）`,
+  );
+  check(
+    (await mapText('dub-map-overall')).includes(`还差 ${Number((total - 10).toFixed(1))} 秒`),
+    '和对齐图说明里的"还差"是同一个数',
   );
   const gapLook = await panel.evaluate(() => {
     const g = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-gap]'));
@@ -258,22 +269,22 @@ export async function dub(t) {
   await panel.mouse.move(centerX + dragBy / 2, y0, { steps: 4 });
   s = await waitState((x) => x.delaySec > 10.3 && x.delaySec < wantOff, '拖动时实时生效');
   const gapMid = gapOf(await mapText('dub-gap-value'));
-  check(gapMid > 10.3 && gapMid < wantOff, `拖到一半：差距读数已经跟着变（${gapMid} 秒）`);
+  check(gapMid < total - 10.3 && gapMid > total - wantOff, `拖到一半：还差多少已经跟着变小（${gapMid} 秒）`);
   const anchorVideo = r.anchors[0].video;
   check(Math.abs((await storedRec()).anchors[0].dub - (anchorVideo - 10)) < 0.05, `拖到一半：页面里的配音已经按 ${s.delaySec} 秒跟着，还没存`);
   await panel.mouse.move(centerX + dragBy, y0, { steps: 4 });
   await panel.mouse.up();
   r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - wantOff)) < 0.15, '拖完存下');
   check(r.delaySec === 0 && Math.abs(r.anchors[0].video - 70) < 0.3, `在对齐图上把中文往右拖 ${dragBy} 像素 = 这一段推后 ${(wantOff - 10).toFixed(1)} 秒：松手后存成对齐点 视频 ${r.anchors[0].video} ↔ 中文 ${r.anchors[0].dub}（开头那段不变）`);
-  gapNow = await waitMapText('dub-gap-value', (x) => x === `+${wantOff.toFixed(1)} 秒`, '拖完读数跟着变');
-  check((await mapText('dub-gap-note')).includes(`中文比画面晚 ${Number(wantOff.toFixed(1))} 秒`), `拖完差距读数跟着变：${gapNow}`);
+  gapNow = await waitMapText('dub-gap-value', (x) => near(x, total - wantOff), '拖完读数跟着变');
+  check((await mapText('dub-gap-note')).includes(`− 此刻中文滞后 ${wantOff.toFixed(1)} 秒`), `拖完还差多少跟着变：${gapNow}`);
   check((await mapText('dub-delay-value')).includes(`+${wantOff.toFixed(1)} 秒`), '上面的"这一段的偏移"也跟着变');
   // 改回 +10 秒，后面接着测分段跟随
   await panel.getByTestId('dub-delay-input').fill('10');
   await panel.getByTestId('dub-delay-input').press('Enter');
   await panel.getByTestId('dub-delay-input').blur();
   r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - 10)) < 0.05, '改回 +10 秒');
-  await waitMapText('dub-gap-value', (x) => x === '+10.0 秒', '改回 +10 秒后读数跟着变');
+  await waitMapText('dub-gap-value', (x) => near(x, total - 10), '改回 +10 秒后读数跟着变');
   await panel.getByTestId('dub-map-zoom').filter({ hasText: '30 秒' }).click();
   check((await panel.getByTestId('dub-map-zoom').filter({ hasText: '30 秒' }).getAttribute('aria-pressed')) === 'true', '附近可以放大到 30 秒');
   await panel.getByTestId('dub-map').screenshot({ path: join(shots, '72-dub-align-map.png') });
@@ -309,12 +320,15 @@ export async function dub(t) {
   const holdNote = await waitMapText('dub-gap-note', (x) => x.includes('停在 1:00 等画面'), '读数：中文停着等');
   // 测试里侧边栏是后台标签页，浏览器不给它动画帧：读数只随每秒一次的读位置变（真正的侧边栏看得见，会连续变），所以等它变大，不只看固定的一小段
   const g1 = gapOf(await mapText('dub-gap-value'));
-  const g2 = gapOf(await waitMapText('dub-gap-value', (x) => gapOf(x) > g1 + 0.5, '停着等画面时差距变大'));
-  check(g2 > g1 + 0.5 && g2 < 10 && (await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'wait', `中文停着等画面：差距读数随播放变大（${g1} → ${g2} 秒），换成提醒色并说明（${holdNote}）`);
+  const g2 = gapOf(await waitMapText('dub-gap-value', (x) => gapOf(x) < g1 - 0.5, '停着等画面时还差的变小'));
+  check(
+    g2 < g1 - 0.5 && g2 > total - 10 && (await panel.getByTestId('dub-gap').getAttribute('data-plan')) === 'wait' && holdNote.includes('这几秒正在抵掉差距'),
+    `中文停着等画面：这几秒正在抵掉差距，还差的随播放变小（${g1} → ${g2} 秒）：${holdNote}`,
+  );
   s = await waitState((x) => x.playing && x.videoTime > 70.8, '到对齐点接着放', 20000);
   check(Math.abs(s.videoTime - 10 - s.dubTime) < 0.4, `画面到了 1:10 的对齐点：中文从停下的地方接着放（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
-  gapNow = await waitMapText('dub-gap-value', (x) => x === '+10.0 秒', '跨过对齐点后读数');
-  check((await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'playing', `跨过对齐点：读数回到这一段的偏移 ${gapNow}`);
+  gapNow = await waitMapText('dub-gap-value', (x) => near(x, total - 10), '跨过对齐点后读数');
+  check((await panel.getByTestId('dub-gap').getAttribute('data-plan')) === 'playing', `跨过对齐点：正好接上下一段（全片时长差 − 这一段的偏移 10 秒 = ${gapNow}）`);
   // 说得慢就跳过去：把这一段改成中文提前 10 秒（开头那段的中文要放到 1:20，视频到 1:10 时还没说完）
   await panel.getByRole('button', { name: '−10 秒', exact: true }).click();
   await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - 70) < 0.05, '−10 秒');
@@ -330,7 +344,10 @@ export async function dub(t) {
   const noteA = await mapText('dub-gap-note');
   await page.waitForTimeout(1500);
   const noteB = await mapText('dub-gap-note');
-  check(noteA !== noteB && (await mapText('dub-gap-value')) === '−10.0 秒' && noteB.includes('中文比画面早 10 秒'), `中文提前时读数是负的；播放中两边的位置跟着走：${noteA} → ${noteB}`);
+  check(
+    noteA !== noteB && near(await mapText('dub-gap-value'), total + 10) && noteB.includes('+ 此刻中文超前 10.0 秒'),
+    `中文提前 10 秒：还差的反而多了 10 秒（${await mapText('dub-gap-value')}）；播放中两边的位置跟着走：${noteA} → ${noteB}`,
+  );
   const list = (await panel.getByTestId('dub-anchors').textContent()) ?? '';
   check(list.includes('开头：不偏移') && list.includes('视频 1:10 ↔ 中文 1:20'), `对齐点列表：${list.replace(/\s+/g, ' ').slice(0, 80)}`);
   await panel.screenshot({ path: join(shots, '71-dub-anchors.png'), fullPage: true });
