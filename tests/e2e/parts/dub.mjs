@@ -1,6 +1,7 @@
 // @ts-check
 // 中文配音（DECISIONS §74）：给 YouTube 视频选一个本地 .m4a → 存进扩展的 IndexedDB → 下次打开同一视频时提示 →
-// 开启后在页面里叠加播放，跟随播放 / 暂停 / 拖动 / 倍速与偏移 → 对齐点分段跟随（DECISIONS §75）→ 原声降 20%（你改音量、广告、关闭时的处理）→ 移除。
+// 开启后在页面里叠加播放，跟随播放 / 暂停 / 拖动 / 倍速与偏移 → 对齐点分段跟随（DECISIONS §75）→ 原声降 20%（你改音量、广告、关闭时的处理）
+// → 配音开着时录片段：录下的是双语混音（DECISIONS §76）→ 移除。
 // 全程不发任何新的网络请求。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -250,9 +251,75 @@ export async function dub(t) {
   await waitState((x) => x.playing, '广告结束继续');
   check(Math.abs((await vol()) - 0.4) < 0.005, '广告结束：配音继续、原声再降');
   await panel.screenshot({ path: join(shots, '70-dub-panel.png'), fullPage: true });
+
+  console.log('\n[中文配音 × 片段录制：配音开着时录下的是双语混音（原声按 80% + 中文配音）；关着时和以前一样]');
+  /** 录一段（约 seconds 秒）并取回下载的文件，在页面里解码量响度 */
+  const recordClip = async (/** @type {number} */ seconds) => {
+    await panel.getByRole('tab', { name: '片段', exact: true }).click();
+    // 上一段录完后状态是"已保存：……"，开始按钮照样在
+    await panel.getByTestId('clip-start').waitFor({ timeout: 10000 });
+    await page.waitForTimeout(500);
+    const dubNote = (await panel.getByTestId('clip-dub').count()) ? ((await panel.getByTestId('clip-dub').textContent()) ?? '') : '';
+    await panel.getByTestId('clip-start').click();
+    await panel.getByTestId('clip-status').filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+    await page.waitForTimeout(800);
+    const mixingNote = (await panel.getByTestId('clip-dub').count()) ? ((await panel.getByTestId('clip-dub').textContent()) ?? '') : '';
+    await page.waitForTimeout(seconds * 1000);
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+    const b64 = readFileSync(/** @type {string} */ (await dl.path())).toString('base64');
+    // 原声那个 200 Hz 单音的振幅（Goertzel：只量这一个频率，配音的音高不在这里）和去掉它之后剩下的响度（= 配音）。
+    // 按 0.1 秒一段分别量、取中位数：软件编码吃紧时录音偶尔掉几帧声音（咔哒一下），不让这几下左右结果
+    const { tone, rest } = await page.evaluate(
+      async ([b64, hz]) => {
+        const bytes = Uint8Array.from(atob(/** @type {string} */ (b64)), (c) => c.charCodeAt(0));
+        const ac = new AudioContext();
+        try {
+          const buf = await ac.decodeAudioData(bytes.buffer);
+          const ch = buf.getChannelData(0);
+          const win = Math.round(buf.sampleRate / 10);
+          const w = (2 * Math.PI * /** @type {number} */ (hz)) / buf.sampleRate;
+          /** @type {number[]} */ const tones = [];
+          /** @type {number[]} */ const rests = [];
+          // 去掉开头、结尾各 0.3 秒（编码器的起止过渡）
+          for (let a = Math.floor(buf.sampleRate * 0.3); a + win <= ch.length - buf.sampleRate * 0.3; a += win) {
+            let re = 0;
+            let im = 0;
+            let sum = 0;
+            for (let i = a; i < a + win; i++) {
+              re += ch[i] * Math.cos(w * i);
+              im -= ch[i] * Math.sin(w * i);
+              sum += ch[i] * ch[i];
+            }
+            const amp = (2 * Math.sqrt(re * re + im * im)) / win;
+            tones.push(amp);
+            rests.push(Math.sqrt(Math.max(0, sum / win - (amp * amp) / 2)));
+          }
+          const median = (/** @type {number[]} */ xs) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)] ?? -1;
+          return { tone: median(tones), rest: median(rests) };
+        } catch {
+          return { tone: -1, rest: -1 };
+        } finally {
+          void ac.close();
+        }
+      },
+      [b64, DUB_VIDEO.toneHz],
+    );
+    const log = /** @type {any[]} */ (await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('clipLog').then((/** @type {any} */ r) => r.clipLog ?? [])));
+    const readyText = (await panel.getByTestId('clip-ready').textContent()) ?? '';
+    await panel.getByRole('tab', { name: '配音', exact: true }).click();
+    return { tone, rest, dubNote, mixingNote, record: log[0], readyText, name: dl.suggestedFilename() };
+  };
+  const withDub = await recordClip(2.5);
+  check(withDub.dubNote.includes('录下的片段是双语混音') && withDub.mixingNote.includes('正在录双语混音'), `片段页写明配音开着、录的是双语混音：${withDub.dubNote}`);
+  check(withDub.rest > 0.05, `配音开着时录下的片段里有中文配音（去掉原声后响度 ${withDub.rest.toFixed(3)}）：${withDub.name}`);
+  check(withDub.record?.dubbed === true && withDub.readyText.includes('双语混音'), '"最近录过的片段"记下这一段是双语混音');
   await panel.getByTestId('dub-toggle').click();
   await waitState((x) => !x.active && !x.playing, '关闭');
   check(Math.abs((await vol()) - 0.5) < 0.005, `关闭配音：配音停、原声恢复成你的音量（${await vol()}）`);
+  const without = await recordClip(2);
+  check(without.dubNote === '' && without.rest >= 0 && without.rest < 0.01 && !without.record?.dubbed, `配音关着时录片段和以前一样，只有原声（原声单音振幅 ${without.tone.toFixed(3)}，其余 ${without.rest.toFixed(4)}）`);
+  const ratio = withDub.tone / without.tone;
+  check(without.tone > 0.1 && Math.abs(ratio - 0.8) < 0.06, `双语混音里原声也在、按 80% 混进去：原声单音振幅 ${withDub.tone.toFixed(3)}（配音开着）÷ ${without.tone.toFixed(3)}（配音关着）= ${ratio.toFixed(2)}`);
 
   console.log('\n[中文配音：移除]');
   await panel.getByTestId('dub-remove').click();

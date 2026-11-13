@@ -69,8 +69,34 @@ export const WATCH_VIDEOS = [
   { id: 'p2Glance0002', seconds: 900, title: '搞笑合集 第 8 期', channelId: 'UCp2fun', channelTitle: '快乐每一天', categoryId: '24' },
   { id: 'p2Half000003', seconds: 1200, title: '神经网络课程 第 2 讲', channelId: 'UCp2learn', channelTitle: '机器学习课堂', categoryId: '27' },
 ];
-/** 中文配音（DECISIONS §74）用的播放页：两分钟的静音视频，配音用 tests/fixtures/xyz-tones.m4a（约 92 秒） */
-export const DUB_VIDEO = { id: 'dubVideo0001', seconds: 120 };
+/**
+ * 中文配音（DECISIONS §74）用的播放页：两分钟的视频，配音用 tests/fixtures/xyz-tones.m4a（约 92 秒）。
+ * 原声是一个固定的 200 Hz 单音（振幅 0.2）：录片段时按这个频率单独量原声，看它在双语混音里是不是按 80% 混进去的（DECISIONS §76）
+ */
+export const DUB_VIDEO = { id: 'dubVideo0001', seconds: 120, toneHz: 200, toneAmp: 0.2 };
+
+/** 16-bit 单声道 16 kHz 的单音 WAV */
+function toneWav(/** @type {number} */ seconds, /** @type {number} */ hz, /** @type {number} */ amp) {
+  const rate = 16000;
+  const n = rate * seconds;
+  const buf = Buffer.alloc(44 + n * 2);
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + n * 2, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(rate, 24);
+  buf.writeUInt32LE(rate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write('data', 36);
+  buf.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) buf.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * i) / rate) * amp * 32767), 44 + i * 2);
+  return buf;
+}
+let dubToneWav;
 /**
  * 自动字幕用的播放页：captions 决定播放器字幕按钮的样子（属性取自 2026-11 实测的 YouTube 播放器）。
  * 音频是"说话"的模拟：一段一段带谐波的声音，中间有停顿。
@@ -756,7 +782,12 @@ export function startMockServer() {
         const id = p.slice('/media/'.length).replace(/.wav$/, '');
         const w = WATCH_VIDEOS.find((x) => x.id === id) ?? SUBTITLE_VIDEOS.find((x) => x.id === id) ?? CC_VIDEOS.find((x) => x.id === id) ?? (id === DUB_VIDEO.id ? DUB_VIDEO : undefined);
         if (!w) return send(404, {});
-        const wav = WATCH_VIDEOS.includes(/** @type {any} */ (w)) || w === DUB_VIDEO ? silentWav(w.seconds) : speechWav(w.seconds);
+        const wav =
+          w === DUB_VIDEO
+            ? (dubToneWav ??= toneWav(DUB_VIDEO.seconds, DUB_VIDEO.toneHz, DUB_VIDEO.toneAmp))
+            : WATCH_VIDEOS.includes(/** @type {any} */ (w))
+              ? silentWav(w.seconds)
+              : speechWav(w.seconds);
         const range = /bytes=(d+)-(d*)/.exec(String(req.headers.range ?? ''));
         if (range) {
           const start = Number(range[1]);

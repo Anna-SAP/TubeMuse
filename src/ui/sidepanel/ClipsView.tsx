@@ -234,6 +234,14 @@ export function ClipsView() {
               )}
               <dt>状态</dt>
               <dd data-testid="clip-status">{state.status}</dd>
+              {state.dub && (
+                <>
+                  <dt>声音</dt>
+                  <dd data-testid="clip-dub">
+                    {state.dub === 'mixing' ? '正在录双语混音：原声（降 20%）+ 中文配音' : '中文配音开着：录下的片段是双语混音（原声降 20% + 中文配音），和你听到的一样'}
+                  </dd>
+                </>
+              )}
             </dl>
 
             {!state.unavailable && !recording && (
@@ -360,7 +368,8 @@ export function ClipsView() {
                 <strong class="clip-file">{ready.fileName}</strong>
                 <div class="muted small">
                   {formatTimecode(ready.durationSec)} · {formatBytes(ready.bytes)} · {ready.format}
-                  {ready.burned ? ' · 带字幕' : ''} · {CLIP_STOP_LABELS[ready.endedBy]}
+                  {ready.burned ? ' · 带字幕' : ''}
+                  {ready.dubbed ? ' · 双语混音' : ''} · {CLIP_STOP_LABELS[ready.endedBy]}
                 </div>
                 {ready.savedAt ? (
                   <p class="small" data-testid="clip-saved">
@@ -400,7 +409,8 @@ export function ClipsView() {
                 <span class="muted small">
                   {SITE_TEXT[r.site ?? 'youtube'].logTag}
                   {formatTimecode(r.start)}–{formatTimecode(r.end)} · {formatBytes(r.bytes)}
-                  {r.burned ? ' · 带字幕' : ''} · {formatRelative(r.savedAt, Date.now())}
+                  {r.burned ? ' · 带字幕' : ''}
+                  {r.dubbed ? ' · 双语混音' : ''} · {formatRelative(r.savedAt, Date.now())}
                 </span>
                 <span class="muted small clip-file">{r.fileName}</span>
               </li>

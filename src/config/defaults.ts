@@ -592,8 +592,9 @@ export const CLIPS = {
     { minHeight: 0, bps: 1_500_000 },
   ],
   audioBitrate: 128_000,
-  /** 录音采样率：AudioContext 默认跟着输出设备走，蓝牙耳机在通话模式下是 16 kHz，而 Chrome 的 AAC 编码器
-   *  （Windows 上用系统自带的）只接受 44.1 / 48 kHz（2026-11-02 实测 Chrome 156）。固定 48 kHz，由浏览器重采样 */
+  /** 录音采样率（只用于 Chrome）：AudioContext 默认跟着输出设备走，蓝牙耳机在通话模式下是 16 kHz，而 Chrome 的 AAC 编码器
+   *  （Windows 上用系统自带的）只接受 44.1 / 48 kHz（2026-11-02 实测 Chrome 156）。固定 48 kHz，由浏览器重采样。
+   *  Firefox 不重采样视频的音轨、固定了反而录慢、音调偏低，用默认采样率（DECISIONS §76） */
   audioSampleRate: 48_000,
   /** 等 AudioContext 启动多久（毫秒）：页面还没被点过时 resume() 不报错、也一直不返回（2026-11-06 实测 x.com），不能干等 */
   audioResumeMs: 1000,
@@ -948,6 +949,15 @@ export const DUB = {
   /** 列表里显示的标题最多多少字 */
   titleMaxChars: 200,
   fileNameMaxChars: 200,
+  /**
+   * 片段录制里混入配音时的软限幅（DECISIONS §76）：原声 80% 加中文 100% 的峰值可能超过满幅，编码时会削波失真。
+   * 混音后过一条固定的曲线：|x| ≤ knee 时原样不动（音量比例严格是 80% : 100%），超过 knee 的峰值平滑压到 1 以内，
+   * 最多接得住 headroom 倍满幅。不用 DynamicsCompressor：它会自动加补偿增益（阈值 −3 dB 时整体抬高约 1.7 dB，Chromium 实测 ×1.22），
+   * 混出来的比例就不是你听到的了。不混配音的录音不经过它，和以前一样
+   */
+  mixLimiter: { knee: 0.9, headroom: 2, points: 8193 },
+  /** 原声混音倍数变化时的平滑时间常数（秒）：配音开 / 关、广告前后不咔哒一下 */
+  mixRampSec: 0.02,
 } as const;
 
 /** Anthropic 服务端拒答回退：'default' 在不支持的模型上等于不回退，安全。 */
