@@ -1968,6 +1968,61 @@ a.db-title:hover {
   margin-left: -14px;
 }
 
+/* 此刻差距（DECISIONS §78）：大字写视频 − 中文差多少秒；往下滚去调的时候吸在头部（和固定着的导航栏）下面，只在"对齐"一栏里吸 */
+.dub-gap {
+  position: sticky;
+  top: calc(var(--top-h, 0px) + var(--nav-h, 0px));
+  z-index: 3;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 2px;
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px -4px rgb(0 0 0 / 0.25);
+}
+.dub-gap-label {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--muted);
+}
+.dub-gap-value {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.dub-gap-note {
+  font-size: 12px;
+  line-height: 1.4;
+}
+/* 中文停着（还没开始 / 等画面 / 放完）：差距在随播放变大，换成提醒色 */
+.dub-gap.wait,
+.dub-gap.before-start,
+.dub-gap.after-end {
+  border-color: var(--warn);
+}
+.dub-gap.wait .dub-gap-value,
+.dub-gap.before-start .dub-gap-value,
+.dub-gap.after-end .dub-gap-value {
+  color: var(--warn);
+}
+.dub-gap.none,
+.dub-gap.ended {
+  border-color: var(--border);
+}
+.dub-gap.none .dub-gap-value,
+.dub-gap.ended .dub-gap-value {
+  color: var(--muted);
+}
+
 /* 对齐图（DECISIONS §77）：上英文原声、下中文配音；色带连着的是同时听到的 */
 .dub-map {
   margin: 8px 0 10px;
@@ -1977,12 +2032,6 @@ a.db-title:hover {
 .dub-map-head {
   justify-content: space-between;
   gap: 8px;
-}
-.dub-map-now {
-  margin: 4px 0 2px;
-  font-size: 13px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
 }
 .dub-map-overall {
   margin: 0 0 6px;

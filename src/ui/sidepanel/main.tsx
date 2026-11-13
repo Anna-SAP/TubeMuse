@@ -125,6 +125,8 @@ function usePinnedNav(pinned: boolean) {
       const headerH = header.current?.getBoundingClientRect().height ?? 0;
       const navH = pinned ? (nav.current?.getBoundingClientRect().height ?? 0) : 0;
       root.style.setProperty('--top-h', `${headerH}px`);
+      // 固定着的导航栏有多高（没固定时 0）：配音页的差距读数吸在它下面（DECISIONS §78）
+      root.style.setProperty('--nav-h', `${navH}px`);
       root.style.scrollPaddingTop = `${headerH + navH}px`;
       setStuck(pinned && !!anchor.current && anchor.current.getBoundingClientRect().top < headerH - 0.5);
     };

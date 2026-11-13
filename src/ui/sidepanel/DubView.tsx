@@ -23,7 +23,7 @@ import {
 import { addDubAnchor, attachDub, checkDubStorage, removeDub, removeDubAnchor, setDubSegmentOffset } from '../../services/dub-service';
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
-import { DubAlignMap } from './DubAlignMap';
+import { DubAlignMap, DubGapReadout, useDubAlignNow } from './DubAlignMap';
 import { Notice } from '../shared/components';
 import { openInCurrentTab } from '../shared/download';
 import { useActiveTabState } from '../shared/tab-state';
@@ -131,6 +131,17 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
     }, 80);
   };
   useEffect(() => () => previewTimer.current && clearTimeout(previewTimer.current), []);
+  // 此刻（DECISIONS §77、§78）：顶上的差距读数和对齐图用同一个播放头
+  const videoDuration = state.videoDuration ?? rec.videoDurationSec;
+  const alignNow = useDubAlignNow({
+    map: liveMap,
+    ...(videoDuration ? { videoDuration } : {}),
+    ...(dubDuration !== undefined ? { dubDuration } : {}),
+    ...(state.videoTime !== undefined ? { videoTime: state.videoTime } : {}),
+    stamp,
+    playing: !!state.videoPlaying,
+    rate: state.videoRate ?? 1,
+  });
   const nudge = (by: number) => commit(offset + by);
   const previewPos = (dubAt: number) => {
     setDraftPos(dubAt);
@@ -192,18 +203,8 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
           现在在：{where}
         </span>
       </div>
-      <DubAlignMap
-        map={liveMap}
-        {...(state.videoDuration ?? rec.videoDurationSec ? { videoDuration: state.videoDuration ?? rec.videoDurationSec } : {})}
-        {...(dubDuration !== undefined ? { dubDuration } : {})}
-        {...(state.videoTime !== undefined ? { videoTime: state.videoTime } : {})}
-        stamp={stamp}
-        playing={!!state.videoPlaying}
-        rate={state.videoRate ?? 1}
-        segment={seg.index}
-        onPreview={previewOffset}
-        onCommit={commit}
-      />
+      <DubGapReadout now={alignNow} />
+      <DubAlignMap now={alignNow} map={liveMap} segment={seg.index} onPreview={previewOffset} onCommit={commit} />
       <div class="row">
         <span>这一段的偏移</span>
         <span class="dub-delay-value" data-testid="dub-delay-value">

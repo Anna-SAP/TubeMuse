@@ -5,6 +5,7 @@
 //   斜纹 = 这时只有原声（中文还没开始 / 停下等画面 / 已经放完），红斜纹 = 被跳过的中文；每条色带上写着那一段差多少。
 //   左右拖下面的中文 = 调这一段的偏移（和"中文位置"滑块一样：拖动时实时生效，松手后存下）。
 // 只画跟随本来的规则（core/dub-align.ts，和 dubStep 逐点对照过），不做、也不暗示逐句对齐。
+// 「对齐」区顶部的差距读数（DubGapReadout，DECISIONS §78）和图用同一个播放头（useDubAlignNow），大字写"此刻差多少秒"。
 
 import type { RefObject } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -13,6 +14,8 @@ import { clampDelay, formatClockSec, formatSeconds, type DubMap } from '../../co
 import {
   alignNowText,
   alignOverallText,
+  dubGapAt,
+  gapNoteText,
   alignTotals,
   describeDubAt,
   describeVideoAt,
@@ -23,7 +26,8 @@ import {
   type DubPlan,
 } from '../../core/dub-align';
 
-export interface DubAlignMapProps {
+/** 读到的播放状态（侧边栏每秒问一次配音脚本） */
+export interface DubAlignInput {
   map: DubMap;
   videoDuration?: number;
   dubDuration?: number;
@@ -33,6 +37,18 @@ export interface DubAlignMapProps {
   /** 视频在放：两次读位置之间按倍速把播放头往前推 */
   playing: boolean;
   rate: number;
+}
+
+/** 此刻：摊开的对应关系、播放头（读不到时停在上次的位置）、按对齐此刻的情况 */
+export interface AlignNow {
+  al?: DubAlignment;
+  t?: number;
+  plan?: DubPlan;
+}
+
+export interface DubAlignMapProps {
+  now: AlignNow;
+  map: DubMap;
   /** 侧边栏此刻在调的那一段（拖动只在图上的"这一段"就是它时可用） */
   segment: number;
   /** 拖下面的中文：拖动中（实时生效）/ 松手（存下） */
@@ -57,14 +73,18 @@ const signed = (x: number) => {
 };
 const parity = (segment: number) => (segment % 2 === 0 ? 'even' : 'odd');
 
-/** 视频此刻的位置：读到的位置 + 之后按倍速走过的时间（视频在放时；最多推 extrapolateMaxSec 秒） */
-function usePlayhead(p: Pick<DubAlignMapProps, 'videoTime' | 'stamp' | 'playing' | 'rate'>, videoDuration: number): number | undefined {
+/** 视频此刻的位置：读到的位置 + 之后按倍速走过的时间（视频在放时；最多推 extrapolateMaxSec 秒）。视频在放时每秒重画约 30 次 */
+function usePlayhead(p: Pick<DubAlignInput, 'videoTime' | 'stamp' | 'playing' | 'rate'>, videoDuration: number): number | undefined {
   const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
     if (!p.playing) return;
     let raf = 0;
-    const loop = () => {
-      setNow(performance.now());
+    let last = 0;
+    const loop = (ts: number) => {
+      if (ts - last >= 33) {
+        last = ts;
+        setNow(performance.now());
+      }
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
@@ -73,6 +93,40 @@ function usePlayhead(p: Pick<DubAlignMapProps, 'videoTime' | 'stamp' | 'playing'
   if (p.videoTime === undefined) return undefined;
   const ran = p.playing ? Math.min(DUB.map.extrapolateMaxSec, Math.max(0, (now - p.stamp) / 1000)) * (p.rate > 0 ? p.rate : 1) : 0;
   return Math.min(videoDuration, p.videoTime + ran);
+}
+
+/** 对齐区共用的"此刻"：差距读数和对齐图用同一个播放头，数字和图永远一致 */
+export function useDubAlignNow(p: DubAlignInput): AlignNow {
+  const V = p.videoDuration;
+  const al = useMemo(() => (V ? dubAlignment(p.map, V, p.dubDuration) : undefined), [p.map, V, p.dubDuration]);
+  const t = usePlayhead(p, V ?? 0);
+  // 读不到位置时（广告中）停在上次的位置
+  const lastT = useRef<number>();
+  if (t !== undefined) lastT.current = t;
+  const at = t ?? lastT.current;
+  const plan = al && at !== undefined ? dubPlanAt(al, p.map, at) : undefined;
+  return { ...(al ? { al } : {}), ...(at !== undefined ? { t: at } : {}), ...(plan ? { plan } : {}) };
+}
+
+/**
+ * 此刻差距（DECISIONS §78）：大字写视频位置 − 中文位置（秒，一位小数，+ = 中文比画面晚，和"这一段的偏移"一个写法），
+ * 下面一行写这个数的意思和两边各在哪里。播放推进、跨过对齐点、调偏移时立刻跟着变；往下滚去调的时候吸在顶上
+ */
+export function DubGapReadout({ now }: { now: AlignNow }) {
+  const { plan, t } = now;
+  const gap = plan && t !== undefined ? dubGapAt(plan, t) : undefined;
+  const kind = plan?.kind ?? 'none';
+  return (
+    <div class={`dub-gap ${kind}`} data-testid="dub-gap" data-kind={kind}>
+      <div class="dub-gap-label">此刻差距（视频 − 中文，+ 是中文比画面晚）</div>
+      <div class="dub-gap-value" data-testid="dub-gap-value">
+        {gap === undefined ? '—' : signed(gap)}
+      </div>
+      <div class="dub-gap-note" data-testid="dub-gap-note">
+        {plan && t !== undefined ? gapNoteText(plan, t) : now.al ? '读不到视频此刻的位置（正在放广告？）' : '读到视频的时长后显示'}
+      </div>
+    </div>
+  );
 }
 
 function useWidth(): [RefObject<HTMLDivElement>, number] {
@@ -386,22 +440,16 @@ export function DubAlignMap(props: DubAlignMapProps) {
   const [zoom, setZoom] = useState<number>(DUB.map.defaultZoomSec);
   const [hover, setHover] = useState<Hover>();
   const id = useMemo(() => `dubmap${++instances}`, []);
-  const V = props.videoDuration;
-  const al = useMemo(() => (V ? dubAlignment(props.map, V, props.dubDuration) : undefined), [props.map, V, props.dubDuration]);
-  const t = usePlayhead(props, V ?? 0);
-  // 读不到位置时（广告中）停在上次的位置
-  const lastT = useRef<number>();
-  if (t !== undefined) lastT.current = t;
-  const at = t ?? lastT.current;
-  if (!V || !al) {
+  const { al, plan } = props.now;
+  const at = props.now.t;
+  if (!al) {
     return (
       <div class="dub-map" data-testid="dub-map">
         <p class="muted small">读到视频的时长后显示对齐图。</p>
       </div>
     );
   }
-  const plan = at !== undefined ? dubPlanAt(al, props.map, at) : undefined;
-  const now = plan && at !== undefined ? alignNowText(plan, at) : '读不到视频此刻的位置（正在放广告？）';
+  const V = al.videoDuration;
   const overall = alignOverallText(al);
   const totals = alignTotals(al);
   const canDrag = !!props.onCommit && !!plan && plan.segment.index === props.segment && plan.kind !== 'ended';
@@ -412,16 +460,13 @@ export function DubAlignMap(props: DubAlignMapProps) {
     hoverText = hover.y < RIB_MID ? describeVideoAt(al, sec) : describeDubAt(al, sec - (plan?.segment.offset ?? 0));
   }
   return (
-    <div class="dub-map" data-testid="dub-map" ref={box}>
+    <div class="dub-map" data-testid="dub-map" ref={box} role="group" aria-label={plan && at !== undefined ? alignNowText(plan, at) : '对齐图'}>
       <div class="row dub-map-head">
         <strong>对齐图</strong>
         <span class="muted small">
-          英文 {formatClockSec(V)} · 中文 {props.dubDuration ? formatClockSec(props.dubDuration) : '时长未知'}
+          英文 {formatClockSec(V)} · 中文 {al.dubDuration ? formatClockSec(al.dubDuration) : '时长未知'}
         </span>
       </div>
-      <p class="dub-map-now" data-testid="dub-map-now" aria-live="polite">
-        {now}
-      </p>
       {overall && (
         <p class="muted small dub-map-overall" data-testid="dub-map-overall">
           {overall}
