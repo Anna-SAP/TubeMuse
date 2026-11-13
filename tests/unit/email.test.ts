@@ -34,6 +34,7 @@ import { exportAll } from '../../src/services/data-service';
 import { applyEmail, concludeArticles, scoreArticles } from '../../src/services/email-service';
 import { mergeSettings, stores } from '../../src/services/repo';
 import { memoryKV, memoryLocker } from '../../src/services/storage';
+import { fakeSecret } from './fake-secrets';
 
 const NOW = Date.parse('2026-11-04T08:00:00Z');
 const SOURCE = '?source=email-0123456789ab-1793748000000-digest.reader-abc123-def456----0-59--------------------abc---1';
@@ -305,7 +306,7 @@ function makeCtx(opts: { answer?: (items: { id: string; title: string }[], call:
   const auth = { status: async () => 'connected' as const, getToken: async () => 'tok', invalidate: async () => undefined, disconnect: async () => undefined } as unknown as AppContext['auth'];
   const ctx: AppContext = { kv, locker: memoryLocker(), http, now: () => NOW, auth, endpoints: ENDPOINTS, timeZone: 'Asia/Shanghai' };
   const init = async () => {
-    if (opts.hasKey !== false) await stores.secrets.write(kv, { anthropicApiKey: 'sk-ant-test-key-for-unit-tests' });
+    if (opts.hasKey !== false) await stores.secrets.write(kv, { anthropicApiKey: fakeSecret('sk-ant-', 'test-key-for-unit-tests') });
     const s = mergeSettings(undefined);
     await stores.settings.write(kv, { ...s, email: { enabled: opts.enabled ?? true } });
   };

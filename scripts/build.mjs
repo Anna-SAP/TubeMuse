@@ -13,6 +13,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extensionIdFromPublicKey } from './gen-key.mjs';
 import { FIREFOX_ADDON_ID, FIREFOX_DATA_COLLECTION, FIREFOX_E2E_ADDON_ID, FIREFOX_MIN_VERSION, firefoxRedirectUrl } from './firefox.mjs';
+import { SECRET_PATTERNS } from './secret-patterns.mjs';
 import { isManifestVersion } from './version.mjs';
 import { zipDirectory } from './zip.mjs';
 
@@ -238,13 +239,8 @@ function walk(dir) {
   });
 }
 const forbidden = [
-  { re: /sk-ant-[A-Za-z0-9_-]{16,}/, what: 'Anthropic API Key' },
-  { re: /\bsk-(?:proj-)?[A-Za-z0-9]{32,}/, what: 'OpenAI API Key' },
-  { re: /AIza[0-9A-Za-z_-]{35}/, what: 'Google API Key' },
-  { re: /ya29\.[0-9A-Za-z_-]{20,}/, what: 'Google 访问令牌' },
-  { re: /GOCSPX-[0-9A-Za-z_-]{20,}/, what: 'Google OAuth Client Secret' },
-  { re: /\b1\/\/0[0-9A-Za-z_-]{30,}/, what: 'Google 刷新令牌' },
-  { re: /AAAAAAAAAAAAAAAAAAAA[A-Za-z0-9%]{30,}/, what: 'X Bearer Token' },
+  // 各家 Key / 令牌的格式与仓库自检（tests/unit/secret-hygiene.test.mjs）共用一份（DECISIONS §73）
+  ...SECRET_PATTERNS,
   // 给 .crx 签名的私钥（local/extension-key.pem，发布时来自仓库 Secret，DECISIONS §70）只该用来签名，绝不能进安装包
   { re: /-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----/, what: '私钥' },
 ];

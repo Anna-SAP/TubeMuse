@@ -16,6 +16,7 @@ import { memoryKV, memoryLocker } from '../../src/services/storage';
 import { generateDailySummary, generateWeeklyReport, runScheduledJobs } from '../../src/services/summary-service';
 import { ingestSession } from '../../src/services/watch-service';
 import { createFakeApi, type FakeVideo } from './fake-api';
+import { fakeSecret } from './fake-secrets';
 
 const NOW = Date.parse('2026-10-24T02:00:00Z'); // 北京时间 10:00
 const HOUR = 3_600_000;
@@ -52,10 +53,10 @@ function setup(opts: { llm?: LlmReply; xSearch?: Parameters<typeof createFakeApi
       }),
   });
   let now = NOW;
-  const auth: AuthProvider = { configured: () => true, getToken: async () => 'ya29.fake-token-for-tests-1234567', invalidate: async () => {}, status: async () => 'connected', disconnect: async () => ({ revoked: false }) };
+  const auth: AuthProvider = { configured: () => true, getToken: async () => fakeSecret('ya29.', 'fake-token-for-tests-1234567'), invalidate: async () => {}, status: async () => 'connected', disconnect: async () => ({ revoked: false }) };
   const ctx: AppContext = {
     kv: memoryKV({
-      secrets: { ...(opts.llmKey === false ? {} : { anthropicApiKey: 'sk-ant-test-0123456789abcdefghijklmn' }), xBearerToken: 'AAAAFakeXBearerTokenForTests0123456789' },
+      secrets: { ...(opts.llmKey === false ? {} : { anthropicApiKey: fakeSecret('sk-ant-', 'test-0123456789abcdefghijklmn') }), xBearerToken: 'AAAAFakeXBearerTokenForTests0123456789' },
       clusters: { clusters: [cluster('k1', 'AI', ['AI', 'LLM']), cluster('k2', '编程', ['programming', '编程'])] },
     }),
     locker: memoryLocker(),
