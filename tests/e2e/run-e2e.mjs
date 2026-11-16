@@ -16,6 +16,7 @@ import { fail, failureCount, launch, redLines, setup, shots } from './harness.mj
 import { clips } from './parts/clips.mjs';
 import { core } from './parts/core.mjs';
 import { dub } from './parts/dub.mjs';
+import { dubFull } from './parts/dub-full.mjs';
 import { emails } from './parts/emails.mjs';
 import { muse } from './parts/muse.mjs';
 import { settings } from './parts/settings.mjs';
@@ -23,7 +24,7 @@ import { subtitles } from './parts/subtitles.mjs';
 import { xyz } from './parts/xyz.mjs';
 
 /** @type {Record<string, (t: import('./harness.mjs').Harness) => Promise<void>>} */
-const PARTS = { core, subtitles, clips, emails, muse, settings, xyz, dub };
+const PARTS = { core, subtitles, clips, emails, muse, settings, xyz, dub, 'dub-full': dubFull };
 /** @type {Record<string, string[]>} */
 const SHARDS = JSON.parse(readFileSync(new URL('./shards.json', import.meta.url), 'utf8'));
 

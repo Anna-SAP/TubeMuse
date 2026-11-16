@@ -506,6 +506,9 @@ export async function dub(t) {
     await panel.mouse.move(qbox.x + 5, qbox.y - 30);
   }
   await panel.getByTestId('dub-align').screenshot({ path: join(shots, '75-dub-quick-on.png') });
+  // "保存完整双语视频"（DECISIONS §81）录的是开着配音时听到的声音：快速对齐开着时写明中文是按倍速慢放叠上去的，不再说对齐点
+  const fullAboutQuick = ((await panel.getByTestId('dub-full-about').textContent()) ?? '').replace(/\s+/g, ' ');
+  check(fullAboutQuick.includes(`中文按快速对齐的 ${quickLabel} 慢放叠上去`) && !fullAboutQuick.includes('对齐点'), `"保存完整双语视频"的说明跟着变：${fullAboutQuick.slice(0, 70)}…`);
   // 倍速跟着视频的倍速；拖进度、暂停照常跟随
   await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).playbackRate = 1.5));
   await page.waitForTimeout(2000);
@@ -535,6 +538,7 @@ export async function dub(t) {
   r = await waitStored((x) => x.quickRate === undefined, '切回手动对齐');
   check(JSON.stringify(r) === JSON.stringify(manualBefore), `切回手动对齐：存储和开快速对齐之前一模一样（${JSON.stringify(r.anchors)}）`);
   check(((await panel.getByTestId('dub-align-note').textContent()) ?? '').includes('已切回手动对齐：开头偏移和 1 个对齐点照旧生效'), '说明已切回、对齐点照旧生效');
+  check((((await panel.getByTestId('dub-full-about').textContent()) ?? '')).includes('中文按开头的偏移和全部 1 个对齐点叠上去'), '"保存完整双语视频"的说明回到"按开头的偏移和全部 1 个对齐点"');
   await panel.getByTestId('dub-anchor-add').waitFor({ timeout: 5000 });
   await page.evaluate(() => {
     const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));

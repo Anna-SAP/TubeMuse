@@ -674,7 +674,7 @@ function App() {
             value={settings.clips.maxMinutes}
             min={1}
             max={60}
-            hint="保存前片段全部在内存里：1080p 约每分钟 60 MB，720p 约 40 MB"
+            hint="保存前片段全部在内存里：1080p 约每分钟 60 MB，720p 约 40 MB。「配音」页的“录下完整双语视频”不受这个上限管：它按视频时长自动安排码率，放完自动保存"
             onChange={(v) => updateSettings((s) => ({ ...s, clips: { ...s.clips, maxMinutes: v } }))}
           />
         </div>

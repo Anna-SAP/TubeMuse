@@ -2,5 +2,5 @@
   "core": ["core", "emails", "muse", "settings"],
   "subtitles": ["subtitles"],
   "clips": ["clips"],
-  "xyz": ["xyz", "dub"]
+  "xyz": ["xyz", "dub", "dub-full"]
 }
