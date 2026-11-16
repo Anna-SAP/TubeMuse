@@ -1,9 +1,12 @@
 // 「配音」页（DECISIONS §74、§75）：给当前 YouTube 视频关联一个本地中文配音（.m4a），开 / 关，调偏移、加对齐点，移除；管理所有关联过的视频。
+// "录下完整双语视频"（DECISIONS §81）：让片段录制脚本把这个视频从头到尾实时录一遍（双语混音），放完自动保存。
 // 还有侧边栏顶部的一行提示（DubPrompt）：当前视频有中文配音、还没开启时显示。
 // 状态来自注入 YouTube 页面的配音脚本（只在本扩展内部传递）；对应关系在本机存储，音频在扩展自己的 IndexedDB。
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { DUB } from '../../config/defaults';
+import { CLIP_MSG, formatTimecode, fullIssueText, fullStartBlocked, type ClipTabState } from '../../core/clips';
+import { formatClock } from '../../core/time';
 import {
   DUB_MSG,
   DubFileError,
@@ -78,6 +81,132 @@ async function previewSegment(tabId: number | undefined, msg: { videoId: string;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * 保存完整双语视频（用户 2026-11-16 选定的做法，DECISIONS §81）：片段录制脚本把这个视频跳到开头、从头实时录到结尾，
+ * 声音是开着配音时听到的双语混音，放完自动存进下载文件夹。这里只发开始 / 暂停 / 停止，显示进度和结果
+ */
+function FullSave({ tabId, dub, rec }: { tabId: number | undefined; dub: DubTabState; rec: DubRecord }) {
+  // 推送里不含播放位置：每秒问一次
+  const { state: clip } = useActiveTabState<ClipTabState>(CLIP_MSG.getState, CLIP_MSG.state, 1000);
+  const [busy, setBusy] = useState(false);
+  const [noReply, setNoReply] = useState(false);
+  const send = async (msg: Record<string, unknown>) => {
+    if (tabId === undefined) return;
+    setBusy(true);
+    setNoReply(false);
+    try {
+      await chrome.tabs.sendMessage(tabId, msg);
+    } catch {
+      setNoReply(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (clip === undefined) return null;
+  const live = !!clip && clip.phase !== 'idle' && clip.mode === 'full';
+  const blocked = fullStartBlocked(dub, clip);
+  const duration = (live && clip.duration > 0 ? clip.duration : undefined) ?? dub.videoDuration ?? rec.videoDurationSec;
+  const anchors = rec.anchors?.length ?? 0;
+  const ready = clip?.ready?.full ? clip.ready : undefined;
+  const full = ready?.full;
+  return (
+    <div class="dub-full" data-testid="dub-full">
+      <div class="row">
+        <strong>保存完整双语视频</strong>
+      </div>
+      {live && clip ? (
+        <div class="clip-live" data-testid="dub-full-live">
+          <div class="clip-timer">
+            <span class={`rec-dot${clip.waiting || clip.phase === 'finishing' ? ' paused' : ''}`} aria-hidden="true" />
+            <span data-testid="dub-full-position">{formatTimecode(clip.position)}</span>
+            {clip.duration > 0 && <span class="muted"> / {formatTimecode(clip.duration)}</span>}
+            {clip.duration > 0 && <span class="muted"> · 还要约 {formatTimecode(Math.max(0, clip.duration - clip.position))}</span>}
+            <span class="muted"> · {formatBytes(clip.bytes)}</span>
+          </div>
+          {clip.duration > 0 && <progress class="clip-progress" max={clip.duration} value={Math.min(clip.position, clip.duration)} />}
+          <div class="muted small" data-testid="dub-full-status">
+            {clip.status}
+            {clip.format ? ` · ${clip.format}` : ''}
+            {clip.burn ? ' · 带字幕' : ''}
+          </div>
+          <div class="row">
+            {clip.waiting === 'user' ? (
+              <button class="btn" disabled={busy || clip.phase === 'finishing'} onClick={() => void send({ type: CLIP_MSG.resume })}>
+                继续
+              </button>
+            ) : (
+              <button class="btn" data-testid="dub-full-pause" disabled={busy || clip.phase === 'finishing'} onClick={() => void send({ type: CLIP_MSG.pause })}>
+                暂停
+              </button>
+            )}
+            <button class="btn" data-testid="dub-full-stop" disabled={busy || clip.phase === 'finishing'} onClick={() => void send({ type: CLIP_MSG.stop })}>
+              ■ 停止（不录到结尾）
+            </button>
+          </div>
+          <p class="muted small">
+            不用盯着，但这个标签页要一直开在前台：切到别的标签页或把窗口最小化时，视频和录制一起暂停，切回来接着录。录的就是这一遍放出来的样子——中途别拖进度条、别改倍速、别关配音；关掉侧边栏不影响。
+          </p>
+        </div>
+      ) : (
+        <>
+          <p class="muted small" data-testid="dub-full-about">
+            把这个视频从头到尾实时录一遍，放完自动存进下载文件夹：画面，加上开着配音时听到的声音（原声降 20%，中文按开头的偏移和{anchors ? `全部 ${anchors} 个对齐点` : '现在的对齐'}叠上去）。
+            {duration ? `要花和视频一样长的时间（${formatTimecode(duration)}）——` : '要花和视频一样长的时间——'}
+            不用盯着，但这个标签页要一直开在前台（切走时视频和录制一起暂停，切回来接着录）。没法不播放就拿到整个视频：TubeMuse 不下载 YouTube 的视频。
+          </p>
+          <div class="row">
+            <button class="btn primary" data-testid="dub-full-start" disabled={busy || !!blocked || tabId === undefined} onClick={() => void send({ type: CLIP_MSG.start, mode: 'full' })}>
+              ● 录下完整双语视频
+            </button>
+          </div>
+          {blocked && (
+            <p class="muted small" data-testid="dub-full-blocked">
+              {blocked}
+            </p>
+          )}
+        </>
+      )}
+      {noReply && <ProblemBox problem={{ message: '这个标签页没有响应', hint: '刷新一下 YouTube 页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）。' }} onClose={() => setNoReply(false)} />}
+      {!live && clip?.error && <ProblemBox problem={clip.error} />}
+      {!live && ready && full && (
+        <div class="clip-ready" data-testid="dub-full-ready">
+          <strong class="clip-file">{ready.fileName}</strong>
+          <div class="muted small">
+            {formatTimecode(ready.durationSec)} · {formatBytes(ready.bytes)} · {ready.format}
+            {ready.burned ? ' · 带字幕' : ''}
+          </div>
+          {full.issues.length === 0 ? (
+            <p class="small" data-testid="dub-full-complete">
+              录完整了：全片 {formatTimecode(full.duration)}，双语混音。
+            </p>
+          ) : (
+            <ul class="small warn-text dub-notes" data-testid="dub-full-issues">
+              {full.issues.map((i) => (
+                <li>{fullIssueText(i, { endedBy: ready.endedBy, end: ready.end, duration: full.duration })}</li>
+              ))}
+            </ul>
+          )}
+          {ready.savedAt ? (
+            <p class="small" data-testid="dub-full-saved">
+              已在 {formatClock(ready.savedAt)} 交给浏览器存进下载文件夹。没看到文件？浏览器可能拦下了"自动下载多个文件"：在地址栏右侧允许后点"再存一次"。
+            </p>
+          ) : (
+            <p class="small warn-text">还没保存：录下的内容只在那个标签页的内存里，关掉或刷新页面就没了。</p>
+          )}
+          <div class="row">
+            <button class={`btn${ready.savedAt ? '' : ' primary'}`} data-testid="dub-full-save" disabled={busy} onClick={() => void send({ type: CLIP_MSG.save })}>
+              {ready.savedAt ? '再存一次' : '保存到本地'}
+            </button>
+            <button class="btn" disabled={busy} onClick={() => void send({ type: CLIP_MSG.discard })}>
+              {ready.savedAt ? '释放内存' : '丢弃'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 const signed = (x: number) => `${x > 0.04 ? '+' : x < -0.04 ? '−' : ''}${Math.abs(x).toFixed(1)} 秒`;
@@ -465,6 +594,7 @@ export function DubView() {
               </button>
             </div>
             {removeConfirm(rec.videoId)}
+            <FullSave tabId={tabId} dub={state} rec={rec} />
             <AlignControl key={rec.videoId} rec={rec} tabId={tabId} state={state} onNote={setAlignNote} />
             {alignNote && (
               <Notice kind="ok" onClose={() => setAlignNote(undefined)}>
@@ -535,6 +665,9 @@ export function DubView() {
           <li>同步只跟随视频的播放、暂停、拖动进度和倍速，再加上你设的偏移和对齐点。中文是另外录的，长度和停顿与原视频不一样（还可能删掉了一些段落），不做逐句对齐：越往后可能差得越多，在对不上的地方加对齐点、单独调那一段。</li>
           <li>对齐点之间中文始终按正常速度放：中文先说完就停下等画面，说得慢就在下一个对齐点跳过去（会跳过中文没说完的那一点）。</li>
           <li>配音开启时，原声降到你的音量的 80%（降 20%），中文保持正常音量、不跟 YouTube 的音量与静音走；关闭、换视频、离开页面时原声恢复。广告期间配音暂停、原声恢复。</li>
+          <li>
+            "录下完整双语视频"和「片段」页是同一种录法：实时录下正在播放的画面和声音，所以要把视频真的放一遍。TubeMuse 不下载 YouTube 的视频，也就没法不播放就生成文件。整段在保存前都在那个标签页的内存里，长视频会自动降低码率或分辨率；要更清晰，先在播放器里把清晰度调高。中途插播的广告不会录进去。
+          </li>
           <li>配音由 YouTube 页面里的 TubeMuse 脚本播放，关掉侧边栏也继续；刷新页面后要重新开启（只提示，不自动出声）。</li>
           <li>音频文件存在这个浏览器里（扩展自己的 IndexedDB），不上传、不发任何网络请求；导出数据时只导出视频与文件名、偏移的对应关系，不含音频本身；"清空全部数据"会一并删除。</li>
         </ul>

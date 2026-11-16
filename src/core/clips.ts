@@ -7,7 +7,11 @@ import { BILI_PAGES, DOUYIN_PAGES, IG_PAGES, KUBB_PAGES, XHS_PAGES, X_PAGES } fr
 import { videoIdFromUrl } from './watch';
 import { canonicalXhsUrl, isXhsId } from './xhs';
 
-export type ClipMode = 'free' | 'range';
+/**
+ * free：从现在的位置录到你停止；range：按时间段截取；
+ * full：整片（配音页"录下完整双语视频"，只在 YouTube 播放页、配音开着时，见 DECISIONS §81）——跳到开头，从头录到结尾，放完自动保存
+ */
+export type ClipMode = 'free' | 'range' | 'full';
 
 /**
  * 录的是哪个站的视频：YouTube 播放页、小红书网页版的视频笔记（2026-11-04 新增，见 DECISIONS §43）、
@@ -187,6 +191,11 @@ export function safeFileTitle(title: string): string {
 /** 文件名开头：清洗过的标题；没有标题时用视频（笔记、帖子）ID */
 function fileBase(title: string | undefined, videoId: string, site: ClipSite): string {
   return safeFileTitle(title ?? '') || `${site}-${videoId}`;
+}
+
+/** 整片录制、录完整了的文件名：标题_双语完整版.扩展名；没有标题时用视频 ID。没录完整的仍按片段起名（带起止时间） */
+export function fullFileName(title: string | undefined, videoId: string, ext: string): string {
+  return `${fileBase(title, videoId, 'youtube')}_双语完整版.${ext}`;
 }
 
 /** 片段文件名：标题_起点-终点.扩展名；没有标题时用视频（笔记、帖子）ID */
@@ -682,6 +691,8 @@ export function checkClipStart(req: ClipStartRequest, c: ClipStartContext): stri
   const unavailable = clipUnavailable(c.site ?? 'youtube', c);
   if (unavailable) return unavailable;
   if (c.busy) return '已经在录一段了：先停止这一段';
+  // 整片：从头录，视频现在放到哪了（包括已经播完）都不要紧；别的检查见 checkFullStart
+  if (req.mode === 'full') return undefined;
   if (req.mode === 'range') {
     // 时长未知（直播等）时不限制起点
     const duration = Number.isFinite(c.duration) ? c.duration : 0;
@@ -690,6 +701,141 @@ export function checkClipStart(req: ClipStartRequest, c: ClipStartContext): stri
   if (c.ended) return '视频已经播完了：拖回想录的位置再开始';
   return undefined;
 }
+
+// ── 整片录制（配音页"录下完整双语视频"，DECISIONS §81）──
+
+/** 整片录制用多大的画面、多少码率 */
+export interface FullPlan {
+  width: number;
+  height: number;
+  videoBps: number;
+  /** 按这个码率录完整片，文件大约多大（字节） */
+  estBytes: number;
+}
+
+/**
+ * 整片在保存前都在内存里：按视频时长反推画面码率，放不下默认码率时先降码率、再降一档分辨率。
+ * 最低一档也放不下（视频太长）时返回 undefined
+ */
+export function fullPlan(duration: number, videoWidth: number, videoHeight: number): FullPlan | undefined {
+  if (!Number.isFinite(duration) || duration <= 0) return undefined;
+  const f = CLIPS.full;
+  const fit = Math.floor((f.budgetBytes * 8) / duration - CLIPS.audioBitrate);
+  const plan = (size: { width: number; height: number }, videoBps: number): FullPlan => ({
+    ...size,
+    videoBps,
+    estBytes: Math.round(((videoBps + CLIPS.audioBitrate) * duration) / 8),
+  });
+  let last = outputSize(videoWidth, videoHeight);
+  for (const side of f.shortSides) {
+    const size = outputSize(videoWidth, videoHeight, Math.min(side, CLIPS.maxShortSide));
+    const want = videoBitrate(size.height);
+    if (fit >= want) return plan(size, want);
+    if (fit >= want * f.minBitrateShare) return plan(size, fit);
+    last = size;
+  }
+  return fit >= f.minVideoBps ? plan(last, fit) : undefined;
+}
+
+/** 整片录制最多录多久（秒，不含广告、缓冲、暂停） */
+export function fullMaxSec(duration: number): number {
+  return Math.ceil(duration * CLIPS.full.maxSecFactor + CLIPS.full.slackSec);
+}
+
+export interface FullStartContext {
+  site: ClipSite;
+  shorts: boolean;
+  /** 中文配音开着、已载入（录制脚本拿得到配音的 <audio>） */
+  dubReady: boolean;
+  duration: number;
+  /** 视频现在的倍速 */
+  rate: number;
+  ad: boolean;
+  plan: FullPlan | undefined;
+}
+
+/** 整片录制开始前的检查（在 checkClipStart 之后）：返回问题说明，没问题返回 undefined */
+export function checkFullStart(c: FullStartContext): string | undefined {
+  if (c.site !== 'youtube' || c.shorts) return '完整双语视频只能在 YouTube 播放页上录（Shorts 和别的站没有中文配音）';
+  if (!c.dubReady) return '中文配音还没开启（或还在载入）：先在「配音」页开启配音，等它就绪再录';
+  if (!Number.isFinite(c.duration) || c.duration <= 0) return '读不到这个视频的时长（直播录不了整片）：等视频载入后再试';
+  // 跳到开头会改动广告的播放进度
+  if (c.ad) return '正在播广告：广告结束后再开始';
+  if (Math.abs(c.rate - 1) > 0.001) return `视频现在是 ${Number(c.rate.toFixed(2))} 倍速：整片要按正常速度录，先在播放器里调回 1 倍速`;
+  if (!c.plan) return `这个视频太长了（${formatTimecode(c.duration)}）：整段在保存前都在内存里，放不下。可以在「片段」页按时间段分几段截取`;
+  return undefined;
+}
+
+/**
+ * 整片录制：录不了的这段时间（标签页在后台、你按了暂停）里不能让视频自己往前放，否则文件里就缺了一段——
+ * 这时把视频也暂停（pause），能录了再接着放（play）。held：视频是我们暂停的。
+ * release：视频已经不是我们暂停着的了（你自己点了播放，或这一段结束了）
+ */
+export function fullHold(d: ClipDecision, s: { paused: boolean; ad: boolean; held: boolean }): 'pause' | 'play' | 'release' | undefined {
+  const blocked = d.kind === 'wait' && (d.why === 'hidden' || d.why === 'user');
+  // 广告不归我们管：不暂停广告，广告放完回到正片的那一轮再暂停
+  if (blocked) return !s.paused && !s.ad ? 'pause' : undefined;
+  if (!s.held) return undefined;
+  if (d.kind === 'stop' || !s.paused) return 'release';
+  return s.ad ? undefined : 'play';
+}
+
+/** 整片录制：这一轮的进度是不是跳了（被拖动过）。elapsedSec：离上一轮过了多久 */
+export function fullJump(lastMedia: number | undefined, nowMedia: number, elapsedSec: number, rate = 1): boolean {
+  if (lastMedia === undefined) return false;
+  const moved = nowMedia - lastMedia;
+  return moved < -CLIPS.full.jumpBackSec || moved > CLIPS.full.jumpAheadSec + Math.max(0, elapsedSec) * Math.max(1, rate) * 2;
+}
+
+/** 整片录制没录完整的原因 */
+export type FullIssue = 'stopped-early' | 'jumped' | 'rate' | 'dub-off' | 'dub-silent';
+
+/** 整片录制的结果：有哪些地方和"完整的双语视频"不一样；一条都没有才算录完整了 */
+export function fullIssues(x: { endedBy: ClipStopReason; jumps: number; rateChanged: boolean; dubLost: boolean; dubbed: boolean; dubPlayedSec: number }): FullIssue[] {
+  const out: FullIssue[] = [];
+  if (x.endedBy !== 'ended') out.push('stopped-early');
+  if (x.jumps > 0) out.push('jumped');
+  if (x.rateChanged) out.push('rate');
+  if (!x.dubbed || x.dubPlayedSec < CLIPS.full.minDubSec) out.push('dub-silent');
+  else if (x.dubLost) out.push('dub-off');
+  return out;
+}
+
+/** 用人话说明一条"没录完整"的原因 */
+export function fullIssueText(issue: FullIssue, r: { endedBy: ClipStopReason; end: number; duration: number }): string {
+  switch (issue) {
+    case 'stopped-early':
+      return `没录到结尾（${CLIP_STOP_LABELS[r.endedBy]}）：只录到 ${formatTimecode(Math.floor(r.end))}，全片 ${formatTimecode(Math.floor(r.duration))}`;
+    case 'jumped':
+      return '录制中进度条被拖动过：文件里缺了一段，或有一段重复';
+    case 'rate':
+      return '录制中改过倍速：有一段不是正常速度';
+    case 'dub-off':
+      return '录制中配音被关掉过：有一段只有原声';
+    case 'dub-silent':
+      return '中文配音没有录进去（配音没出声）：这份文件里只有原声';
+  }
+}
+
+/**
+ * 配音页"录下完整双语视频"现在为什么点不了；能点（或正在录整片）返回 undefined。
+ * clip：录制脚本报的状态（这个页面上没有录制脚本时 null）；dub：配音脚本报的状态
+ */
+export function fullStartBlocked(dub: { active: boolean; phase: string }, clip: Pick<ClipTabState, 'unavailable' | 'phase' | 'mode' | 'shorts'> | null | undefined): string | undefined {
+  if (!clip) return '这个页面里还没有录制脚本：刷新一下 YouTube 页面再试';
+  if (clip.phase !== 'idle') return clip.mode === 'full' ? undefined : '正在录别的片段：先在「片段」页停止那一段';
+  if (clip.unavailable) return `${clip.unavailable}（完整双语视频是用片段录制录下来的）`;
+  if (clip.shorts) return 'Shorts 录不了完整双语视频';
+  if (!dub.active) return '先开启配音：录下的是开着配音时看到、听到的样子';
+  if (dub.phase !== 'ready') return '配音还没就绪：等它载入完再录';
+  return undefined;
+}
+
+/** 整片录制等着的时候怎么说（没列出的沿用 CLIP_WAIT_LABELS）：这两种情况下视频也被暂停了 */
+export const CLIP_FULL_WAIT_LABELS: Partial<Record<ClipWaitReason, string>> = {
+  user: '已暂停，视频也暂停了：点"继续"接着录',
+  hidden: '标签页在后台：视频和录制都暂停了；切回这个标签页后接着录',
+};
 
 // ── Capture 截图 ──
 
@@ -928,6 +1074,8 @@ export interface ReadyClipInfo {
   dubbed?: boolean;
   /** 这一段为什么结束 */
   endedBy: ClipStopReason;
+  /** 整片录制（DECISIONS §81）：视频总时长，和没录完整的原因（空的 = 录完整了） */
+  full?: { duration: number; issues: FullIssue[] };
   savedAt?: number;
 }
 
@@ -989,6 +1137,8 @@ export interface ClipRecord {
   burned: boolean;
   /** 混进了中文配音（双语混音，DECISIONS §76）；没有这一项的是没混 */
   dubbed?: boolean;
+  /** 整片录制（mode 是 full）没录完整：中途停了、进度被拖动过等（DECISIONS §81）；没有这一项的是录完整了 */
+  partial?: boolean;
   savedAt: number;
 }
 
@@ -1021,7 +1171,8 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : idFromUrl || VIDEO_ID.test(r.videoId)) ? r.videoId : null;
   const sourceUrl = clipSourceUrl(site, r.url, videoId);
   if (sourceUrl === null) return null;
-  const mode = r.mode === 'free' || r.mode === 'range' ? r.mode : null;
+  // 整片录制只在 YouTube 上（DECISIONS §81）
+  const mode = r.mode === 'free' || r.mode === 'range' || (r.mode === 'full' && site === 'youtube') ? r.mode : null;
   const start = num(r.start, 1e6);
   const end = num(r.end, 1e6);
   const durationSec = num(r.durationSec, 1e5);
@@ -1046,6 +1197,7 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
     burned: r.burned === true,
     // 中文配音只在 YouTube 上（DECISIONS §76）
     ...(r.dubbed === true && site === 'youtube' ? { dubbed: true } : {}),
+    ...(r.partial === true && mode === 'full' ? { partial: true } : {}),
     savedAt,
   };
 }

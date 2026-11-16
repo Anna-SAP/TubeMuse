@@ -74,6 +74,8 @@ export const WATCH_VIDEOS = [
  * 原声是一个固定的 200 Hz 单音（振幅 0.2）：录片段时按这个频率单独量原声，看它在双语混音里是不是按 80% 混进去的（DECISIONS §76）
  */
 export const DUB_VIDEO = { id: 'dubVideo0001', seconds: 120, toneHz: 200, toneAmp: 0.2 };
+/** "录下完整双语视频"（DECISIONS §81）用的播放页：16 秒，整片实时录一遍也只要十几秒；原声同样是 200 Hz 的单音 */
+export const DUB_FULL_VIDEO = { id: 'dubFull00001', seconds: 16, toneHz: 200, toneAmp: 0.2 };
 
 /** 16-bit 单声道 16 kHz 的单音 WAV */
 function toneWav(/** @type {number} */ seconds, /** @type {number} */ hz, /** @type {number} */ amp) {
@@ -97,6 +99,7 @@ function toneWav(/** @type {number} */ seconds, /** @type {number} */ hz, /** @t
   return buf;
 }
 let dubToneWav;
+let dubFullToneWav;
 /**
  * 自动字幕用的播放页：captions 决定播放器字幕按钮的样子（属性取自 2026-11 实测的 YouTube 播放器）。
  * 音频是"说话"的模拟：一段一段带谐波的声音，中间有停顿。
@@ -780,12 +783,14 @@ export function startMockServer() {
       }
       if (p.startsWith('/media/')) {
         const id = p.slice('/media/'.length).replace(/.wav$/, '');
-        const w = WATCH_VIDEOS.find((x) => x.id === id) ?? SUBTITLE_VIDEOS.find((x) => x.id === id) ?? CC_VIDEOS.find((x) => x.id === id) ?? (id === DUB_VIDEO.id ? DUB_VIDEO : undefined);
+        const w = WATCH_VIDEOS.find((x) => x.id === id) ?? SUBTITLE_VIDEOS.find((x) => x.id === id) ?? CC_VIDEOS.find((x) => x.id === id) ?? (id === DUB_VIDEO.id ? DUB_VIDEO : id === DUB_FULL_VIDEO.id ? DUB_FULL_VIDEO : undefined);
         if (!w) return send(404, {});
         const wav =
           w === DUB_VIDEO
             ? (dubToneWav ??= toneWav(DUB_VIDEO.seconds, DUB_VIDEO.toneHz, DUB_VIDEO.toneAmp))
-            : WATCH_VIDEOS.includes(/** @type {any} */ (w))
+            : w === DUB_FULL_VIDEO
+              ? (dubFullToneWav ??= toneWav(DUB_FULL_VIDEO.seconds, DUB_FULL_VIDEO.toneHz, DUB_FULL_VIDEO.toneAmp))
+              : WATCH_VIDEOS.includes(/** @type {any} */ (w))
               ? silentWav(w.seconds)
               : speechWav(w.seconds);
         const range = /bytes=(d+)-(d*)/.exec(String(req.headers.range ?? ''));
