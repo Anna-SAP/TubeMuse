@@ -2,6 +2,8 @@
 // 配音是重新录制的克隆音频，时长和原视频不完全一致：同步只做"跟随播放状态 + 你手动设的偏移 / 对齐点"，不做、也不假装做逐句 / 逐词对齐。
 // 对齐点（§75，手测后用户要求）：你在几处标"视频这一刻 ↔ 中文这一刻"，把全程分成几段，每段有自己的偏移；
 // 一段里中文按正常速度放，中文先说完就停下等画面，中文说得慢就在下一个对齐点跳过去。
+// 快速对齐（§81，用户 2026-11-16 要求）：不想一个个加对齐点时，中文整段按"中文时长 ÷ 视频时长"的倍速放，和视频同时开始、同时结束；
+// 开头的偏移和对齐点留着不用，随时切回手动。
 // 播放与降音量在 content/dub.ts（YouTube 播放页）；音频文件在扩展自己的 IndexedDB（services/dub-store.ts），由后台分块交给页面里的脚本。
 
 import { DUB } from '../config/defaults';
@@ -46,6 +48,11 @@ export interface DubRecord {
   delaySec: number;
   /** 对齐点（按视频时间排好；§75）：从每个对齐点起，配音位置 = 视频位置 − (video − dub) */
   anchors?: DubAnchor[];
+  /**
+   * 快速对齐（§81）：有这一项 = 开着，中文整段按这个倍速放（中文位置 = 视频位置 × 倍速），开头的偏移和对齐点留着不用；
+   * 去掉这一项 = 切回手动对齐，偏移和对齐点照旧生效
+   */
+  quickRate?: number;
   addedAt: number;
 }
 
@@ -55,10 +62,11 @@ export interface DubAnchor {
   dub: number;
 }
 
-/** 跟随用的对齐信息：开头的偏移 + 对齐点 */
+/** 跟随用的对齐信息：开头的偏移 + 对齐点；快速对齐开着时只看 quickRate（偏移和对齐点留着不用） */
 export interface DubMap {
   delaySec: number;
   anchors: readonly DubAnchor[];
+  quickRate?: number;
 }
 
 /** 视频 ID → 配音 */
@@ -108,6 +116,8 @@ export function sanitizeDubIndex(v: unknown): DubIndex {
     if (title) rec.title = title;
     const anchors = sanitizeAnchors(r.anchors);
     if (anchors.length) rec.anchors = anchors;
+    const quick = sanitizeQuickRate(r.quickRate);
+    if (quick !== undefined) rec.quickRate = quick;
     out[key] = rec;
   }
   return out;
@@ -137,9 +147,53 @@ export function withAnchor(anchors: readonly DubAnchor[], a: DubAnchor): DubAnch
   return [...anchors.filter((x) => Math.abs(x.video - next.video) >= DUB.anchorMergeSec), next].sort((x, y) => x.video - y.video);
 }
 
-export function dubMapOf(rec: Pick<DubRecord, 'delaySec' | 'anchors'>): DubMap {
-  return { delaySec: rec.delaySec, anchors: rec.anchors ?? [] };
+export function dubMapOf(rec: Pick<DubRecord, 'delaySec' | 'anchors' | 'quickRate'>): DubMap {
+  return { delaySec: rec.delaySec, anchors: rec.anchors ?? [], ...(rec.quickRate !== undefined ? { quickRate: rec.quickRate } : {}) };
 }
+
+// ── 快速对齐（§81）──
+
+/** 快速对齐的倍速：只认范围内的有限数，按 decimals 位小数取整；别的一律当作没开 */
+export function sanitizeQuickRate(x: unknown): number | undefined {
+  if (typeof x !== 'number' || !Number.isFinite(x)) return undefined;
+  const r = Number(x.toFixed(DUB.quick.decimals));
+  return r >= DUB.quick.minRate && r <= DUB.quick.maxRate ? r : undefined;
+}
+
+/** 建议的倍速：中文时长 ÷ 视频时长。ok = 在能用的范围里；不能用时 why 说原因 */
+export interface QuickAlignSuggestion {
+  rate: number;
+  dubSec: number;
+  videoSec: number;
+  ok: boolean;
+  why?: string;
+}
+
+/**
+ * 快速对齐的建议倍速 = 中文时长 ÷ 视频时长（例：14:38.4 ÷ 17:31.3 = 0.8355）：中文整段按它放，正好和视频同时结束。
+ * 读不到哪一边的时长时算不出来（undefined）；倍速超出 DUB.quick 的范围时给出数但不能用
+ */
+export function quickAlignSuggestion(dubSec: number | undefined, videoSec: number | undefined): QuickAlignSuggestion | undefined {
+  if (!dubSec || !videoSec || !Number.isFinite(dubSec) || !Number.isFinite(videoSec) || dubSec <= 0 || videoSec <= 0) return undefined;
+  const rate = Number((dubSec / videoSec).toFixed(DUB.quick.decimals));
+  const base = { rate, dubSec, videoSec };
+  if (rate < DUB.quick.minRate) {
+    return { ...base, ok: false, why: `中文只有原视频的 ${Math.round(rate * 100)}%，要慢到 ${rateText(rate)} 才能放满：低于 ${rateText(DUB.quick.minRate)} 声音失真得厉害，不提供快速对齐，用手动对齐点。` };
+  }
+  if (rate > DUB.quick.maxRate) {
+    return { ...base, ok: false, why: `中文是原视频的 ${Math.round(rate * 100)}%，要快到 ${rateText(rate)} 才能放完：高于 ${rateText(DUB.quick.maxRate)} 听不清，不提供快速对齐，用手动对齐点。` };
+  }
+  return { ...base, ok: true };
+}
+
+/** 倍速的写法：0.84×（两位小数，给人看的"约"数） */
+export const rateText = (rate: number): string => `${rate.toFixed(2)}×`;
+
+/** 倍速的精确写法：0.8355（四位小数；实际用的还要再精确两位） */
+export const rateExactText = (rate: number): string => rate.toFixed(4);
+
+/** 这个倍速是慢放、快放还是原速 */
+export const rateWord = (rate: number): string => (rate < 0.99995 ? '慢放' : rate > 1.00005 ? '快放' : '原速');
 
 /** 一段：从 fromVideo 起，中文位置 = 视频位置 − offset；到 nextVideo 换下一段。这一段的中文到 dubEnd 为止（下一个对齐点的中文位置） */
 export interface DubSegment {
@@ -152,8 +206,9 @@ export interface DubSegment {
   dubEnd?: number;
 }
 
-/** 视频的 t 秒落在哪一段 */
+/** 视频的 t 秒落在哪一段。快速对齐开着时全程一段，"偏移"是此刻视频位置 − 中文位置（随播放连续变） */
 export function dubSegmentAt(map: DubMap, t: number): DubSegment {
+  if (map.quickRate !== undefined) return { index: -1, fromVideo: 0, offset: Number((t * (1 - map.quickRate)).toFixed(2)) || 0 };
   let i = -1;
   for (let k = 0; k < map.anchors.length; k++) {
     if (map.anchors[k]!.video <= t) i = k;
@@ -171,9 +226,9 @@ export function dubSegmentAt(map: DubMap, t: number): DubSegment {
 
 /** 改某一段的偏移：开头那段改 delaySec；第 k 段改第 k 个对齐点的中文位置（视频位置不动） */
 export function withSegmentOffset(map: DubMap, index: number, offset: number): DubMap {
-  if (index < 0 || index >= map.anchors.length) return { delaySec: clampDelay(offset), anchors: [...map.anchors] };
+  if (index < 0 || index >= map.anchors.length) return { ...map, delaySec: clampDelay(offset), anchors: [...map.anchors] };
   const anchors = map.anchors.map((a, k) => (k === index ? { video: a.video, dub: Math.max(0, tidy(a.video - clampDelay(offset))) } : a));
-  return { delaySec: map.delaySec, anchors };
+  return { ...map, anchors };
 }
 
 /** 前后颠倒的对齐点（中文位置不比前一个靠后）：这几个之前那一段的中文会被整段跳过或重放，界面上标出来 */
@@ -361,6 +416,7 @@ export interface DubStep {
  * 不做逐句对齐：两段录音的语速、停顿本来就不一样，对齐点之间中文始终按正常速度放。
  */
 export function dubStep(v: DubVideoSample, a: DubAudioSample, map: DubMap, resyncSec: number = DUB.resyncSec): DubStep {
+  if (map.quickRate !== undefined) return quickStep(v, a, map, map.quickRate, resyncSec);
   const segment = dubSegmentAt(map, v.currentTime);
   const target = v.currentTime - segment.offset;
   const stop = (reason: DubReason, seekTo?: number, wakeIn?: number): DubStep => ({
@@ -395,8 +451,37 @@ export function dubStep(v: DubVideoSample, a: DubAudioSample, map: DubMap, resyn
   return step;
 }
 
-/** 跟随状态的说法（segment：视频此刻所在的那一段） */
-export function dubReasonText(reason: DubReason, segment: Pick<DubSegment, 'offset' | 'nextVideo'>): string {
+/**
+ * 快速对齐（§81）的跟随：中文位置 = 视频位置 × 倍速，中文的播放速度 = 视频倍速 × 倍速（浏览器变速不变调）。
+ * 全程一段：没有偏移、没有对齐点、不停下等画面也不跳——差过 resyncSec（两个播放器走时有出入时）才把配音拉回来。
+ * 仍然不是逐句对上：只是把时长差匀到整段
+ */
+function quickStep(v: DubVideoSample, a: DubAudioSample, map: DubMap, rate: number, resyncSec: number): DubStep {
+  const segment = dubSegmentAt(map, v.currentTime);
+  const target = v.currentTime * rate;
+  const stop = (reason: DubReason, seekTo?: number): DubStep => ({ play: false, reason, target, segment, ...(seekTo !== undefined ? { seekTo } : {}) });
+  if (v.ad) return stop('ad');
+  if (v.seeking) return stop('seeking');
+  if (v.ended) return stop('ended');
+  if (Number.isFinite(a.duration) && target >= a.duration) return stop('after-end');
+  const off = Math.abs(a.currentTime - target);
+  if (v.paused) return stop('paused', off > resyncSec ? target : undefined);
+  if (!v.canPlay) return stop('buffering', off > resyncSec ? target : undefined);
+  const step: DubStep = { play: true, reason: 'playing', target, segment };
+  if (off > (a.paused ? DUB.startAlignSec : resyncSec)) step.seekTo = target;
+  const want = v.rate * rate;
+  if (Math.abs(a.rate - want) > 1e-4) step.rate = want;
+  // 中文快放完时（倍速和现在的时长对不上的情况）：到点立刻停，不等下一次例行检查
+  if (Number.isFinite(a.duration)) step.wakeIn = (a.duration - target) / rate;
+  return step;
+}
+
+/** 跟随状态的说法（segment：视频此刻所在的那一段；quickRate：快速对齐开着时的倍速） */
+export function dubReasonText(reason: DubReason, segment: Pick<DubSegment, 'offset' | 'nextVideo'>, quickRate?: number): string {
+  if (quickRate !== undefined) {
+    if (reason === 'playing') return `配音播放中：快速对齐，中文按 ${rateText(quickRate)} ${rateWord(quickRate)}跟着视频走`;
+    if (reason === 'after-end') return '中文已经放完了';
+  }
   switch (reason) {
     case 'playing':
       return '配音播放中，跟着视频走';
@@ -541,13 +626,14 @@ export function segmentOffsetText(segment: Pick<DubSegment, 'index' | 'offset'>)
  * 两者长度的对比。差得不多时如实说"对齐开头后越往后可能差得越多"，不承诺逐句对齐。
  * 例：中文 1:04:02、原视频 1:03:49 → 中文长 13 秒。
  */
-export function durationNote(dubSec: number | undefined, videoSec: number | undefined): string | undefined {
+export function durationNote(dubSec: number | undefined, videoSec: number | undefined, quickRate?: number): string | undefined {
   if (!dubSec || !videoSec) return undefined;
   const diff = Math.round(dubSec - videoSec);
   const both = `中文 ${formatClockSec(dubSec)} · 原视频 ${formatClockSec(videoSec)}`;
   if (Math.abs(diff) < 1) return `${both}：长度一样。`;
   const longer = diff > 0 ? `中文长 ${formatSeconds(diff)}` : `中文短 ${formatSeconds(diff)}`;
-  return `${both}，${longer}。两段是分别录的，语速和停顿不一样（中文还可能删掉了一些段落）：对齐开头后越往后差得越多——在对不上的地方加对齐点，从那里起单独调。`;
+  if (quickRate !== undefined) return `${both}，${longer}。快速对齐开着：中文整段按 ${rateText(quickRate)} ${rateWord(quickRate)}，把这段时长差匀到全片。`;
+  return `${both}，${longer}。两段是分别录的，语速和停顿不一样（中文还可能删掉了一些段落）：对齐开头后越往后差得越多——用下面的"快速对齐"让中文整段变速放满全片，或者在对不上的地方加对齐点，从那里起单独调。`;
 }
 
 // ── 配音脚本的状态（交给侧边栏）──
@@ -582,8 +668,10 @@ export interface DubTabState {
   delaySec?: number;
   /** 视频此刻所在的那一段（拖动"中文位置"时已算上实时值）；count：一共几个对齐点 */
   segment?: DubSegment & { count: number };
-  /** 此刻中文应在的位置（视频位置 − 这一段的偏移） */
+  /** 此刻中文应在的位置（视频位置 − 这一段的偏移；快速对齐开着时是视频位置 × 倍速） */
   target?: number;
+  /** 快速对齐（§81）开着时的倍速 */
+  quickRate?: number;
   /** 原声：你的音量、现在的音量、是不是降着、YouTube 是否把它改回去了 */
   volume?: { user: number; now: number; ducked: boolean; blocked: boolean; muted: boolean };
   error?: { message: string; hint?: string };

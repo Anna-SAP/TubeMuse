@@ -14,13 +14,19 @@ import {
   formatBytes,
   formatClockSec,
   misorderedAnchors,
+  quickAlignSuggestion,
+  rateExactText,
+  rateText,
+  rateWord,
   segmentOffsetText,
   withSegmentOffset,
   type DubMark,
   type DubRecord,
   type DubTabState,
+  type QuickAlignSuggestion,
 } from '../../core/dub';
-import { addDubAnchor, attachDub, checkDubStorage, removeDub, removeDubAnchor, setDubSegmentOffset } from '../../services/dub-service';
+import { quickFormulaText } from '../../core/dub-align';
+import { addDubAnchor, attachDub, checkDubStorage, removeDub, removeDubAnchor, setDubQuickRate, setDubSegmentOffset } from '../../services/dub-service';
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
 import { DubAlignMap, DubGapReadout, useDubAlignNow } from './DubAlignMap';
@@ -82,6 +88,100 @@ async function previewSegment(tabId: number | undefined, msg: { videoId: string;
 
 const signed = (x: number) => `${x > 0.04 ? '+' : x < -0.04 ? '−' : ''}${Math.abs(x).toFixed(1)} 秒`;
 
+/** 手动对齐留着的东西：开头偏移和 3 个对齐点 */
+const manualKept = (rec: DubRecord) => {
+  const n = rec.anchors?.length ?? 0;
+  return n ? `开头偏移和 ${n} 个对齐点` : '开头偏移';
+};
+
+/**
+ * 快速对齐（DECISIONS §81）：按"中文时长 ÷ 视频时长"给出建议倍速，点一下中文整段按它放（变速不变调），和原声同时开始、同时结束，
+ * 不用一个个加对齐点。开着时写明用的倍速，可以切回手动对齐（开头偏移和对齐点一直留着）；
+ * 倍速和现在的时长对不上时（设好之后换过文件）给出新的建议。
+ */
+function QuickAlign({ rec, suggestion, onApply, onManual }: { rec: DubRecord; suggestion: QuickAlignSuggestion | undefined; onApply: (rate: number) => void; onManual: () => void }) {
+  const on = rec.quickRate;
+  const same = suggestion ? Math.abs(suggestion.videoSec - suggestion.dubSec) < DUB.quick.sameSec : false;
+  const stale = on !== undefined && !!suggestion?.ok && Math.abs(suggestion.rate - on) > DUB.quick.staleRate;
+  return (
+    <div class={`dub-quick${on !== undefined ? ' on' : ''}`} data-testid="dub-quick" data-on={on !== undefined ? 'true' : 'false'}>
+      {on !== undefined ? (
+        <>
+          <div class="dub-quick-head">
+            <strong>快速对齐已开</strong>
+            <span data-testid="dub-quick-now">
+              中文整段按 <b class="dub-quick-num">{rateText(on)}</b>（精确 {rateExactText(on)}）{rateWord(on)}，音调不变
+            </span>
+            <button class="btn small" data-testid="dub-quick-off" onClick={onManual}>
+              切回手动对齐
+            </button>
+          </div>
+          {stale && suggestion && (
+            <p class="small warn-text" data-testid="dub-quick-stale">
+              这个倍速和现在的时长对不上（{quickFormulaText(suggestion)}）：
+              <button class="btn primary small" data-testid="dub-quick-apply" onClick={() => onApply(suggestion.rate)}>
+                改用 {rateText(suggestion.rate)}
+              </button>
+            </p>
+          )}
+          <p class="muted small" data-testid="dub-quick-note">
+            中文和原声同时开始、同时结束，中间按比例走；手动对齐的{manualKept(rec)}都留着（这期间不用），切回去照旧生效。两边的节奏不是处处一样，个别地方中文仍可能早几秒或晚几秒：差得多就切回手动对齐点。
+          </p>
+        </>
+      ) : !suggestion ? (
+        <>
+          <div class="dub-quick-head">
+            <strong>快速对齐</strong>
+          </div>
+          <p class="muted small" data-testid="dub-quick-note">
+            读到视频和中文两边的时长后，这里给出建议的中文倍速（开启配音、等它载入）。
+          </p>
+        </>
+      ) : !suggestion.ok ? (
+        <>
+          <div class="dub-quick-head">
+            <strong>快速对齐</strong>
+            <span class="muted small">{quickFormulaText(suggestion)}</span>
+          </div>
+          <p class="small warn-text" data-testid="dub-quick-note">
+            {suggestion.why}
+          </p>
+        </>
+      ) : same ? (
+        <>
+          <div class="dub-quick-head">
+            <strong>快速对齐</strong>
+          </div>
+          <p class="muted small" data-testid="dub-quick-note">
+            两边一样长（差不到 {DUB.quick.sameSec} 秒），不用变速。
+          </p>
+        </>
+      ) : (
+        <>
+          <div class="dub-quick-head">
+            <strong>快速对齐</strong>
+            <span>建议中文{rateWord(suggestion.rate)}到</span>
+            <button
+              class="btn primary dub-quick-rate"
+              data-testid="dub-quick-apply"
+              title={`中文整段按 ${rateExactText(suggestion.rate)}× ${rateWord(suggestion.rate)}，和原声同时开始、同时结束`}
+              onClick={() => onApply(suggestion.rate)}
+            >
+              {rateText(suggestion.rate)}
+            </button>
+            <span class="muted small" data-testid="dub-quick-formula">
+              = {quickFormulaText(suggestion)}
+            </span>
+          </div>
+          <p class="muted small" data-testid="dub-quick-note">
+            点这个倍速：中文整段按它{rateWord(suggestion.rate)}（音调不变），和原声同时开始、同时结束，上面的"还差"直接到 0，不用再一个个加对齐点。已有的{manualKept(rec)}会留着，随时切回手动对齐。
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * 对齐（DECISIONS §75）：视频此刻所在那一段的偏移（微调按钮、输入框、"中文位置"滑块，都只改这一段）、
  * "在这里加对齐点"、对齐点列表。开头那一段的偏移就是原来的"偏移"。
@@ -104,8 +204,11 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
 
   // 对齐图（DECISIONS §77）：按此刻的实时偏移画——拖"中文位置"、按微调按钮、在图上拖中文时，图立刻跟着变
   const liveOffset = draft && draft.index === seg.index ? draft.offset : draftPos !== undefined && state.videoTime !== undefined ? clampDelay(state.videoTime - draftPos) : seg.offset;
+  const quickOn = rec.quickRate !== undefined;
   const liveMap = useMemo(() => {
     const base = dubMapOf(rec);
+    // 快速对齐开着时（DECISIONS §81）全程按倍速走：没有实时偏移这回事
+    if (base.quickRate !== undefined) return base;
     return seg.index < base.anchors.length ? withSegmentOffset(base, seg.index, liveOffset) : base;
   }, [rec, seg.index, liveOffset]);
   // 读到这一份状态的时刻：两次读位置之间，图上的播放头按倍速往前推
@@ -142,6 +245,36 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
     playing: !!state.videoPlaying,
     rate: state.videoRate ?? 1,
   });
+  // 快速对齐（DECISIONS §81）：建议倍速按和"还差多少"同一组时长算（载入后是 <audio> 和 <video> 实际读到的）
+  const suggestion = quickAlignSuggestion(dubDuration, videoDuration);
+  const applyQuick = async (rate: number) => {
+    setProblem(undefined);
+    try {
+      if (!(await setDubQuickRate(ctx, rec.videoId, rate))) {
+        setProblem({ message: '没能开启快速对齐', hint: '这个倍速不在能用的范围里，仍用手动对齐点。' });
+        return;
+      }
+      onNote({
+        text: `已开快速对齐：中文整段按 ${rateText(rate)} ${rateWord(rate)}，和原声同时开始、同时结束。手动对齐的${manualKept(rec)}都留着。`,
+        undo: () => void setDubQuickRate(ctx, rec.videoId, undefined).then(() => onNote(undefined)),
+      });
+    } catch (e) {
+      setProblem(await toProblem(e));
+    }
+  };
+  const backToManual = async () => {
+    setProblem(undefined);
+    const was = rec.quickRate;
+    try {
+      await setDubQuickRate(ctx, rec.videoId, undefined);
+      onNote({
+        text: `已切回手动对齐：${manualKept(rec)}照旧生效，中文按正常速度放。`,
+        ...(was !== undefined ? { undo: () => void setDubQuickRate(ctx, rec.videoId, was).then(() => onNote(undefined)) } : {}),
+      });
+    } catch (e) {
+      setProblem(await toProblem(e));
+    }
+  };
   const nudge = (by: number) => commit(offset + by);
   const previewPos = (dubAt: number) => {
     setDraftPos(dubAt);
@@ -183,8 +316,9 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
     );
   };
 
-  const where =
-    seg.index < 0
+  const where = quickOn
+    ? `快速对齐，全程一段（中文 ${rateText(rec.quickRate ?? 1)} ${rateWord(rec.quickRate ?? 1)}）`
+    : seg.index < 0
       ? seg.count
         ? `开头这一段（到视频 ${formatClockSec(anchors[0]?.video ?? 0)} 的对齐点为止）`
         : '全程一个偏移（还没有对齐点）'
@@ -204,90 +338,114 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
         </span>
       </div>
       <DubGapReadout now={alignNow} />
+      <QuickAlign rec={rec} suggestion={suggestion} onApply={(rate) => void applyQuick(rate)} onManual={() => void backToManual()} />
       <DubAlignMap now={alignNow} map={liveMap} segment={seg.index} onPreview={previewOffset} onCommit={commit} />
-      <div class="row">
-        <span>这一段的偏移</span>
-        <span class="dub-delay-value" data-testid="dub-delay-value">
-          {signed(offset)}
-        </span>
-      </div>
-      {dubDuration !== undefined && position !== undefined && (
+      {quickOn && problem && <ProblemBox problem={problem} onClose={() => setProblem(undefined)} />}
+      {quickOn ? (
+        <details class="dub-kept" data-testid="dub-kept">
+          <summary>
+            手动对齐留着的：{manualKept(rec)}（快速对齐期间不用，切回手动对齐后照旧生效）
+          </summary>
+          <ol class="dub-anchors" data-testid="dub-anchors">
+            <li class="dub-anchor-start">
+              <span>开头：{delayText(rec.delaySec)}</span>
+            </li>
+            {anchors.map((a, k) => (
+              <li data-testid="dub-anchor" {...(k === 0 ? { value: 1 } : {})}>
+                <span>
+                  视频 {formatClockSec(a.video)} ↔ 中文 {formatClockSec(a.dub)}（{signed(Number((a.video - a.dub).toFixed(1)))}）
+                </span>
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : (
         <>
-          <input
-            type="range"
-            class="dub-range"
-            data-testid="dub-position-range"
-            min={0}
-            max={Math.ceil(dubDuration)}
-            step={1}
-            value={Math.max(0, Math.min(dubDuration, position))}
-            aria-label="此刻放中文的哪里"
-            onInput={(e) => previewPos(Number(e.currentTarget.value))}
-            onChange={(e) => void commitPos(Number(e.currentTarget.value))}
-          />
-          <div class="row dub-range-ends muted small">
-            <span>中文位置 {formatClockSec(Math.max(0, position))}</span>
-            <span>共 {formatClockSec(dubDuration)}</span>
+          <div class="row">
+            <span>这一段的偏移</span>
+            <span class="dub-delay-value" data-testid="dub-delay-value">
+              {signed(offset)}
+            </span>
           </div>
+          {dubDuration !== undefined && position !== undefined && (
+            <>
+              <input
+                type="range"
+                class="dub-range"
+                data-testid="dub-position-range"
+                min={0}
+                max={Math.ceil(dubDuration)}
+                step={1}
+                value={Math.max(0, Math.min(dubDuration, position))}
+                aria-label="此刻放中文的哪里"
+                onInput={(e) => previewPos(Number(e.currentTarget.value))}
+                onChange={(e) => void commitPos(Number(e.currentTarget.value))}
+              />
+              <div class="row dub-range-ends muted small">
+                <span>中文位置 {formatClockSec(Math.max(0, position))}</span>
+                <span>共 {formatClockSec(dubDuration)}</span>
+              </div>
+            </>
+          )}
+          <div class="row wrap">
+            {steps.map(([by, label]) => (
+              <button class="btn small" onClick={() => nudge(by)}>
+                {label}
+              </button>
+            ))}
+            <input
+              class="input num"
+              type="number"
+              data-testid="dub-delay-input"
+              step={DUB.delayStepSec}
+              min={-DUB.maxDelaySec}
+              max={DUB.maxDelaySec}
+              value={Number(offset.toFixed(1))}
+              aria-label="这一段的偏移（秒）"
+              onChange={(e) => commit(Number(e.currentTarget.value))}
+            />
+            {[...steps].reverse().map(([by, label]) => (
+              <button class="btn small" onClick={() => nudge(-by)}>
+                {label.replace('−', '+')}
+              </button>
+            ))}
+            {seg.index < 0 && (
+              <button class="btn link small" disabled={offset === 0} onClick={() => commit(0)}>
+                归零
+              </button>
+            )}
+          </div>
+          <p class="muted small" data-testid="dub-delay-text">
+            {segmentOffsetText({ index: seg.index, offset })}。＋ 让中文推后（往回退），− 让中文提前（往前跳）；拖"中文位置"直接选此刻放中文的哪里。按视频存下，下次打开直接用。
+          </p>
+          <div class="row">
+            <button class="btn primary small" data-testid="dub-anchor-add" disabled={state.phase !== 'ready' || state.videoTime === undefined} onClick={() => void mark()}>
+              在这里加对齐点
+            </button>
+          </div>
+          <p class="muted small">
+            中文和原视频差得多（比如中文短了十几分钟、删掉了一些段落）时：在对不上的地方点"在这里加对齐点"，再把这一段调到中英说的是同一句。
+            对齐点之间中文按正常速度放：中文先说完就停下等画面（这时听到的是原声），说得慢就在下一个对齐点跳过去。
+          </p>
+          {problem && <ProblemBox problem={problem} onClose={() => setProblem(undefined)} />}
+          <ol class="dub-anchors" data-testid="dub-anchors">
+            <li class={`dub-anchor-start${seg.index < 0 ? ' on' : ''}`}>
+              <span>开头：{delayText(rec.delaySec)}</span>
+            </li>
+            {anchors.map((a, k) => (
+              <li class={seg.index === k ? 'on' : ''} data-testid="dub-anchor" {...(k === 0 ? { value: 1 } : {})}>
+                <span>
+                  视频 {formatClockSec(a.video)} ↔ 中文 {formatClockSec(a.dub)}（{signed(Number((a.video - a.dub).toFixed(1)))}）
+                  {bad.includes(k) && <strong class="warn-text"> 中文位置不比前一个靠后：前一段的中文会被整段跳过</strong>}
+                </span>
+                <button class="btn link small" data-testid="dub-anchor-remove" onClick={() => remove(k)}>
+                  删除
+                </button>
+              </li>
+            ))}
+          </ol>
         </>
       )}
-      <div class="row wrap">
-        {steps.map(([by, label]) => (
-          <button class="btn small" onClick={() => nudge(by)}>
-            {label}
-          </button>
-        ))}
-        <input
-          class="input num"
-          type="number"
-          data-testid="dub-delay-input"
-          step={DUB.delayStepSec}
-          min={-DUB.maxDelaySec}
-          max={DUB.maxDelaySec}
-          value={Number(offset.toFixed(1))}
-          aria-label="这一段的偏移（秒）"
-          onChange={(e) => commit(Number(e.currentTarget.value))}
-        />
-        {[...steps].reverse().map(([by, label]) => (
-          <button class="btn small" onClick={() => nudge(-by)}>
-            {label.replace('−', '+')}
-          </button>
-        ))}
-        {seg.index < 0 && (
-          <button class="btn link small" disabled={offset === 0} onClick={() => commit(0)}>
-            归零
-          </button>
-        )}
-      </div>
-      <p class="muted small" data-testid="dub-delay-text">
-        {segmentOffsetText({ index: seg.index, offset })}。＋ 让中文推后（往回退），− 让中文提前（往前跳）；拖"中文位置"直接选此刻放中文的哪里。按视频存下，下次打开直接用。
-      </p>
-      <div class="row">
-        <button class="btn primary small" data-testid="dub-anchor-add" disabled={state.phase !== 'ready' || state.videoTime === undefined} onClick={() => void mark()}>
-          在这里加对齐点
-        </button>
-      </div>
-      <p class="muted small">
-        中文和原视频差得多（比如中文短了十几分钟、删掉了一些段落）时：在对不上的地方点"在这里加对齐点"，再把这一段调到中英说的是同一句。
-        对齐点之间中文按正常速度放：中文先说完就停下等画面（这时听到的是原声），说得慢就在下一个对齐点跳过去。
-      </p>
-      {problem && <ProblemBox problem={problem} onClose={() => setProblem(undefined)} />}
-      <ol class="dub-anchors" data-testid="dub-anchors">
-        <li class={`dub-anchor-start${seg.index < 0 ? ' on' : ''}`}>
-          <span>开头：{delayText(rec.delaySec)}</span>
-        </li>
-        {anchors.map((a, k) => (
-          <li class={seg.index === k ? 'on' : ''} data-testid="dub-anchor" {...(k === 0 ? { value: 1 } : {})}>
-            <span>
-              视频 {formatClockSec(a.video)} ↔ 中文 {formatClockSec(a.dub)}（{signed(Number((a.video - a.dub).toFixed(1)))}）
-              {bad.includes(k) && <strong class="warn-text"> 中文位置不比前一个靠后：前一段的中文会被整段跳过</strong>}
-            </span>
-            <button class="btn link small" data-testid="dub-anchor-remove" onClick={() => remove(k)}>
-              删除
-            </button>
-          </li>
-        ))}
-      </ol>
     </div>
   );
 }
@@ -349,7 +507,18 @@ export function DubView() {
         ...(state?.title ? { title: state.title } : {}),
         ...(state?.videoDuration ? { videoDurationSec: state.videoDuration } : {}),
       });
-      setDone(`已把 ${saved.fileName} 关联到这个视频。${saved.anchors?.length ? '原来的偏移和对齐点保留着：新文件不一样的话在下面删掉重设。' : ''}${wasOn ? '' : '点"开启配音"开始播放。'}`);
+      // 换文件时快速对齐开着（DECISIONS §81）：倍速已按新文件的时长重新算；新倍速超出范围时回到了手动对齐
+      const hadQuick = rec?.quickRate !== undefined;
+      const quickNote = !hadQuick
+        ? ''
+        : saved.quickRate === undefined
+          ? '新文件和视频的时长差得太多，快速对齐已关，回到手动对齐。'
+          : saved.quickRate !== rec?.quickRate
+            ? `快速对齐的倍速按新文件的时长重新算成 ${rateText(saved.quickRate)}（精确 ${rateExactText(saved.quickRate)}）。`
+            : '';
+      setDone(
+        `已把 ${saved.fileName} 关联到这个视频。${quickNote}${saved.anchors?.length ? '原来的偏移和对齐点保留着：新文件不一样的话在下面删掉重设。' : ''}${wasOn ? '' : '点"开启配音"开始播放。'}`,
+      );
     } catch (e) {
       setProblem(await toProblem(e));
     } finally {
@@ -386,7 +555,7 @@ export function DubView() {
   // 实际放的时长（配音载入后由 <audio> 读出）优先，和对齐区算"还差多少"用的同一个；没载入时用文件里写的（DECISIONS §79）
   const dubDuration = state?.dubDuration ?? rec?.durationSec;
   const videoDuration = state?.videoDuration ?? rec?.videoDurationSec;
-  const note = durationNote(dubDuration, videoDuration);
+  const note = durationNote(dubDuration, videoDuration, rec?.quickRate);
 
   return (
     <div class="dub">
@@ -511,7 +680,9 @@ export function DubView() {
                   <div class="muted small">
                     {r.fileName} · {formatBytes(r.size)}
                     {r.durationSec ? ` · ${formatClockSec(r.durationSec)}` : ''} · 偏移 {r.delaySec > 0 ? '+' : ''}
-                    {r.delaySec.toFixed(1)} 秒{r.anchors?.length ? ` · ${r.anchors.length} 个对齐点` : ''}{missing.includes(r.videoId) ? ' · 本机的音频不见了' : ''}
+                    {r.delaySec.toFixed(1)} 秒{r.anchors?.length ? ` · ${r.anchors.length} 个对齐点` : ''}
+                    {r.quickRate !== undefined ? ` · 快速对齐 ${rateText(r.quickRate)}` : ''}
+                    {missing.includes(r.videoId) ? ' · 本机的音频不见了' : ''}
                   </div>
                   {r.videoId !== videoId && (
                     <>
@@ -534,6 +705,9 @@ export function DubView() {
         <ul class="muted small dub-notes">
           <li>同步只跟随视频的播放、暂停、拖动进度和倍速，再加上你设的偏移和对齐点。中文是另外录的，长度和停顿与原视频不一样（还可能删掉了一些段落），不做逐句对齐：越往后可能差得越多，在对不上的地方加对齐点、单独调那一段。</li>
           <li>对齐点之间中文始终按正常速度放：中文先说完就停下等画面，说得慢就在下一个对齐点跳过去（会跳过中文没说完的那一点）。</li>
+          <li>
+            快速对齐：不想一个个加对齐点时，点建议的倍速（中文时长 ÷ 视频时长），中文整段按它变速放（音调不变），和原声同时开始、同时结束。对上的是开头和结尾，中间按比例走，不是逐句对齐；手动对齐的偏移和对齐点一直留着，随时切回。
+          </li>
           <li>配音开启时，原声降到你的音量的 80%（降 20%），中文保持正常音量、不跟 YouTube 的音量与静音走；关闭、换视频、离开页面时原声恢复。广告期间配音暂停、原声恢复。</li>
           <li>配音由 YouTube 页面里的 TubeMuse 脚本播放，关掉侧边栏也继续；刷新页面后要重新开启（只提示，不自动出声）。</li>
           <li>音频文件存在这个浏览器里（扩展自己的 IndexedDB），不上传、不发任何网络请求；导出数据时只导出视频与文件名、偏移的对应关系，不含音频本身；"清空全部数据"会一并删除。</li>

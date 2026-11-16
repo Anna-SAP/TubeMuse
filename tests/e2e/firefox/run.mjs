@@ -663,7 +663,38 @@ try {
     ffNowA !== ffNowB && /中文在视频 1:3[12] 放完/.test(ffOverall) && ffShapes >= 3,
     `Firefox："还差多少没对上"读数和对齐图画出来、跟着播放走（${ffNowA} → ${ffNowB}；${ffOverall.slice(0, 24)}…）`,
   );
-  // 配音开着时录片段（DECISIONS §76）：录下的是双语混音。两个内容脚本在 Firefox 里也共用同一个隔离环境，录制脚本拿得到配音的 <audio>
+  // 快速对齐（DECISIONS §81）：Firefox 里一样——点建议的倍速，中文整段慢放（变速不变调）放满全片，"还差多少"直接是 0
+  const ffQuickWant = Number((dubS.dubDuration / dubS.videoDuration).toFixed(6));
+  await b.waitFor(`!!document.querySelector('[data-testid=dub-quick-apply]')`, { what: '建议倍速的按钮' });
+  const ffQuickBtn = String(await text('[data-testid=dub-quick-apply]')).trim();
+  await tap('[data-testid=dub-quick-apply]');
+  const ffDubRec = () => b.run(`return (await browser.storage.local.get('dubs')).dubs?.dubVideo0001;`);
+  let ffQuickRec = await ffDubRec();
+  for (let i = 0; i < 40 && ffQuickRec?.quickRate === undefined; i++) {
+    await sleep(150);
+    ffQuickRec = await ffDubRec();
+  }
+  await b.waitFor(`(document.querySelector('[data-testid=dub-gap-value]')?.textContent ?? '').trim() === '0.0 秒'`, { what: '快速对齐后还差 0.0 秒' });
+  check(
+    ffQuickBtn === `${ffQuickWant.toFixed(2)}×` && ffQuickRec?.quickRate === ffQuickWant && String(await text('[data-testid=dub-gap-note]')).includes('匀到整段，中文和视频同时结束'),
+    `Firefox：点建议的倍速 ${ffQuickBtn}（中文 ${Number(dubS.dubDuration).toFixed(1)} 秒 ÷ 视频 ${Number(dubS.videoDuration).toFixed(1)} 秒）→ 存下 ${ffQuickRec?.quickRate}，"还差多少没对上"直接是 0.0 秒`,
+  );
+  dubS = await dubState();
+  for (let i = 0; i < 40 && !(dubS?.quickRate === ffQuickWant && dubS.playing && Math.abs(dubS.dubTime - dubS.videoTime * ffQuickWant) < 0.5); i++) {
+    await sleep(150);
+    dubS = await dubState();
+  }
+  await sleep(1200);
+  const ffQ1 = await dubState();
+  await sleep(2500);
+  const ffQ2 = await dubState();
+  const ffSpeed = (ffQ2.dubTime - ffQ1.dubTime) / (ffQ2.videoTime - ffQ1.videoTime);
+  check(
+    Math.abs(ffQ2.dubTime - ffQ2.videoTime * ffQuickWant) < 0.5 && Math.abs(ffSpeed - ffQuickWant) < 0.1 && String(ffQ2.status).includes('快速对齐'),
+    `Firefox：中文按倍速慢放、位置 = 视频位置 × 倍速（视频 ${Number(ffQ2.videoTime).toFixed(2)} · 中文 ${Number(ffQ2.dubTime).toFixed(2)}，应在 ${(ffQ2.videoTime * ffQuickWant).toFixed(2)}；这段时间中文走得是视频的 ${ffSpeed.toFixed(2)} 倍）`,
+  );
+  // 配音开着时录片段（DECISIONS §76）：录下的是双语混音。两个内容脚本在 Firefox 里也共用同一个隔离环境，录制脚本拿得到配音的 <audio>。
+  // 这一段是快速对齐开着录的：慢放的中文同样录得进去
   await tapText('片段', '[role=tab]');
   await b.waitFor(`document.querySelector('[data-testid=clip-dub]')?.textContent.includes('双语混音')`, { what: '片段页写明会录双语混音' });
   const dubClipBefore = downloaded();
@@ -692,11 +723,27 @@ try {
   await b.exec(`document.querySelector('video').pause(); return true;`);
   await b.switchTo(handles.panel);
   // 原声的振幅按 200 Hz 量：Firefox 以前把录音的 AudioContext 固定成 48 kHz、设备是 44.1 kHz 时声音录慢、音调降到约 184 Hz，这里就量不到（DECISIONS §76）
-  check(dubMixInfo.rest > 0.05 && Math.abs(dubMixInfo.tone - 0.16) < 0.03, `Firefox：配音开着时录下双语混音——有中文配音（其余响度 ${dubMixInfo.rest.toFixed(3)}），原声按 80% 混入、音调没变（200 Hz 振幅 ${dubMixInfo.tone.toFixed(3)}，原本 0.2）`);
+  check(dubMixInfo.rest > 0.05 && Math.abs(dubMixInfo.tone - 0.16) < 0.03, `Firefox：配音开着（快速对齐，中文慢放）时录下双语混音——有中文配音（其余响度 ${dubMixInfo.rest.toFixed(3)}），原声按 80% 混入、音调没变（200 Hz 振幅 ${dubMixInfo.tone.toFixed(3)}，原本 0.2）`);
   await tapText('配音', '[role=tab]');
   await b.waitFor(`!!document.querySelector('[data-testid=dub-toggle]')`, { what: '回到配音页' });
   for (let i = 0; i < 20 && (await dubState())?.playing; i++) await sleep(150);
   check((await dubState())?.playing === false, 'Firefox：视频暂停，配音跟着停');
+  // 切回手动对齐：倍速去掉，中文回到正常速度
+  await tap('[data-testid=dub-quick-off]');
+  ffQuickRec = await ffDubRec();
+  for (let i = 0; i < 40 && ffQuickRec?.quickRate !== undefined; i++) {
+    await sleep(150);
+    ffQuickRec = await ffDubRec();
+  }
+  dubS = await dubState();
+  for (let i = 0; i < 40 && !(dubS?.quickRate === undefined && Math.abs(dubS.dubTime - dubS.videoTime) < 0.5); i++) {
+    await sleep(150);
+    dubS = await dubState();
+  }
+  check(
+    ffQuickRec && ffQuickRec.quickRate === undefined && dubS?.quickRate === undefined && Math.abs(dubS.dubTime - dubS.videoTime) < 0.5,
+    `Firefox：切回手动对齐，中文位置回到 视频位置 − 偏移（视频 ${Number(dubS?.videoTime).toFixed(2)} · 中文 ${Number(dubS?.dubTime).toFixed(2)}）`,
+  );
   await tap('[data-testid=dub-toggle]');
   await b.switchTo(dubPage);
   let ffBack = 0;

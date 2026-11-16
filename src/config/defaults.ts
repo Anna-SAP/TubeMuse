@@ -981,6 +981,14 @@ export const DUB = {
    * 色块比这窄时不写字
    */
   map: { zoomsSec: [30, 120, 600], defaultZoomSec: 120, extrapolateMaxSec: 1.5, minTickPx: 56, labelMinPx: 44 },
+  /**
+   * 快速对齐（DECISIONS §81，用户 2026-11-16 要求）：中文整段按"中文时长 ÷ 视频时长"的倍速放，和视频同时开始、同时结束。
+   * minRate / maxRate：建议倍速只在这个范围内才提供——再慢 / 再快，变速不变调的声音失真得厉害（这时说明原因，仍用手动对齐点）；
+   * decimals：存下的倍速保留几位小数（6 位：一小时的视频上误差不到 4 毫秒）；
+   * sameSec：两边时长差不到这么多秒时不用变速；
+   * staleRate：开着的倍速和按现在的时长算出的建议差过这么多（设好之后换过文件），就给出新的建议
+   */
+  quick: { minRate: 0.5, maxRate: 2, decimals: 6, sameSec: 0.5, staleRate: 0.0005 },
 } as const;
 
 /** Anthropic 服务端拒答回退：'default' 在不支持的模型上等于不回退，安全。 */

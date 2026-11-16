@@ -6,6 +6,8 @@
 // 3. 跟随：视频播放、暂停、拖动进度、改倍速时配音跟着走，再加上你手动设的偏移；不做逐句对齐（两段录音的语速、停顿本来就不一样）。
 //    广告期间配音暂停、原声恢复。有对齐点时（DECISIONS §75）按段换算：每段有自己的偏移，中文先说完就停下等画面，
 //    说得慢就在下一个对齐点跳过去；"加对齐点"时报出此刻的视频位置与中文位置，由侧边栏存下。
+//    快速对齐开着时（DECISIONS §81）不看偏移和对齐点：中文整段按存下的倍速放（<audio> 的播放速度 = 视频倍速 × 这个倍速，变速不变调），
+//    中文位置 = 视频位置 × 倍速，和视频同时开始、同时结束。
 // 4. 配音开启时原声降到你的音量的 80%（直接改 <video> 的音量，不碰 YouTube 的设置）；配音保持正常音量。
 //    关闭、换视频、离开页面、扩展被重新加载时把原声恢复成你的音量。
 // 5. 片段录制（DECISIONS §76）：配音开着时，把配音的 <audio> 交给同一个隔离环境里的录制脚本，录下的片段是双语混音。
@@ -114,7 +116,8 @@ function record(): DubRecord | undefined {
 /** 跟随用的对齐信息：存下的开头偏移与对齐点，拖动中的那一段换成实时值 */
 function mapOf(rec: DubRecord): DubMap {
   const map = dubMapOf(rec);
-  return liveOffset?.videoId === rec.videoId ? withSegmentOffset(map, liveOffset.index, liveOffset.offset) : map;
+  // 快速对齐开着时（DECISIONS §81）全程按倍速走，没有哪一段的偏移可拖
+  return liveOffset?.videoId === rec.videoId && map.quickRate === undefined ? withSegmentOffset(map, liveOffset.index, liveOffset.offset) : map;
 }
 
 // ── 音频 ──
@@ -200,6 +203,8 @@ function finishLoad(l: Loading): void {
   const audio = new Audio();
   audio.preload = 'auto';
   audio.volume = 1;
+  // 变速不变调（浏览器默认就是）：视频倍速不是 1、或快速对齐让中文慢放时，音调不跟着变
+  audio.preservesPitch = true;
   const ld: Loaded = { fileId: l.fileId, url, audio, ready: false };
   audio.addEventListener('loadedmetadata', () => {
     if (loaded !== ld) return;
@@ -348,6 +353,7 @@ function tabState(): DubTabState {
   const map = rec ? mapOf(rec) : undefined;
   const at = v && Number.isFinite(v.currentTime) && !adShowing() ? v.currentTime : 0;
   const segment = map ? dubSegmentAt(map, at) : undefined;
+  const quickRate = map?.quickRate;
   let phase: DubPhase;
   let status: string;
   if (!settings.enabled) {
@@ -374,7 +380,7 @@ function tabState(): DubTabState {
       autoplayBlocked && reason === 'playing'
         ? '浏览器拦下了配音的声音：在 YouTube 页面上点一下（例如暂停再播放），配音就会跟上'
         : reason
-          ? dubReasonText(reason, segment ?? { offset: 0 })
+          ? dubReasonText(reason, segment ?? { offset: 0 }, quickRate)
           : '配音已就绪';
   }
   const audio = loaded?.ready ? loaded.audio : undefined;
@@ -383,7 +389,10 @@ function tabState(): DubTabState {
     videoId,
     enabled: settings.enabled,
     available: !!rec,
-    ...(rec && map && segment ? { fileName: rec.fileName, delaySec: segment.offset, segment: { ...segment, count: map.anchors.length }, target: at - segment.offset } : {}),
+    ...(rec && map && segment
+      ? { fileName: rec.fileName, delaySec: segment.offset, segment: { ...segment, count: map.anchors.length }, target: quickRate !== undefined ? at * quickRate : at - segment.offset }
+      : {}),
+    ...(quickRate !== undefined ? { quickRate } : {}),
     active,
     phase,
     status,
@@ -404,7 +413,12 @@ function broadcast(): void {
   const s = tabState();
   // 播放位置一直在变：不为它推送（侧边栏每秒问一次）
   const { videoTime: _vt, dubTime: _dt, target: _tg, ...stable } = s;
-  const key = JSON.stringify({ ...stable, ...(s.volume ? { volume: { ...s.volume, now: Math.round(s.volume.now * 100) } } : {}) });
+  // 快速对齐开着时"此刻视频位置 − 中文位置"随播放连续变，也不为它推送
+  const key = JSON.stringify({
+    ...stable,
+    ...(s.quickRate !== undefined ? { delaySec: 0, segment: undefined } : {}),
+    ...(s.volume ? { volume: { ...s.volume, now: Math.round(s.volume.now * 100) } } : {}),
+  });
   try {
     if (key !== lastState) {
       lastState = key;
@@ -490,7 +504,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
     const rec = record();
     const index = typeof msg.segment === 'number' && Number.isInteger(msg.segment) ? msg.segment : -1;
     const v = videoEl();
-    if (rec && msg.videoId === rec.videoId && index >= -1 && index < (rec.anchors?.length ?? 0)) {
+    if (rec && rec.quickRate === undefined && msg.videoId === rec.videoId && index >= -1 && index < (rec.anchors?.length ?? 0)) {
       const offset = typeof msg.dubAt === 'number' && Number.isFinite(msg.dubAt) && v ? v.currentTime - msg.dubAt : typeof msg.offset === 'number' ? msg.offset : undefined;
       if (offset !== undefined && Number.isFinite(offset)) {
         liveOffset = { videoId: rec.videoId, index, offset: clampDelay(offset) };
@@ -505,7 +519,8 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (msg?.type === DUB_MSG.mark) {
     const rec = record();
     const v = videoEl();
-    if (!rec || !v || adShowing() || !Number.isFinite(v.currentTime)) {
+    // 快速对齐开着时不加对齐点（那时的"中文位置"是按倍速算的，切回手动后对不上）
+    if (!rec || rec.quickRate !== undefined || !v || adShowing() || !Number.isFinite(v.currentTime)) {
       sendResponse(undefined);
       return false;
     }
