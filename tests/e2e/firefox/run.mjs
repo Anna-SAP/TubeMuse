@@ -663,7 +663,7 @@ try {
     ffNowA !== ffNowB && /中文在视频 1:3[12] 放完/.test(ffOverall) && ffShapes >= 3,
     `Firefox："还差多少没对上"读数和对齐图画出来、跟着播放走（${ffNowA} → ${ffNowB}；${ffOverall.slice(0, 24)}…）`,
   );
-  // 快速对齐（DECISIONS §81）：Firefox 里一样——点建议的倍速，中文整段慢放（变速不变调）放满全片，"还差多少"直接是 0
+  // 快速对齐（DECISIONS §82）：Firefox 里一样——点建议的倍速，中文整段慢放（变速不变调）放满全片，"还差多少"直接是 0
   const ffQuickWant = Number((dubS.dubDuration / dubS.videoDuration).toFixed(6));
   await b.waitFor(`!!document.querySelector('[data-testid=dub-quick-apply]')`, { what: '建议倍速的按钮' });
   const ffQuickBtn = String(await text('[data-testid=dub-quick-apply]')).trim();

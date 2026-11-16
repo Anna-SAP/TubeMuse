@@ -95,7 +95,7 @@ const manualKept = (rec: DubRecord) => {
 };
 
 /**
- * 快速对齐（DECISIONS §81）：按"中文时长 ÷ 视频时长"给出建议倍速，点一下中文整段按它放（变速不变调），和原声同时开始、同时结束，
+ * 快速对齐（DECISIONS §82）：按"中文时长 ÷ 视频时长"给出建议倍速，点一下中文整段按它放（变速不变调），和原声同时开始、同时结束，
  * 不用一个个加对齐点。开着时写明用的倍速，可以切回手动对齐（开头偏移和对齐点一直留着）；
  * 倍速和现在的时长对不上时（设好之后换过文件）给出新的建议。
  */
@@ -207,7 +207,7 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
   const quickOn = rec.quickRate !== undefined;
   const liveMap = useMemo(() => {
     const base = dubMapOf(rec);
-    // 快速对齐开着时（DECISIONS §81）全程按倍速走：没有实时偏移这回事
+    // 快速对齐开着时（DECISIONS §82）全程按倍速走：没有实时偏移这回事
     if (base.quickRate !== undefined) return base;
     return seg.index < base.anchors.length ? withSegmentOffset(base, seg.index, liveOffset) : base;
   }, [rec, seg.index, liveOffset]);
@@ -245,7 +245,7 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
     playing: !!state.videoPlaying,
     rate: state.videoRate ?? 1,
   });
-  // 快速对齐（DECISIONS §81）：建议倍速按和"还差多少"同一组时长算（载入后是 <audio> 和 <video> 实际读到的）
+  // 快速对齐（DECISIONS §82）：建议倍速按和"还差多少"同一组时长算（载入后是 <audio> 和 <video> 实际读到的）
   const suggestion = quickAlignSuggestion(dubDuration, videoDuration);
   const applyQuick = async (rate: number) => {
     setProblem(undefined);
@@ -507,7 +507,7 @@ export function DubView() {
         ...(state?.title ? { title: state.title } : {}),
         ...(state?.videoDuration ? { videoDurationSec: state.videoDuration } : {}),
       });
-      // 换文件时快速对齐开着（DECISIONS §81）：倍速已按新文件的时长重新算；新倍速超出范围时回到了手动对齐
+      // 换文件时快速对齐开着（DECISIONS §82）：倍速已按新文件的时长重新算；新倍速超出范围时回到了手动对齐
       const hadQuick = rec?.quickRate !== undefined;
       const quickNote = !hadQuick
         ? ''

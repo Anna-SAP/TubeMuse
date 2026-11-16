@@ -259,7 +259,7 @@ function Nearby(props: {
   const plotW = width - GUTTER - RIGHT;
   const s = plotW / windowSec;
   const start = t - windowSec / 2;
-  // 快速对齐（DECISIONS §81）：下面的中文不是错开画，而是按倍速拉长（或压短）画——中文的 d 秒画在视频的 d ÷ 倍速 秒正下方
+  // 快速对齐（DECISIONS §82）：下面的中文不是错开画，而是按倍速拉长（或压短）画——中文的 d 秒画在视频的 d ÷ 倍速 秒正下方
   const quick = al.quickRate;
   const shift = plan && quick === undefined ? plan.segment.offset : 0;
   const xt = (v: number) => GUTTER + (v - start) * s;

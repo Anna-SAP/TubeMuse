@@ -17,7 +17,7 @@ export interface DubPiece {
   v1: number;
   d0: number;
   d1: number;
-  /** 快速对齐（DECISIONS §81）：视频每走 1 秒，中文走 rate 秒。不写 = 1 */
+  /** 快速对齐（DECISIONS §82）：视频每走 1 秒，中文走 rate 秒。不写 = 1 */
   rate?: number;
 }
 
@@ -57,7 +57,7 @@ export interface DubAlignment {
 const EPS = 0.01;
 
 /**
- * 快速对齐（DECISIONS §81）：中文整段按 rate 放，一段到底。倍速正好是"中文时长 ÷ 视频时长"时两边同时结束；
+ * 快速对齐（DECISIONS §82）：中文整段按 rate 放，一段到底。倍速正好是"中文时长 ÷ 视频时长"时两边同时结束；
  * 对不上时（设好倍速之后换了文件）：中文先放完，后面只有原声（after-end）；或者视频放完时中文还剩一截（tail）
  */
 function quickAlignment(rate: number, V: number, D: number | undefined): DubAlignment {
@@ -212,7 +212,7 @@ export interface DubRemaining {
  * 这几秒正在把差距抵掉，随播放变小、到下一个对齐点正好接上下一段的。
  * 中文已经放完之后，滞后按它放完的那一刻算（不再随播放变大）：否则一直放下去，到视频结尾就成了 0，像是对完了。
  * 读不到中文的时长时算不出来。
- * 快速对齐开着时（DECISIONS §81）：时长差不是靠"此刻滞后"一点点抵，而是由变速匀到整段——中文按倍速放完要占 中文时长 ÷ 倍速 秒的视频，
+ * 快速对齐开着时（DECISIONS §82）：时长差不是靠"此刻滞后"一点点抵，而是由变速匀到整段——中文按倍速放完要占 中文时长 ÷ 倍速 秒的视频，
  * 还差 = 视频时长 − 这个数。倍速正好是"中文时长 ÷ 视频时长"时全程是 0（中文和视频同时结束），不随播放位置变；
  * 倍速和现在的时长对不上时（设好之后换了文件），如实显示还差多少
  */

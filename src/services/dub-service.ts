@@ -60,7 +60,7 @@ export async function attachDub(ctx: AppContext, input: AttachInput): Promise<Du
     const old = index[input.videoId];
     previous = old?.fileId;
     const videoDurationSec = input.videoDurationSec && Number.isFinite(input.videoDurationSec) ? Math.round(input.videoDurationSec * 1000) / 1000 : old?.videoDurationSec;
-    // 快速对齐开着时换文件（DECISIONS §81）：倍速按新文件的时长重新算（要的是"整段放满"，旧倍速对新文件多半不对）；
+    // 快速对齐开着时换文件（DECISIONS §82）：倍速按新文件的时长重新算（要的是"整段放满"，旧倍速对新文件多半不对）；
     // 新的倍速超出能用的范围时回到手动对齐；算不出来（读不到时长）时先留着旧的，界面上会如实显示还差多少
     const quick = old?.quickRate !== undefined ? quickAlignSuggestion(probe.durationSec, videoDurationSec) : undefined;
     const quickRate = old?.quickRate === undefined ? undefined : quick ? (quick.ok ? quick.rate : undefined) : old.quickRate;
@@ -151,7 +151,7 @@ export async function removeDubAnchor(ctx: AppContext, videoId: string, k: numbe
 }
 
 /**
- * 快速对齐（DECISIONS §81）：给倍速 = 开（中文整段按这个倍速放）；undefined = 切回手动对齐。
+ * 快速对齐（DECISIONS §82）：给倍速 = 开（中文整段按这个倍速放）；undefined = 切回手动对齐。
  * 开头的偏移和对齐点始终原样留着。倍速不在能用的范围里时不存（返回 false）
  */
 export async function setDubQuickRate(ctx: AppContext, videoId: string, rate: number | undefined): Promise<boolean> {

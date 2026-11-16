@@ -398,7 +398,7 @@ export async function dub(t) {
   r = await waitStored((x) => x.anchors?.length === 1, '撤销删除');
   check(Math.abs(r.anchors[0].video - 70) < 0.3 && Math.abs(r.anchors[0].dub - 80) < 0.05, '删除对齐点可以撤销');
 
-  console.log('\n[中文配音：快速对齐（DECISIONS §81）——点建议的倍速，中文整段变速放满全片，"还差多少"直接到 0；手动对齐点留着，可以切回]');
+  console.log('\n[中文配音：快速对齐（DECISIONS §82）——点建议的倍速，中文整段变速放满全片，"还差多少"直接到 0；手动对齐点留着，可以切回]');
   // 这时手动对齐里有一个对齐点（视频 1:10 ↔ 中文 1:20），开头不偏移
   const manualBefore = await storedRec();
   await page.evaluate(() => {
@@ -646,7 +646,7 @@ export async function dub(t) {
   check(withDub.dubNote.includes('录下的片段是双语混音') && withDub.mixingNote.includes('正在录双语混音'), `片段页写明配音开着、录的是双语混音：${withDub.dubNote}`);
   check(withDub.rest > 0.05, `配音开着时录下的片段里有中文配音（去掉原声后响度 ${withDub.rest.toFixed(3)}）：${withDub.name}`);
   check(withDub.record?.dubbed === true && withDub.readyText.includes('双语混音'), '"最近录过的片段"记下这一段是双语混音');
-  // 快速对齐开着时录片段（DECISIONS §81）：录下的同样是双语混音——慢放的中文也录得进去，原声仍按 80%
+  // 快速对齐开着时录片段（DECISIONS §82）：录下的同样是双语混音——慢放的中文也录得进去，原声仍按 80%
   await panel.getByTestId('dub-quick-apply').click();
   await waitStored((x) => x.quickRate === quickWant, '录制前开快速对齐');
   await waitState((x) => x.quickRate === quickWant && x.playing, '快速对齐放着');

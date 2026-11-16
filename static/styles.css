@@ -2104,7 +2104,7 @@ a.db-title:hover {
   color: var(--muted);
 }
 
-/* 快速对齐（DECISIONS §81）：建议倍速是一个大按钮，点一下中文整段按它放；开着时描绿边，写明倍速和"切回手动对齐" */
+/* 快速对齐（DECISIONS §82）：建议倍速是一个大按钮，点一下中文整段按它放；开着时描绿边，写明倍速和"切回手动对齐" */
 .dub-quick {
   margin: 6px 0 4px;
   padding: 8px 12px;

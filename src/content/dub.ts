@@ -6,7 +6,7 @@
 // 3. 跟随：视频播放、暂停、拖动进度、改倍速时配音跟着走，再加上你手动设的偏移；不做逐句对齐（两段录音的语速、停顿本来就不一样）。
 //    广告期间配音暂停、原声恢复。有对齐点时（DECISIONS §75）按段换算：每段有自己的偏移，中文先说完就停下等画面，
 //    说得慢就在下一个对齐点跳过去；"加对齐点"时报出此刻的视频位置与中文位置，由侧边栏存下。
-//    快速对齐开着时（DECISIONS §81）不看偏移和对齐点：中文整段按存下的倍速放（<audio> 的播放速度 = 视频倍速 × 这个倍速，变速不变调），
+//    快速对齐开着时（DECISIONS §82）不看偏移和对齐点：中文整段按存下的倍速放（<audio> 的播放速度 = 视频倍速 × 这个倍速，变速不变调），
 //    中文位置 = 视频位置 × 倍速，和视频同时开始、同时结束。
 // 4. 配音开启时原声降到你的音量的 80%（直接改 <video> 的音量，不碰 YouTube 的设置）；配音保持正常音量。
 //    关闭、换视频、离开页面、扩展被重新加载时把原声恢复成你的音量。
@@ -116,7 +116,7 @@ function record(): DubRecord | undefined {
 /** 跟随用的对齐信息：存下的开头偏移与对齐点，拖动中的那一段换成实时值 */
 function mapOf(rec: DubRecord): DubMap {
   const map = dubMapOf(rec);
-  // 快速对齐开着时（DECISIONS §81）全程按倍速走，没有哪一段的偏移可拖
+  // 快速对齐开着时（DECISIONS §82）全程按倍速走，没有哪一段的偏移可拖
   return liveOffset?.videoId === rec.videoId && map.quickRate === undefined ? withSegmentOffset(map, liveOffset.index, liveOffset.offset) : map;
 }
 

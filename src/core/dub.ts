@@ -2,7 +2,7 @@
 // 配音是重新录制的克隆音频，时长和原视频不完全一致：同步只做"跟随播放状态 + 你手动设的偏移 / 对齐点"，不做、也不假装做逐句 / 逐词对齐。
 // 对齐点（§75，手测后用户要求）：你在几处标"视频这一刻 ↔ 中文这一刻"，把全程分成几段，每段有自己的偏移；
 // 一段里中文按正常速度放，中文先说完就停下等画面，中文说得慢就在下一个对齐点跳过去。
-// 快速对齐（§81，用户 2026-11-16 要求）：不想一个个加对齐点时，中文整段按"中文时长 ÷ 视频时长"的倍速放，和视频同时开始、同时结束；
+// 快速对齐（§82，用户 2026-11-16 要求）：不想一个个加对齐点时，中文整段按"中文时长 ÷ 视频时长"的倍速放，和视频同时开始、同时结束；
 // 开头的偏移和对齐点留着不用，随时切回手动。
 // 播放与降音量在 content/dub.ts（YouTube 播放页）；音频文件在扩展自己的 IndexedDB（services/dub-store.ts），由后台分块交给页面里的脚本。
 
@@ -49,7 +49,7 @@ export interface DubRecord {
   /** 对齐点（按视频时间排好；§75）：从每个对齐点起，配音位置 = 视频位置 − (video − dub) */
   anchors?: DubAnchor[];
   /**
-   * 快速对齐（§81）：有这一项 = 开着，中文整段按这个倍速放（中文位置 = 视频位置 × 倍速），开头的偏移和对齐点留着不用；
+   * 快速对齐（§82）：有这一项 = 开着，中文整段按这个倍速放（中文位置 = 视频位置 × 倍速），开头的偏移和对齐点留着不用；
    * 去掉这一项 = 切回手动对齐，偏移和对齐点照旧生效
    */
   quickRate?: number;
@@ -151,7 +151,7 @@ export function dubMapOf(rec: Pick<DubRecord, 'delaySec' | 'anchors' | 'quickRat
   return { delaySec: rec.delaySec, anchors: rec.anchors ?? [], ...(rec.quickRate !== undefined ? { quickRate: rec.quickRate } : {}) };
 }
 
-// ── 快速对齐（§81）──
+// ── 快速对齐（§82）──
 
 /** 快速对齐的倍速：只认范围内的有限数，按 decimals 位小数取整；别的一律当作没开 */
 export function sanitizeQuickRate(x: unknown): number | undefined {
@@ -452,7 +452,7 @@ export function dubStep(v: DubVideoSample, a: DubAudioSample, map: DubMap, resyn
 }
 
 /**
- * 快速对齐（§81）的跟随：中文位置 = 视频位置 × 倍速，中文的播放速度 = 视频倍速 × 倍速（浏览器变速不变调）。
+ * 快速对齐（§82）的跟随：中文位置 = 视频位置 × 倍速，中文的播放速度 = 视频倍速 × 倍速（浏览器变速不变调）。
  * 全程一段：没有偏移、没有对齐点、不停下等画面也不跳——差过 resyncSec（两个播放器走时有出入时）才把配音拉回来。
  * 仍然不是逐句对上：只是把时长差匀到整段
  */
@@ -670,7 +670,7 @@ export interface DubTabState {
   segment?: DubSegment & { count: number };
   /** 此刻中文应在的位置（视频位置 − 这一段的偏移；快速对齐开着时是视频位置 × 倍速） */
   target?: number;
-  /** 快速对齐（§81）开着时的倍速 */
+  /** 快速对齐（§82）开着时的倍速 */
   quickRate?: number;
   /** 原声：你的音量、现在的音量、是不是降着、YouTube 是否把它改回去了 */
   volume?: { user: number; now: number; ducked: boolean; blocked: boolean; muted: boolean };
