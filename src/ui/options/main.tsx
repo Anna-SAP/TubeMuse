@@ -839,6 +839,11 @@ function App() {
           <input type="checkbox" data-testid="dub-prompt-setting" checked={settings.dub.prompt} onChange={(e) => updateSection('dub', { prompt: e.currentTarget.checked })} />
           打开有中文配音的视频时提示（工具栏图标上的"中"、侧边栏顶部一行；配音仍要你点"开启"）
         </label>
+        <label class="inline">
+          <input type="checkbox" data-testid="dub-export-subtitles-setting" checked={settings.dub.exportSubtitles} onChange={(e) => updateSection('dub', { exportSubtitles: e.currentTarget.checked })} />
+          保存完整双语视频时带上原声字幕（英文原文），写成视频里一条可以开关的字幕轨。字幕按这个顺序找：你选的字幕文件 → 原视频文件里嵌着的字幕 → 开着的 YouTube
+          页面上这个视频自带的字幕（取的时候播放器的字幕可能闪一下）；都没有时会问你
+        </label>
       </Section>
 
       <Section title="网络出口" id="egress">

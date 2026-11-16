@@ -13,9 +13,12 @@
 //    短暂打开一次字幕，拿到请求后立刻关回去。不显示字幕层；侧边栏里可以关掉这个自动取。
 // 6. YouTube Shorts（2026-11-11 起，用户要求，见 DECISIONS §67）：一样的做法，播放器换成 Shorts 的 #shorts-player
 //    （页面上藏着的播放页播放器 #movie_player 不碰）；字号按竖屏的短边算，字幕层放在 Shorts 叠在画面底部的标题、频道名上面。
+// 7. 保存完整双语视频带上原声字幕（用户 2026-11-16 要求，见 DECISIONS §84）：你在侧边栏「配音」页勾了"带上原声字幕"、
+//    选好原视频文件开始合成时，把这个视频原声语言的那一种字幕整条交给侧边栏，由它写进你导出的视频文件。
+//    取法和第 5 点一样（必要时请播放器短暂打开一次字幕再关回去）；这里仍然只放在内存里，不保存。
 // 本脚本唯一的网络请求是第 2 点（构建时检查只有一处 fetch；地址先经 trackUrl 校验：同源、/api/timedtext、当前视频）。
 
-import { DEFAULT_SETTINGS, MULTI_CC, MUSE } from '../config/defaults';
+import { DEFAULT_SETTINGS, DUB, MULTI_CC, MUSE } from '../config/defaults';
 import { MUSE_MSG, cuesAround, type MuseCaptionReply } from '../core/muse';
 import {
   AutoCaptionWindow,
@@ -28,6 +31,8 @@ import {
   ccWaitStatus,
   fitLine,
   joinCueLines,
+  langMatchKey,
+  originalLangOf,
   parseJson3,
   primeTrack,
   resolveSources,
@@ -49,6 +54,7 @@ import {
   type MultiCcPhase,
   type MultiCcTabState,
 } from '../core/multi-captions';
+import { pickOriginalTrack, type ExportCaptionReply } from '../core/subtitle-track';
 import { videoIdFromUrl } from '../core/watch';
 
 type CcSettings = typeof DEFAULT_SETTINGS.multiCaptions;
@@ -870,6 +876,73 @@ async function museCaptions(t: unknown, fetchAllowed: boolean): Promise<MuseCapt
   return none(`${MUSE.captionFetchMs / 1000} 秒内没有取到 YouTube 的字幕`);
 }
 
+// ── "保存完整双语视频"带上原声字幕（DECISIONS §84）──
+
+/**
+ * 取这个视频原声语言的那一种字幕，整条交给侧边栏（它写进你导出的视频文件）。只在你勾了"带上原声字幕"、点了合成时来问。
+ * 取法和「问 muse」一样：已经读到的直接用；没读到时读字幕轨列表 → 拿到播放器带令牌的字幕请求
+ * （原生字幕关着时请播放器选一条轨、拿到后立刻关回去）→ 复用那一处请求取。不用 YouTube 的自动翻译（那不是原话）。
+ */
+async function exportCaptions(): Promise<ExportCaptionReply | undefined> {
+  const vid = videoId;
+  if (!vid) return undefined;
+  const none = (problem: string): ExportCaptionReply => ({ videoId: vid, ok: false, problem });
+  const gone = () => vid !== videoId;
+  if (adShowing()) return none('正在播广告，广告结束后才取得到字幕');
+  const deadline = Date.now() + DUB.export.captionFetchMs;
+  const listDeadline = Math.min(deadline, Date.now() + 2500);
+  while (!(list && list.videoId === vid) && Date.now() < listDeadline && !gone()) {
+    await refreshList();
+    if (!(list && list.videoId === vid)) await wait(150);
+  }
+  if (gone()) return undefined;
+  const l = list;
+  if (!l || l.videoId !== vid) return none('没读到播放器的字幕列表（播放器还没准备好，或者这个页面是扩展更新之前打开的：刷新一下）');
+  if (!l.tracks.length) return none('这个视频在 YouTube 上没有字幕');
+  // 原声是什么语言：有自动生成的字幕就看得出来；看不出来、字幕又不止一种语言时问一下后台（官方 videos.list）
+  if (!originalLangOf(l, videoLang?.lang) && new Set(l.tracks.map((t) => langMatchKey(t.lang))).size > 1) {
+    askVideoLang();
+    await waitUntil(() => videoLang !== undefined || gone(), Math.min(deadline, Date.now() + 2000));
+    if (gone()) return undefined;
+  }
+  const track = pickOriginalTrack(l, videoLang?.lang);
+  if (!track) return none(`看不出这个视频的原声是哪种语言（它有 ${l.tracks.map((t) => t.label).join('、')} 的字幕）：自己选一个字幕文件`);
+  const source: CcSource = { key: trackKey(track), want: track.lang, pref: track.lang, label: track.label, track, autoTranslated: false };
+  const have = () => {
+    const ld = loaded.get(source.key);
+    return ld?.state === 'ok' ? ld.cues : undefined;
+  };
+  if (!have()) {
+    scanResources();
+    if (!template && !active && !primeOwnedSince) {
+      // 原生字幕开着却没看到请求：再选轨会换掉你正在看的字幕，不做
+      if (l.native) return none('没拿到播放器的字幕请求（它的字幕令牌可能已失效）：刷新这个页面后再试');
+      primeOwnedSince = Date.now();
+      await nativeOp('prime', { lang: source.track.lang, kind: source.track.kind });
+      await waitUntil(() => !!template || gone() || active, Math.min(deadline, Date.now() + MULTI_CC.primeTimeoutMs));
+      // 为了拿这个请求打开的原生字幕，立刻关回去（这期间你开了多语字幕的话，由它接手）
+      if (!active) {
+        primeOwnedSince = 0;
+        await nativeOp('hide-native', { save: false });
+      }
+    }
+    if (gone()) return undefined;
+    if (!template) return none('YouTube 播放器没有给出字幕请求（它的字幕令牌可能已失效）：刷新这个页面后再试');
+    // 这一种正在取（多语字幕开着时）就等它；否则自己取，出错、超时各重试一次
+    for (let attempt = 1; attempt <= 2 && !have() && Date.now() < deadline && !gone(); attempt++) {
+      const ld = loaded.get(source.key);
+      if (ld?.state === 'loading') await waitUntil(() => loaded.get(source.key)?.state !== 'loading' || gone(), deadline);
+      else await Promise.race([load(source, attempt), wait(Math.max(0, deadline - Date.now()))]);
+    }
+    if (gone()) return undefined;
+  }
+  const cues = have();
+  if (cues) return { videoId: vid, ok: true, lang: track.lang, label: track.label, auto: track.kind === 'asr', cues: cues.map((c) => ({ start: c.start, end: c.end, text: c.text })) };
+  const ld = loaded.get(source.key);
+  if (ld?.state === 'error' || ld?.state === 'retry') return none(`没能读到 YouTube 的字幕：${ld.message}`);
+  return none(`${DUB.export.captionFetchMs / 1000} 秒内没有取到 YouTube 的字幕`);
+}
+
 /** 上一次「问 muse」还在取字幕时又来一次：排在它后面（那时字幕多半已经读到，直接用） */
 let museQueue: Promise<unknown> = Promise.resolve();
 
@@ -879,6 +952,13 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (msg?.type === MULTICC_MSG.getState) {
     sendResponse(tabState());
     return false;
+  }
+  if (msg?.type === MULTICC_MSG.exportCaptions) {
+    // 和「问 muse」排同一个队：两边都可能要请播放器打开一次字幕，不能同时来
+    const run = museQueue.then(() => exportCaptions());
+    museQueue = run.catch(() => undefined);
+    run.then(sendResponse, () => sendResponse(undefined));
+    return true;
   }
   if (msg?.type === MUSE_MSG.captions) {
     const run = museQueue.then(() => museCaptions(msg.t, msg.fetch === true));

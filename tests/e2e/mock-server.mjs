@@ -172,6 +172,18 @@ export const CC_VIDEOS = [
     translationLangs: ['zh-Hans', 'ja'],
   },
   { id: 'ccNoTrack003', seconds: 10, tracks: [], translationLangs: [] },
+  // "保存完整双语视频"带上原声字幕（DECISIONS §84）：一场英文演讲，只有自动生成的英文字幕和作者上传的中文字幕；原生字幕关着。
+  // 16 秒，和测试用的原视频文件 tests/fixtures/dub-source.mp4 一样长
+  {
+    id: 'ccDubSubs007',
+    seconds: 16,
+    lang: 'en',
+    tracks: [
+      { lang: 'zh-Hans', label: 'Chinese (Simplified)', cues: [[0.5, 3.0, '上大学的时候'], [3.1, 6.0, '我学的是政治学']] },
+      { lang: 'en', kind: 'asr', label: 'English (auto-generated)', cues: [[0.5, 3.0, 'so in college'], [3.1, 6.0, 'i was a government major'], [6.2, 10.0, 'which means i had to write a lot of papers'], [12.0, 15.0, 'thank you']] },
+    ],
+    translationLangs: ['zh-Hans', 'ja'],
+  },
   // 用户报告的 bug（2026-11-02）：你保存的偏好是"字幕开、中文（简体）"，播放器在正片开始后自动打开它。
   // 0006：没有广告，页面一打开（勾选了"自动显示"）；0005：先放 2.5 秒广告，你在广告期间点了"显示多语字幕"
   {

@@ -779,6 +779,15 @@ try {
   // 一个对齐点：视频 8 秒 ↔ 中文 30.5 秒（和 Chrome 的测试一样）
   await b.run(`const { dubs } = await browser.storage.local.get('dubs'); dubs.dubFull00001.anchors = [{ video: 8, dub: 30.5 }]; await browser.storage.local.set({ dubs });`);
   await b.waitFor(`(document.querySelector('[data-testid=dub-full-about]')?.textContent ?? '').includes('全部 1 个对齐点') && !document.querySelector('[data-testid=dub-full-pick]').disabled`, { what: '可以选原视频文件' });
+  // 带上原声字幕（DECISIONS §84）：默认勾着；这里事先选一个字幕文件（.srt），合成时写成视频里的一条字幕轨
+  const FF_SRT = '1\n00:00:00,500 --> 00:00:03,000\nSo in college,\n\n2\n00:00:03,100 --> 00:00:06,000\nI was a government major,\n';
+  await b.exec(
+    `const dt = new DataTransfer(); dt.items.add(new File([arguments[0]], 'talk.en.srt', { type: 'application/x-subrip' }));
+     const input = document.querySelector('[data-testid=dub-full-subs-file]'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true;`,
+    [FF_SRT],
+  );
+  await b.waitFor(`(document.querySelector('[data-testid=dub-full-subs-chosen]')?.textContent ?? '').includes('2 句')`, { what: '字幕文件读出来了' });
+  check((await b.exec(`return document.querySelector('[data-testid=dub-full-subs]').checked;`)) === true, 'Firefox："带上原声字幕"默认勾着，选的字幕文件读出 2 句');
   const fullBefore = downloaded();
   const fullStarted = Date.now();
   await chooseFile('dub-full-file', join(root, 'tests', 'fixtures', 'dub-source.mp4'), 'dub-source.mp4', 'video/mp4');
@@ -793,6 +802,11 @@ try {
   const mdatAt = sourceBytes.indexOf(Buffer.from('mdat'));
   const keyframe = sourceBytes.subarray(mdatAt + 20, mdatAt + 2020);
   check(fullBytes.subarray(4, 8).toString() === 'ftyp' && mdatAt > 0 && fullBytes.includes(keyframe), `Firefox：新文件是 MP4，原文件第一帧画面的数据原样在里面（${fullBytes.length} 字节）`);
+  const ffSubsLine = ((await text('[data-testid=dub-export-subs]')) ?? '').replace(/\s+/g, ' ');
+  check(
+    fullBytes.includes(Buffer.from('tx3g')) && fullBytes.includes(Buffer.from('So in college,')) && fullBytes.includes(Buffer.from('I was a government major,')) && ffSubsLine.includes('原声字幕：2 句') && ffSubsLine.includes('你选的字幕文件（talk.en.srt）'),
+    `Firefox：新文件里有一条字幕轨，两句英文都在：${ffSubsLine.slice(0, 50)}…`,
+  );
   await b.switchTo(fullPage);
   const fullInfo = await b.run(
     `const bytes = Uint8Array.from(atob(args[0]), (c) => c.charCodeAt(0));

@@ -1,5 +1,6 @@
 // 「配音」页（DECISIONS §74、§75）：给当前 YouTube 视频关联一个本地中文配音（.m4a），开 / 关，调偏移、加对齐点，移除；管理所有关联过的视频。
 // "保存完整双语视频"（DECISIONS §83）：你选原视频文件（MP4），在这个页面里离线合成（画面照搬，声音换成双语混音），不用播放。
+// 勾了"带上原声字幕"时（DECISIONS §84）把原声语言的字幕写成视频里一条可以开关的字幕轨。
 // 还有侧边栏顶部的一行提示（DubPrompt）：当前视频有中文配音、还没开启时显示。
 // 状态来自注入 YouTube 页面的配音脚本（只在本扩展内部传递）；对应关系在本机存储，音频在扩展自己的 IndexedDB。
 
@@ -34,6 +35,7 @@ import { addDubAnchor, attachDub, checkDubStorage, removeDub, removeDubAnchor, s
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
 import { DubAlignMap, DubGapReadout, useDubAlignNow } from './DubAlignMap';
+import { SUB_SOURCE_LABELS } from '../../core/subtitle-track';
 import { exportJob, useExportJob, type ExportJob } from './dub-export-job';
 import { Notice } from '../shared/components';
 import { openInCurrentTab } from '../shared/download';
@@ -102,6 +104,7 @@ const secondsUsed = (ms: number) => (ms < 60_000 ? `${Math.max(1, Math.round(ms 
 
 /** 一次合成的状态：正在读文件 / 时长对不上等确认 / 正在合成（进度）/ 做完了 / 出错 / 已取消 */
 function ExportStatus({ job, withTitle }: { job: ExportJob; withTitle?: boolean }) {
+  const subsRef = useRef<HTMLInputElement>(null);
   const src = job.source;
   const sourceLine = src ? `${job.sourceName} · ${formatBytes(job.sourceBytes)} · ${formatTimecode(Math.round(src.durationSec))} · 画面 ${src.video.label} ${src.video.width}×${src.video.height} · 原声 ${src.audio.label}` : `${job.sourceName} · ${formatBytes(job.sourceBytes)}`;
   return (
@@ -111,6 +114,41 @@ function ExportStatus({ job, withTitle }: { job: ExportJob; withTitle?: boolean 
         原视频：{sourceLine}
       </div>
       {job.phase === 'checking' && <p class="small">正在读这个文件的索引…</p>}
+      {job.phase === 'subs' && (
+        <p class="small" data-testid="dub-export-subs-wait">
+          正在准备原声字幕…（从 YouTube 页面取的时候，播放器的字幕可能闪一下：是请它打开一次字幕、拿到后立刻关回去）
+        </p>
+      )}
+      {job.phase === 'need-subs' && (
+        <>
+          <p class="small warn-text" data-testid="dub-export-need-subs">
+            你勾了"带上原声字幕"，但没有找到字幕：{job.subtitlesProblem}。选一个字幕文件（.srt / .vtt），或者这一次不带字幕。
+          </p>
+          <input
+            type="file"
+            accept=".srt,.vtt,text/vtt,application/x-subrip"
+            hidden
+            ref={subsRef}
+            data-testid="dub-export-subs-file"
+            onChange={(e) => {
+              const f = e.currentTarget.files?.[0];
+              e.currentTarget.value = '';
+              if (f) void exportJob.provideSubtitleFile(f);
+            }}
+          />
+          <div class="row wrap">
+            <button class="btn primary" data-testid="dub-export-subs-pick" onClick={() => subsRef.current?.click()}>
+              选字幕文件…
+            </button>
+            <button class="btn" data-testid="dub-export-subs-skip" onClick={() => void exportJob.skipSubtitles()}>
+              不带字幕，继续合成
+            </button>
+            <button class="btn" onClick={() => exportJob.cancel()}>
+              取消
+            </button>
+          </div>
+        </>
+      )}
       {job.phase === 'confirm' && src && (
         <>
           <p class="small warn-text" data-testid="dub-export-mismatch">
@@ -159,6 +197,22 @@ function ExportStatus({ job, withTitle }: { job: ExportJob; withTitle?: boolean 
               浏览器、VLC、mpv、IINA 能正常播放；Windows 自带的播放器、QuickTime 和一些手机可能放出来没有声音。
             </p>
           )}
+          {job.result.subtitles && (
+            <p class="small" data-testid="dub-export-subs">
+              原声字幕：{job.result.subtitles.count} 句，{SUB_SOURCE_LABELS[job.result.subtitles.source]}（{job.result.subtitles.label}）。写成了视频里的一条字幕轨，默认开着、可以关：VLC、mpv、IINA、QuickTime
+              和手机自带的播放器认它；浏览器直接打开 mp4、Windows 自带的播放器可能不显示——这时点"另存字幕（.srt）"，和视频放在同一个文件夹里（同名），播放器会自动加载。
+            </p>
+          )}
+          {job.result.subtitlesEmpty && (
+            <p class="small warn-text" data-testid="dub-export-subs-empty">
+              找到的字幕里没有一句落在这个视频的时长以内，没有写进去。
+            </p>
+          )}
+          {!job.result.subtitles && !job.result.subtitlesEmpty && (
+            <p class="small muted" data-testid="dub-export-no-subs">
+              这一份没有带字幕。
+            </p>
+          )}
           <p class="small" data-testid="dub-export-saved">
             已在 {formatClock(job.result.savedAt)} 交给浏览器存进下载文件夹。保存完之前别挪动、别删你选的那个原视频文件（新文件里的画面是从它那里直接写过去的）。没看到文件？浏览器可能拦下了下载：点"再存一次"。
           </p>
@@ -166,6 +220,11 @@ function ExportStatus({ job, withTitle }: { job: ExportJob; withTitle?: boolean 
             <button class="btn" data-testid="dub-export-again" onClick={() => exportJob.saveAgain()}>
               再存一次
             </button>
+            {job.result.subtitles && (
+              <button class="btn" data-testid="dub-export-srt" onClick={() => exportJob.saveSubtitles()}>
+                另存字幕（.srt）
+              </button>
+            )}
             <button class="btn" onClick={() => exportJob.clear()}>
               收起
             </button>
@@ -191,11 +250,17 @@ function ExportStatus({ job, withTitle }: { job: ExportJob; withTitle?: boolean 
  * 保存完整双语视频（用户 2026-11-16 选定的做法，DECISIONS §83）：你选这个视频的原视频文件（MP4），在这个页面里离线合成——
  * 画面原样照搬，声音换成"原声降 20% + 按现在的对齐叠上去的中文"，做完自动存进下载文件夹。不播放、不联网，一般不到一分钟
  */
-function FullSave({ rec, missing, onPick }: { rec: DubRecord; missing: boolean; onPick: () => void }) {
+function FullSave({ rec, missing, onPick, onYouTube }: { rec: DubRecord; missing: boolean; onPick: () => void; onYouTube: boolean }) {
+  const ctx = appCtx();
+  const settings = useStore(stores.settings);
   const job = useExportJob();
+  const subsRef = useRef<HTMLInputElement>(null);
+  const [subsProblem, setSubsProblem] = useState<string>();
   const mine = job?.videoId === rec.videoId ? job : undefined;
   const busy = exportJob.busy();
   const supported = exportSupported();
+  const withSubs = settings?.dub.exportSubtitles ?? true;
+  const chosen = exportJob.chosenSubtitleFile(rec.videoId);
   const blocked = !supported
     ? '这个浏览器没有音频编解码接口（WebCodecs），做不了离线合成：请用最新版 Google Chrome 或 Firefox。'
     : missing
@@ -203,6 +268,18 @@ function FullSave({ rec, missing, onPick }: { rec: DubRecord; missing: boolean; 
       : busy && !mine
         ? `正在合成另一个视频（${job?.title ?? ''}），做完再来。`
         : undefined;
+  const setWithSubs = (on: boolean) => void stores.settings.update(ctx.kv, ctx.locker, (x) => ({ ...x, dub: { ...x.dub, exportSubtitles: on } }));
+  const onSubs = async (input: HTMLInputElement) => {
+    const f = input.files?.[0];
+    input.value = '';
+    if (!f) return;
+    setSubsProblem(undefined);
+    try {
+      await exportJob.chooseSubtitleFile(rec.videoId, f);
+    } catch (e) {
+      setSubsProblem(`「${f.name}」用不了：${exportJob.subtitleProblem(e)}`);
+    }
+  };
   return (
     <div class="dub-full" data-testid="dub-full">
       <div class="row">
@@ -213,6 +290,39 @@ function FullSave({ rec, missing, onPick }: { rec: DubRecord; missing: boolean; 
         {rec.videoDurationSec ? `${formatTimecode(Math.round(rec.videoDurationSec))} 的视频` : '一般'}几十秒就好，做完自动存进下载文件夹；合成时可以切到别的标签页，别关侧边栏。
         原视频文件要你自己准备：TubeMuse 不下载 YouTube 的视频。
       </p>
+      <label class="inline">
+        <input type="checkbox" data-testid="dub-full-subs" checked={withSubs} disabled={busy} onChange={(e) => setWithSubs(e.currentTarget.checked)} />
+        带上原声字幕（英文原文）：写成视频里一条可以开关的字幕轨
+      </label>
+      {withSubs && (
+        <div class="dub-full-subs" data-testid="dub-full-subs-source">
+          <input type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" hidden ref={subsRef} data-testid="dub-full-subs-file" onChange={(e) => void onSubs(e.currentTarget)} />
+          {chosen ? (
+            <p class="small" data-testid="dub-full-subs-chosen">
+              用你选的字幕文件：<span class="clip-file">{chosen.name}</span>（{chosen.cues.length} 句）
+              <button class="btn link small" data-testid="dub-full-subs-drop" disabled={busy} onClick={() => exportJob.dropSubtitleFile(rec.videoId)}>
+                不用这个文件
+              </button>
+            </p>
+          ) : (
+            <p class="muted small" data-testid="dub-full-subs-auto">
+              字幕不在视频文件里（YouTube 的字幕是播放器另外取的），所以要另找：原视频文件里嵌着字幕轨就用它；没有的话，
+              {onYouTube
+                ? '从这个 YouTube 页面取这个视频自带的原声字幕（作者上传的优先，没有就用自动生成的；取的时候播放器的字幕可能闪一下）'
+                : '要开着这个视频的 YouTube 页面才能从那里取——现在没开着'}
+              。也可以自己选一个字幕文件。
+              <button class="btn link small" data-testid="dub-full-subs-pick" disabled={busy} onClick={() => subsRef.current?.click()}>
+                选字幕文件（.srt / .vtt）…
+              </button>
+            </p>
+          )}
+          {subsProblem && (
+            <p class="small warn-text" data-testid="dub-full-subs-problem">
+              {subsProblem}
+            </p>
+          )}
+        </div>
+      )}
       <div class="row">
         <button class="btn primary" data-testid="dub-full-pick" disabled={busy || !!blocked} onClick={onPick}>
           选择原视频文件（.mp4）…
@@ -643,7 +753,9 @@ export function DubView() {
     const vid = exportFor.current ?? videoId;
     exportFor.current = undefined;
     const target = vid ? index[vid] : undefined;
-    if (file && target) void exportJob.start(target, file, ctx.dubAudio);
+    // 要不要带字幕看设置；开着这个视频的 YouTube 页面时，字幕可以从那里取
+    const onPage = vid === videoId && tabId !== undefined;
+    if (file && target) void exportJob.start(target, file, ctx.dubAudio, { subtitles: settings.dub.exportSubtitles, ...(onPage ? { youtubeTabId: tabId } : {}) });
   };
   const onFile = async (input: HTMLInputElement) => {
     const file = input.files?.[0];
@@ -799,7 +911,7 @@ export function DubView() {
               </button>
             </div>
             {removeConfirm(rec.videoId)}
-            <FullSave rec={rec} missing={missing.includes(rec.videoId)} onPick={() => pickSource(rec.videoId)} />
+            <FullSave rec={rec} missing={missing.includes(rec.videoId)} onPick={() => pickSource(rec.videoId)} onYouTube={tabId !== undefined} />
             <AlignControl key={rec.videoId} rec={rec} tabId={tabId} state={state} onNote={setAlignNote} />
             {alignNote && (
               <Notice kind="ok" onClose={() => setAlignNote(undefined)}>

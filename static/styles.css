@@ -1993,6 +1993,12 @@ a.db-title:hover {
   padding-top: 8px;
   border-top: 1px solid var(--border);
 }
+.dub-full-subs {
+  margin: 2px 0 6px 22px;
+}
+.dub-full-subs p {
+  margin: 2px 0;
+}
 .dub-full .clip-timer {
   flex-wrap: wrap;
 }

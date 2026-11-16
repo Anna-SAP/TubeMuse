@@ -256,6 +256,8 @@ export const DEFAULT_SETTINGS = {
     enabled: true,
     /** 打开有中文配音的视频时提示（工具栏图标上的"中"、侧边栏顶部的一行）；配音本身仍要你点"开启" */
     prompt: true,
+    /** 保存完整双语视频时带上原声字幕（英文原文），写成视频里一条可以开关的字幕轨（DECISIONS §84） */
+    exportSubtitles: true,
   },
   /** 侧边栏界面偏好 */
   ui: {
@@ -991,6 +993,10 @@ export const DUB = {
     prerollFrames: 3,
     /** AAC 编码器的起始延迟量不出来时按这么多个样本算（多数编码器是 1024） */
     defaultAacPriming: 1024,
+    /** 带上原声字幕时，从 YouTube 页面取这个视频的字幕最多等多久（毫秒）：长视频的字幕文件有几百 KB，接口慢起来要十来秒 */
+    captionFetchMs: 25_000,
+    /** 字幕文件（.srt / .vtt）最大多少字节 */
+    maxSubtitleFileBytes: 5 * 1024 * 1024,
   },
   /** 原声混音倍数变化时的平滑时间常数（秒）：配音开 / 关、广告前后不咔哒一下 */
   mixRampSec: 0.02,
