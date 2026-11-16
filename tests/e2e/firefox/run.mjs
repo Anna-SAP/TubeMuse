@@ -145,6 +145,22 @@ const fill = (css, value) =>
      el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true;`,
     [css, value],
   );
+/**
+ * 对 mock 站点拦住 / 放开没点过的页面的声音（Firefox 的"自动播放"网站权限，设成"阻止音频和视频"）：
+ * 拦着时，没被真的点过的页面里 AudioContext 一直起不来（实测等 3 秒仍是 suspended），点过之后 30 毫秒内起来。
+ * 权限同步到页面所在的进程要一小会儿。
+ * @param {boolean} blocked
+ */
+const setMockAutoplayBlocked = async (blocked) => {
+  await b.chrome(
+    `const p = Services.scriptSecurityManager.createContentPrincipal(Services.io.newURI(arguments[0]), {});
+     if (arguments[1]) Services.perms.addFromPrincipal(p, 'autoplay-media', Ci.nsIAutoplay.BLOCKED_ALL);
+     else Services.perms.removeFromPrincipal(p, 'autoplay-media');
+     return true;`,
+    [MOCK, blocked],
+  );
+  await new Promise((r) => setTimeout(r, 300));
+};
 /** 从侧边栏打开一个前台标签页，返回它的句柄（侧边栏跟踪的就是这个"当前标签页"） @param {string} url */
 async function openActiveTab(url) {
   await b.switchTo(handles.panel);
@@ -298,6 +314,58 @@ try {
   } else check(false, '结果里应包含 ai04（用于 10 分）');
   await b.screenshot(join(shots, '02-find.png'));
 
+  console.log('\n[侧边栏缩放（DECISIONS §80）：Firefox 里整个侧边栏一样能放大 / 缩小，固定的导航栏照样吸附在头部下沿]');
+  {
+    const look = () =>
+      b.exec(`const h = (s) => document.querySelector(s).getBoundingClientRect().height; const root = document.documentElement;
+        return { label: document.querySelector('[data-testid=zoom-reset]').textContent.trim(), css: root.currentCSSZoom, style: root.style.zoom, brand: h('.brand'), tab: h('.tab'), overflowX: root.scrollWidth - innerWidth, pageH: root.scrollHeight };`);
+    const waitZoom = (/** @type {number} */ pct) => b.waitFor(`document.querySelector('[data-testid=zoom]')?.dataset.zoom === '${pct}'`, { what: `缩放到 ${pct}%` });
+    /** @param {'zoom-in' | 'zoom-out'} btn @param {number} pct */
+    const stepTo = async (btn, pct) => {
+      for (let i = 0; i < 12 && (await look()).label !== `${pct}%`; i++) await tap(`[data-testid=${btn}]`);
+      await waitZoom(pct);
+    };
+    const storedZoom = () => b.run(`return (await browser.storage.local.get('settings')).settings?.ui?.zoom;`);
+    const waitStored = async (/** @type {number} */ pct) => {
+      for (const end = Date.now() + 5000; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) if ((await storedZoom()) === pct) return true;
+      return false;
+    };
+    const near = (/** @type {number} */ a, /** @type {number} */ b0, /** @type {number} */ want) => Math.abs(a / b0 - want) < 0.03;
+    const base = await look();
+    check(base.label === '100%' && base.css === 1 && base.style === '', '默认 100%，页面没有加任何缩放');
+    await stepTo('zoom-in', 110);
+    const up = await look();
+    check(Math.abs(up.css - 1.1) < 0.001 && near(up.brand, base.brand, 1.1) && near(up.tab, base.tab, 1.1) && up.overflowX <= 0, `点 + 放大到 110%：头部（${base.brand} → ${up.brand.toFixed(1)}）和导航栏（${base.tab} → ${up.tab.toFixed(1)}）一起变大，没有横向滚动条`);
+    check(await waitStored(110), '选的档位存进本机设置（ui.zoom = 110）');
+    await stepTo('zoom-out', 75);
+    const down = await look();
+    check(Math.abs(down.css - 0.75) < 0.001 && near(down.brand, base.brand, 0.75) && down.pageH < base.pageH && down.overflowX <= 0, `点 − 缩小到 75%：整页从 ${base.pageH}px 缩到 ${down.pageH}px`);
+    await b.screenshot(join(shots, '02b-zoom-75.png'));
+
+    // 固定导航栏：头部高度是缩放之后量出来的，写回 CSS 时除以了缩放倍数——两个浏览器的 getBoundingClientRect 都含缩放
+    await tap('[data-testid=pin-nav]');
+    await b.waitFor(`document.querySelector('[data-testid=nav].pinned')`, { what: '导航栏固定' });
+    for (const [btn, pct] of /** @type {['zoom-in' | 'zoom-out', number][]} */ ([['zoom-out', 75], ['zoom-in', 150]])) {
+      await stepTo(btn, pct);
+      await b.exec(`window.scrollTo(0, 600); return true;`);
+      await b.waitFor(`document.querySelector('[data-testid=nav].stuck')`, { what: `${pct}% 时导航栏吸附` });
+      await new Promise((r) => setTimeout(r, 200));
+      const pos = await b.exec(`const head = document.querySelector('header.top').getBoundingClientRect(); const nav = document.querySelector('[data-testid=nav]').getBoundingClientRect();
+        return { head: head.bottom, navTop: nav.top, onTop: !!document.elementFromPoint(innerWidth / 2 - 40, (nav.top + nav.bottom) / 2)?.closest('[data-testid=nav]') };`);
+      check(Math.abs(pos.navTop - pos.head) < 1 && pos.onTop, `${pct}% 时往下滚：固定的导航栏吸附在头部下沿（头部下沿 ${pos.head.toFixed(1)}，导航栏上沿 ${pos.navTop.toFixed(1)}），盖在正文之上`);
+      if (pct === 150) await b.screenshot(join(shots, '02c-zoom-150-pinned.png'));
+      await b.exec(`window.scrollTo(0, 0); return true;`);
+    }
+    await tap('[data-testid=pin-nav]');
+    await b.waitFor(`!document.querySelector('[data-testid=nav].pinned')`, { what: '取消固定' });
+
+    // 快捷键：Ctrl+0 恢复（页面自己处理，并拦下浏览器自己的缩放）
+    const prevented = await b.exec(`const e = new KeyboardEvent('keydown', { key: '0', ctrlKey: true, bubbles: true, cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented;`);
+    await waitZoom(100);
+    const end = await look();
+    check(prevented === true && end.style === '' && end.css === 1 && end.brand === base.brand && (await waitStored(100)), 'Ctrl+0 恢复 100%：和没缩放时完全一样，并存下');
+  }
+
   console.log('\n[片段录制：YouTube 播放页 → 开始 → 停止 → Firefox 存下 WebM（VP8 + Opus），有声音]');
   await tapText('片段', '[role=tab]');
   const watch = await openActiveTab(`${MOCK}/watch?v=clipFree0001`);
@@ -306,7 +374,12 @@ try {
   await b.run(`await document.querySelector('video').play();`);
   await b.switchTo(handles.panel);
   await b.waitFor(`document.querySelector('[data-testid=clip-status]')?.textContent.includes('可以开始录制')`, { what: '可以开始录制' });
-  // 页面从没被点过（视频是脚本放起来的）：Firefox 不让它处理声音，录制停下来说明怎么办，不录一段没声音的
+  // 页面从没被点过（视频是脚本放起来的）：Firefox 不让它处理声音，录制停下来说明怎么办，不录一段没声音的。
+  // 这个测试用的 Firefox 把自动播放整个放开了（media.autoplay.default = 0，脚本才能直接把视频放起来）——那样没点过的页面
+  // 其实也能处理声音，看不看得到这句说明只取决于第一次启动声音有没有超过 CLIPS.audioResumeMs（同一流程实测 23 毫秒到 1.6 秒都有，
+  // 2026-11-16 在 CI 上就因为启动得快而没看到）。所以这一步对 mock 站点按 Firefox 出厂的方式拦住声音（你没改过设置时的真实情况）：
+  // 没点过就一直起不来，真的点一下才起得来；录上之后撤掉，后面各节照旧。
+  await setMockAutoplayBlocked(true);
   await tap('[data-testid=clip-start]');
   await b.waitFor(`document.querySelector('#clips, .app')?.textContent.includes('浏览器还没允许这个页面处理声音')`, { what: '没点过页面时的说明' });
   check(true, '页面没被点过时：说明"在视频画面上点一下再录"，不录没声音的片段');
@@ -317,6 +390,8 @@ try {
   let before = downloaded();
   await tap('[data-testid=clip-start]');
   await b.waitFor(`document.querySelector('[data-testid=clip-status]')?.textContent.includes('正在录制')`, { what: '正在录制' });
+  check(true, '在视频上真的点一下之后：声音仍被拦着的设置下也能开始录制');
+  await setMockAutoplayBlocked(false);
   const badge = await b.run(`const [t] = (await browser.tabs.query({})).filter((x) => String(x.url).includes('clipFree0001')); return browser.action.getBadgeText({ tabId: t.id });`);
   check(badge === 'REC', `录制中工具栏图标显示 REC（实际："${badge}"）`);
   await sleep(3500);
