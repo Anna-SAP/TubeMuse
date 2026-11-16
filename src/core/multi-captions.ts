@@ -17,6 +17,8 @@ export const MULTICC_MSG = {
   setLangs: 'tubemuse:multicc:set-langs',
   /** 内容脚本 → 后台：视频原声的语言（官方 videos.list，与自动字幕共用缓存） */
   videoLang: 'tubemuse:multicc:video-lang',
+  /** 侧边栏 → 内容脚本：取这个视频原声语言的那一种字幕，整条（"保存完整双语视频"带上原声字幕时，DECISIONS §84）；回复 ExportCaptionReply */
+  exportCaptions: 'tubemuse:multicc:export-captions',
 } as const;
 
 /** 语言偏好里的"视频原声语言" */

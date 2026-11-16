@@ -211,8 +211,10 @@ export interface Mp4AudioInfo {
 
 export interface Mp4Track {
   id: number;
-  /** vide / soun / 别的（字幕、章节、时间码…） */
+  /** vide / soun / sbtl（字幕）/ 别的（章节、时间码…） */
   handler: string;
+  /** 这条轨的语言：三个小写字母（ISO 639-2），没写明是 und */
+  language: string;
   timescale: number;
   /** 媒体时长（timescale 单位） */
   mediaDuration: number;
@@ -366,6 +368,9 @@ function parseTrack(b: Uint8Array, trak: Box, movieTimescale: number): Mp4Track 
   const timescale = mv === 1 ? u32(b, mdhd.body + 20) : u32(b, mdhd.body + 12);
   const mediaDuration = mv === 1 ? u64(b, mdhd.body + 24) : u32(b, mdhd.body + 16);
   const handler = tag(b, hdlr.body + 8);
+  const packed = u16(b, mdhd.body + (mv === 1 ? 32 : 20));
+  const letters = [(packed >> 10) & 31, (packed >> 5) & 31, packed & 31];
+  const language = letters.every((x) => x >= 1 && x <= 26) ? String.fromCharCode(...letters.map((x) => x + 0x60)) : 'und';
   if (!timescale) return undefined;
 
   const stsd = child(b, stbl, 'stsd');
@@ -442,6 +447,7 @@ function parseTrack(b: Uint8Array, trak: Box, movieTimescale: number): Mp4Track 
   const track: Mp4Track = {
     id,
     handler,
+    language,
     timescale,
     mediaDuration: mediaDuration || t,
     movieDuration: movieDuration || Math.round(((mediaDuration || t) / timescale) * movieTimescale),
@@ -490,6 +496,8 @@ export interface Mp4Source {
   movie: Mp4Movie;
   video: Mp4Track;
   audio: Mp4Track & { audio: Mp4AudioInfo };
+  /** 嵌在文件里的字幕轨（只认 MP4 自己的文字字幕 tx3g）；章节轨不算 */
+  subtitles: Mp4Track[];
   /** 画面一共多长（秒）：新文件的时长 */
   durationSec: number;
 }
@@ -516,7 +524,8 @@ export function pickSource(movie: Mp4Movie): Mp4Source {
   if (audio.audio.channels > 2) throw new Mp4Error(`原声是 ${audio.audio.channels} 声道（环绕声），这里只处理单声道和立体声`, '把原声转成立体声再试：ffmpeg -i 原文件 -c:v copy -ac 2 新文件.mp4');
   const durationSec = trackSeconds(movie, video);
   if (!(durationSec > 0)) throw new Mp4Error('读不出这个视频的时长');
-  return { movie, video, audio: audio as Mp4Source['audio'], durationSec };
+  const subtitles = movie.tracks.filter((t) => t.handler === 'sbtl' && t.entry === 'tx3g' && t.count > 0);
+  return { movie, video, audio: audio as Mp4Source['audio'], subtitles, durationSec };
 }
 
 // ── 写：新文件 ──
@@ -614,6 +623,89 @@ function audioTrak(a: EncodedAudio, lay: AudioLayout, id: number, movieTimescale
   return box('trak', fullBox('tkhd', 0, 3, tkhd.done()), box('edts', fullBox('elst', 0, 0, elst.done())), mdia);
 }
 
+/** 要写进新文件的字幕轨（MP4 的文字字幕 tx3g：播放器里可以开关的那种） */
+export interface TextTrackInput {
+  /** 首尾相接、铺满全片的样本：显示多久（timescale 单位）和它的字节（2 字节长度 + UTF-8 文字） */
+  samples: { duration: number; bytes: Uint8Array }[];
+  timescale: number;
+  /** 三个小写字母的语言代码（eng、zho…；und = 未指明） */
+  language: string;
+  /** 播放器字幕菜单里显示的名字 */
+  name: string;
+}
+
+/** 字幕轨每块放多少个样本 */
+const TEXT_SAMPLES_PER_CHUNK = 16;
+
+function textTrak(t: TextTrackInput, id: number, movieTimescale: number, movieDuration: number, video: Pick<Mp4Track, 'width' | 'height'>, chunkOffsets: Float64Array): Uint8Array {
+  const n = t.samples.length;
+  const vw = video.width || 1280;
+  const vh = video.height || 720;
+  // 字幕占画面底部的一条：字号按画面高度定，留两行的地方（认这些参数的主要是 QuickTime / 苹果的播放器；VLC、mpv 按自己的设置排）
+  const fontSize = Math.max(16, Math.min(96, Math.round(vh * 0.045)));
+  const boxH = Math.min(vh, Math.round((fontSize * 2.6) / 2) * 2);
+  const mediaDuration = t.samples.reduce((sum, x) => sum + x.duration, 0);
+  const tkhd = new Writer().u32(0).u32(0).u32(id).u32(0).u32(movieDuration).zeros(8).u16(0).u16(2).u16(0).u16(0);
+  // 平移到画面底部
+  for (const m of [0x00010000, 0, 0, 0, 0x00010000, 0, 0, (vh - boxH) * 65536, 0x40000000]) tkhd.u32(m);
+  tkhd.u32(vw * 65536).u32(boxH * 65536);
+  const lang = /^[a-z]{3}$/.test(t.language) ? t.language : 'und';
+  const packed = ((lang.charCodeAt(0) - 0x60) << 10) | ((lang.charCodeAt(1) - 0x60) << 5) | (lang.charCodeAt(2) - 0x60);
+  const mdhd = new Writer().u32(0).u32(0).u32(t.timescale).u32(mediaDuration).u16(packed).u16(0);
+  const hdlr = new Writer().u32(0).str('sbtl').zeros(12).bytes(new TextEncoder().encode(t.name)).u8(0);
+  const font = 'Sans-Serif';
+  const ftab = box('ftab', new Writer().u16(1).u16(1).u8(font.length).str(font).done());
+  const tx3g = box(
+    'tx3g',
+    new Writer()
+      .zeros(6)
+      .u16(1)
+      // 显示标志 0；水平居中（1）、垂直靠下（−1）；背景透明
+      .u32(0)
+      .u8(1)
+      .u8(0xff)
+      .u32(0)
+      // 文字框：上、左、下、右
+      .u16(0)
+      .u16(0)
+      .u16(boxH)
+      .u16(vw)
+      // 默认样式：字体 1、常规、字号、白色不透明
+      .u16(0)
+      .u16(0)
+      .u16(1)
+      .u8(0)
+      .u8(fontSize)
+      .u32(0xffffffff)
+      .done(),
+    ftab,
+  );
+  // 时长相同的相邻样本合成一条
+  const runs: [number, number][] = [];
+  for (const x of t.samples) {
+    const last = runs[runs.length - 1];
+    if (last && last[1] === x.duration) last[0]++;
+    else runs.push([1, x.duration]);
+  }
+  const stts = new Writer().u32(runs.length);
+  for (const [count, delta] of runs) stts.u32(count).u32(delta);
+  const chunkCount = chunkOffsets.length;
+  const lastCount = n - (chunkCount - 1) * TEXT_SAMPLES_PER_CHUNK;
+  const stsc = new Writer();
+  if (chunkCount > 1 && lastCount !== TEXT_SAMPLES_PER_CHUNK) stsc.u32(2).u32(1).u32(TEXT_SAMPLES_PER_CHUNK).u32(1).u32(chunkCount).u32(lastCount).u32(1);
+  else stsc.u32(1).u32(1).u32(chunkCount > 1 ? TEXT_SAMPLES_PER_CHUNK : n).u32(1);
+  const stsz = new Writer().u32(0).u32(n);
+  for (const x of t.samples) stsz.u32(x.bytes.length);
+  const co64 = new Writer().u32(chunkCount);
+  for (const o of chunkOffsets) co64.u64(o);
+  const stbl = box('stbl', fullBox('stsd', 0, 0, new Writer().u32(1).bytes(tx3g).done()), fullBox('stts', 0, 0, stts.done()), fullBox('stsc', 0, 0, stsc.done()), fullBox('stsz', 0, 0, stsz.done()), fullBox('co64', 0, 0, co64.done()));
+  const dinf = box('dinf', fullBox('dref', 0, 0, new Writer().u32(1).bytes(fullBox('url ', 0, 1, new Uint8Array(0))).done()));
+  const minf = box('minf', fullBox('nmhd', 0, 0, new Uint8Array(0)), dinf, stbl);
+  const mdia = box('mdia', fullBox('mdhd', 0, 0, mdhd.done()), fullBox('hdlr', 0, 0, hdlr.done()), minf);
+  // 标志 3：这条轨默认开着（播放器里可以关）
+  return box('trak', fullBox('tkhd', 0, 3, tkhd.done()), mdia);
+}
+
 /** 画面轨原样照搬：只把分块位置表换成新的（一律写成 64 位的 co64），去掉指向别的轨的引用（tref） */
 function videoTrak(moov: Uint8Array, t: Mp4Track, chunkOffsets: Float64Array): Uint8Array {
   const co64 = new Writer().u32(chunkOffsets.length);
@@ -659,7 +751,7 @@ const AUDIO_CHUNK_SEC = 0.5;
  * 排出新文件：ftyp + moov（索引在前，打开就能放）+ mdat（画面的块原样照搬，和新音轨的块按时间交错）。
  * 画面的数据用"原文件的第几个字节到第几个字节"表示，不读进内存
  */
-export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' | 'durationSec'>, audio: EncodedAudio): RemuxPlan {
+export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' | 'durationSec'>, audio: EncodedAudio, text?: TextTrackInput): RemuxPlan {
   const { movie, video } = src;
   if (!audio.frames.length) throw new Mp4Error('新音轨是空的，没法写文件');
   const timescale = audio.codec === 'opus' ? 48000 : audio.sampleRate;
@@ -667,15 +759,16 @@ export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' |
   const lay: AudioLayout = { timescale, perChunk, chunkCount: Math.ceil(audio.frames.length / perChunk) };
   const movieDuration = Math.round(src.durationSec * movie.timescale);
 
-  // 两条轨的块按开始时间排（同一时刻画面在前）
+  // 各条轨的块按开始时间排（同一时刻画面在前，其次声音，再是字幕）
   interface Item {
     at: number;
-    video: boolean;
+    /** 0 = 画面，1 = 声音，2 = 字幕 */
+    kind: 0 | 1 | 2;
     index: number;
     size: number;
   }
   const items: Item[] = [];
-  video.chunks.forEach((c, i) => items.push({ at: (video.dts[c.firstSample] ?? 0) / video.timescale, video: true, index: i, size: c.size }));
+  video.chunks.forEach((c, i) => items.push({ at: (video.dts[c.firstSample] ?? 0) / video.timescale, kind: 0, index: i, size: c.size }));
   const audioChunks: Uint8Array<ArrayBuffer>[] = [];
   for (let c = 0; c < lay.chunkCount; c++) {
     const frames = audio.frames.slice(c * perChunk, (c + 1) * perChunk);
@@ -686,12 +779,29 @@ export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' |
       o += f.length;
     }
     audioChunks.push(bytes);
-    items.push({ at: Math.max(0, (c * perChunk * audio.frameSamples - audio.priming) / timescale), video: false, index: c, size: bytes.length });
+    items.push({ at: Math.max(0, (c * perChunk * audio.frameSamples - audio.priming) / timescale), kind: 1, index: c, size: bytes.length });
   }
-  items.sort((x, y) => x.at - y.at || Number(y.video) - Number(x.video) || x.index - y.index);
+  const textChunks: Uint8Array<ArrayBuffer>[] = [];
+  if (text?.samples.length) {
+    let at = 0;
+    for (let c = 0; c * TEXT_SAMPLES_PER_CHUNK < text.samples.length; c++) {
+      const group = text.samples.slice(c * TEXT_SAMPLES_PER_CHUNK, (c + 1) * TEXT_SAMPLES_PER_CHUNK);
+      const bytes = new Uint8Array(group.reduce((n, x) => n + x.bytes.length, 0));
+      let o = 0;
+      for (const x of group) {
+        bytes.set(x.bytes, o);
+        o += x.bytes.length;
+      }
+      textChunks.push(bytes);
+      items.push({ at: at / text.timescale, kind: 2, index: c, size: bytes.length });
+      at += group.reduce((n, x) => n + x.duration, 0);
+    }
+  }
+  items.sort((x, y) => x.at - y.at || x.kind - y.kind || x.index - y.index);
 
   const videoOffsets = new Float64Array(video.chunks.length);
   const audioOffsets = new Float64Array(lay.chunkCount);
+  const textOffsets = new Float64Array(textChunks.length);
   // 先按位置 0 写一遍 moov 量出它多长（co64 的长度不随数值变），再填真正的位置
   const makeMoov = () => {
     const root: Box = { type: 'root', start: 0, body: 0, end: top.moov.length };
@@ -700,9 +810,10 @@ export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' |
     const audioId = Math.max(movie.nextTrackId, ...movie.tracks.map((t) => t.id + 1));
     return box(
       'moov',
-      mvhdFor(top.moov, movieDuration, audioId + 1),
+      mvhdFor(top.moov, movieDuration, audioId + (textChunks.length ? 2 : 1)),
       videoTrak(top.moov, video, videoOffsets),
       audioTrak(audio, lay, audioId, movie.timescale, movieDuration, audioOffsets),
+      ...(text && textChunks.length ? [textTrak(text, audioId + 1, movie.timescale, movieDuration, video, textOffsets)] : []),
       ...(udta ? [top.moov.subarray(udta.start, udta.end)] : []),
     );
   };
@@ -710,15 +821,14 @@ export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' |
   const headSize = top.ftyp.length + makeMoov().length + 16;
   let o = headSize;
   for (const x of items) {
-    if (x.video) videoOffsets[x.index] = o;
-    else audioOffsets[x.index] = o;
+    (x.kind === 0 ? videoOffsets : x.kind === 1 ? audioOffsets : textOffsets)[x.index] = o;
     o += x.size;
   }
   const mdatHead = new Writer().u32(1).str('mdat').u64(16 + dataSize).done();
   const parts: OutPart[] = [{ kind: 'bytes', bytes: new Uint8Array(top.ftyp) }, { kind: 'bytes', bytes: new Uint8Array(makeMoov()) }, { kind: 'bytes', bytes: mdatHead }];
   for (const x of items) {
-    if (!x.video) {
-      parts.push({ kind: 'bytes', bytes: audioChunks[x.index]! });
+    if (x.kind !== 0) {
+      parts.push({ kind: 'bytes', bytes: (x.kind === 1 ? audioChunks : textChunks)[x.index]! });
       continue;
     }
     const c = video.chunks[x.index]!;

@@ -5,6 +5,8 @@
 //      快速对齐时变速不变调，再换到原声的采样率（core/dub-render.ts）。
 //   3. 一秒一秒地混：原声 × 80% + 中文，过软限幅，交给编码器（能编 AAC 就用 AAC，不能时用 Opus）。
 //   4. 写新文件：索引 + 原文件里的画面数据（直接引用你选的那个文件，不复制进内存）+ 新音轨。
+//   5. 你勾了"带上原声字幕"时（DECISIONS §84）：把交进来的一句句字幕排成一条字幕轨写进去（播放器里可以开关）。
+//      字幕从哪来由调用方定（你选的字幕文件 / 原视频文件里嵌着的 / 取自 YouTube）；这里只负责读嵌着的那种和写。
 // 整个过程占的内存只有几秒钟的声音；耗时主要是音频的解码和编码，比视频时长短得多。
 
 import { DUB } from '../config/defaults';
@@ -25,7 +27,9 @@ import {
   type Mp4Source,
   type Mp4Top,
   type Mp4Track,
+  type TextTrackInput,
 } from '../core/mp4-remux';
+import { SUB_TIMESCALE, SubtitleFileError, cuesFromSamples, decodeTextSample, encodeTextSample, parseSubtitleFile, subtitleSamples, tidyCues, type SubCue } from '../core/subtitle-track';
 
 type AudioTrack = Mp4Track & { audio: Mp4AudioInfo };
 
@@ -78,6 +82,9 @@ export interface SourceProbe {
   durationSec: number;
   video: { label: string; width: number; height: number };
   audio: { label: string; sampleRate: number; channels: number };
+  /** 文件里嵌着几条字幕轨（第一条的语言） */
+  embeddedSubtitles: number;
+  embeddedLanguage?: string;
 }
 
 /** 能不能在这个浏览器里做（要有音频解码器和编码器） */
@@ -111,6 +118,62 @@ export async function probeSource(file: Blob): Promise<SourceProbe> {
     durationSec: source.durationSec,
     video: { label: videoCodecLabel(source.video.entry), width: source.video.width ?? 0, height: source.video.height ?? 0 },
     audio: { label: source.audio.audio.label, sampleRate: source.audio.audio.sampleRate, channels: source.audio.audio.channels },
+    embeddedSubtitles: source.subtitles.length,
+    ...(source.subtitles[0] ? { embeddedLanguage: source.subtitles[0].language } : {}),
+  };
+}
+
+// ── 原声字幕 ──
+
+/** 要写进新文件的字幕 */
+export interface ExportSubtitles {
+  cues: SubCue[];
+  /** 语言：三个小写字母（eng…；und = 没写明） */
+  language: string;
+  /** 播放器字幕菜单里显示的名字 */
+  name: string;
+}
+
+/** 读你选的字幕文件（.srt / .vtt）：整理成一句句不重叠的字幕 */
+export async function readSubtitleFile(file: Blob): Promise<SubCue[]> {
+  if (file.size > DUB.export.maxSubtitleFileBytes) throw new SubtitleFileError('这个字幕文件太大了', `字幕文件一般只有几十 KB；最大 ${DUB.export.maxSubtitleFileBytes / 1024 / 1024} MB。是不是选成了视频文件？`);
+  const cues = tidyCues(parseSubtitleFile(await file.text()));
+  if (!cues.length) throw new SubtitleFileError('这个字幕文件里一句字幕都没读到');
+  return cues;
+}
+
+/** 读原视频文件里嵌着的第一条字幕轨（MP4 的文字字幕）；没有、或里面一句都没有时返回 undefined */
+export async function readEmbeddedSubtitles(file: Blob, probe: SourceProbe): Promise<{ cues: SubCue[]; language: string } | undefined> {
+  const t = probe.source.subtitles[0];
+  if (!t) return undefined;
+  const read = readerOf(file);
+  const first = t.offsets[0]!;
+  const last = t.offsets[t.count - 1]! + t.sizes[t.count - 1]!;
+  // 字幕的数据一共没多少：连在一起（或离得不远）时一次读出来
+  const whole = last > first && last - first <= DUB.export.readWindowBytes ? await read(first, last) : undefined;
+  const samples: { start: number; end: number; text: string }[] = [];
+  const shift = t.editEmpty / probe.source.movie.timescale - t.editStart / t.timescale;
+  for (let i = 0; i < t.count; i++) {
+    const o = t.offsets[i]!;
+    const bytes = whole ? whole.subarray(o - first, o - first + t.sizes[i]!) : await read(o, o + t.sizes[i]!);
+    const end = i + 1 < t.count ? t.dts[i + 1]! : t.mediaDuration;
+    samples.push({ start: t.dts[i]! / t.timescale + shift, end: end / t.timescale + shift, text: decodeTextSample(bytes) });
+  }
+  const cues = tidyCues(cuesFromSamples(samples), probe.durationSec);
+  return cues.length ? { cues, language: t.language } : undefined;
+}
+
+function textTrackOf(subs: ExportSubtitles, durationSec: number): { track: TextTrackInput; cues: SubCue[] } | undefined {
+  const cues = tidyCues(subs.cues, durationSec);
+  if (!cues.length) return undefined;
+  return {
+    cues,
+    track: {
+      samples: subtitleSamples(cues, durationSec).map((x) => ({ duration: x.duration, bytes: encodeTextSample(x.text) })),
+      timescale: SUB_TIMESCALE,
+      language: subs.language,
+      name: subs.name,
+    },
   };
 }
 
@@ -711,6 +774,8 @@ export interface ExportInput {
   /** 这个视频的中文配音（m4a） */
   dub: Blob;
   map: DubMap;
+  /** 原声字幕（你勾了"带上原声字幕"时）：写成新文件里一条可以开关的字幕轨 */
+  subtitles?: ExportSubtitles;
   signal?: AbortSignal;
   /** done / total：已经混好多少秒 / 全片多少秒 */
   onProgress?: (p: { phase: 'mixing' | 'writing'; done: number; total: number }) => void;
@@ -730,6 +795,8 @@ export interface ExportResult {
   dubSec: number;
   pieces: number;
   alignment: DubAlignment;
+  /** 写进去的字幕（整理过、截到全片时长以内的）；没带字幕时没有这一项 */
+  subtitleCues?: SubCue[];
   elapsedMs: number;
 }
 
@@ -804,7 +871,8 @@ async function exportOnce(input: ExportInput, avoidAac: boolean): Promise<Export
             frameSamples: Math.round(((encoded.frameMicros || 20_000) * 48000) / 1e6),
             priming: 0,
           };
-    const plan = buildRemux(probe.top, src, audio);
+    const text = input.subtitles ? textTrackOf(input.subtitles, src.durationSec) : undefined;
+    const plan = buildRemux(probe.top, src, audio, text?.track);
     const blob = new Blob(
       plan.parts.map((p) => (p.kind === 'bytes' ? p.bytes : input.file.slice(p.start, p.end))),
       { type: 'video/mp4' },
@@ -819,6 +887,7 @@ async function exportOnce(input: ExportInput, avoidAac: boolean): Promise<Export
       dubSec: dub.seconds,
       pieces: pieces.length,
       alignment,
+      ...(text ? { subtitleCues: text.cues } : {}),
       elapsedMs: Math.round(performance.now() - started),
     };
   } finally {

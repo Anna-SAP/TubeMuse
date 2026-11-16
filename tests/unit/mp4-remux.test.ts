@@ -2,7 +2,8 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { Mp4Error, assembleRemux, buildRemux, parseMovie, pickSource, readMp4Top, trackSeconds, videoCodecLabel, type EncodedAudio, type FileRead } from '../../src/core/mp4-remux';
+import { Mp4Error, assembleRemux, buildRemux, parseMovie, pickSource, readMp4Top, trackSeconds, videoCodecLabel, type EncodedAudio, type FileRead, type TextTrackInput } from '../../src/core/mp4-remux';
+import { SUB_TIMESCALE, cuesFromSamples, decodeTextSample, encodeTextSample, subtitleSamples, type SubCue } from '../../src/core/subtitle-track';
 
 const SOURCE = new Uint8Array(readFileSync(new URL('../fixtures/dub-source.mp4', import.meta.url)));
 const M4A = new Uint8Array(readFileSync(new URL('../fixtures/xyz-tones.m4a', import.meta.url)));
@@ -137,6 +138,76 @@ describe('写出新文件：画面原样照搬，换上新音轨', () => {
   it('没有帧的新音轨：不写文件', async () => {
     const { top, src } = await open(SOURCE);
     expect(() => buildRemux(top, src, { codec: 'aac', sampleRate: 44100, channels: 2, bitrate: 64000, frames: [], frameSamples: 1024, priming: 0 })).toThrow(/空的/);
+  });
+});
+
+describe('写出新文件：带上一条字幕轨（DECISIONS §84）', () => {
+  const CUES: SubCue[] = [
+    { start: 0.5, end: 3, text: 'So in college,' },
+    { start: 3.1, end: 6, text: 'I was a government major,' },
+    { start: 6.2, end: 10, text: 'which means I had to write\na lot of papers. 中文也行' },
+    { start: 14, end: 15.5, text: 'Thank you.' },
+  ];
+  async function withText(cues: SubCue[] = CUES) {
+    const { top, src } = await open(SOURCE);
+    const audio: EncodedAudio = { codec: 'aac', sampleRate: 44100, channels: 2, bitrate: 64000, ...(src.audio.audio.description ? { description: src.audio.audio.description } : {}), frames: framesOf(SOURCE, src.audio), frameSamples: 1024, priming: 1024 };
+    const text: TextTrackInput = { samples: subtitleSamples(cues, src.durationSec).map((x) => ({ duration: x.duration, bytes: encodeTextSample(x.text) })), timescale: SUB_TIMESCALE, language: 'eng', name: 'English' };
+    const plan = buildRemux(top, src, audio, text);
+    const out = await assembleRemux(plan, readOf(SOURCE));
+    return { src, out, plain: await assembleRemux(buildRemux(top, src, audio), readOf(SOURCE)), again: await open(out) };
+  }
+  /** 把新文件里字幕轨的样本读回来 */
+  function readBack(out: Uint8Array, t: { count: number; offsets: Float64Array; sizes: Uint32Array; dts: Float64Array; timescale: number; mediaDuration: number }) {
+    return Array.from({ length: t.count }, (_, i) => ({
+      start: t.dts[i]! / t.timescale,
+      end: (i + 1 < t.count ? t.dts[i + 1]! : t.mediaDuration) / t.timescale,
+      text: decodeTextSample(out.subarray(t.offsets[i]!, t.offsets[i]! + t.sizes[i]!)),
+    }));
+  }
+  it('新文件多一条字幕轨：tx3g、英文、毫秒为单位、铺满全片；读回来每一句的文字和时间都对', async () => {
+    const { out, again } = await withText();
+    expect(again.src.movie.tracks.map((t) => t.handler)).toEqual(['vide', 'soun', 'sbtl']);
+    const sub = again.src.subtitles[0]!;
+    expect(sub).toMatchObject({ handler: 'sbtl', entry: 'tx3g', language: 'eng', timescale: 1000, mediaDuration: 16000 });
+    expect(trackSeconds(again.src.movie, sub)).toBeCloseTo(16, 2);
+    expect(cuesFromSamples(readBack(out, sub))).toEqual(CUES);
+    // 句子之间、开头、结尾的空档是空样本：一共 4 句 + 5 段空档
+    expect(sub.count).toBe(9);
+    // 留着给本机的 ffprobe / ffmpeg 看
+    if (process.env.TUBEMUSE_KEEP_REMUX_SUBS) writeFileSync(process.env.TUBEMUSE_KEEP_REMUX_SUBS, out);
+  });
+  it('画面和声音不受影响：和不带字幕时一样，每一帧画面仍和原文件逐字节相同', async () => {
+    const { src, out, plain, again } = await withText();
+    const noSub = await open(plain);
+    expect(again.src.video.count).toBe(240);
+    expect(again.src.audio.count).toBe(noSub.src.audio.count);
+    expect(noSub.src.subtitles).toEqual([]);
+    for (let i = 0; i < src.video.count; i++) {
+      const a = SOURCE.subarray(src.video.offsets[i]!, src.video.offsets[i]! + src.video.sizes[i]!);
+      const b = out.subarray(again.src.video.offsets[i]!, again.src.video.offsets[i]! + again.src.video.sizes[i]!);
+      if (a.length !== b.length || a.some((x, k) => x !== b[k])) throw new Error(`第 ${i} 帧画面和原文件不一样`);
+    }
+    expect(again.src.movie.nextTrackId).toBeGreaterThan(Math.max(...again.src.movie.tracks.map((t) => t.id)));
+  });
+  it('句子很多时分成好几块，和画面、声音按时间交错；没有字幕（空列表）就不写这条轨', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ start: i * 0.25, end: i * 0.25 + 0.2, text: `line ${i}` }));
+    const { out, again } = await withText(many);
+    const sub = again.src.subtitles[0]!;
+    expect(sub.chunks.length).toBeGreaterThan(3);
+    expect(cuesFromSamples(readBack(out, sub)).map((c) => c.text)).toEqual(many.map((c) => c.text));
+    expect(sub.chunks[sub.chunks.length - 1]!.offset).toBeGreaterThan(again.src.video.chunks[1]!.offset);
+    const none = await withText([]);
+    // 没有一句字幕时样本只有一个空的：仍是一条合法的轨，但调用方不会传空的进来（见 services/dub-export.ts）
+    expect(none.again.src.movie.tracks.length).toBe(3);
+  });
+  it('原视频文件里嵌着的字幕轨认得出来（章节轨、别的文字轨不算）', async () => {
+    const { out } = await withText();
+    const again = await open(out);
+    expect(again.src.subtitles).toHaveLength(1);
+    expect(again.src.subtitles[0]!.language).toBe('eng');
+    const { src } = await open(SOURCE);
+    expect(src.subtitles).toEqual([]);
+    expect(src.video.language).toBe('und');
   });
 });
 

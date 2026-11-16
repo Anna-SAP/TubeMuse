@@ -2,6 +2,8 @@
 // 中文配音："保存完整双语视频"（DECISIONS §83）。你选原视频文件（MP4）→ 侧边栏里离线合成（不播放）→ 自动下载。
 // 检查合成出来的文件本身：画面和原文件逐像素一样、时长是整片；原声按 80%；中文按开头的偏移和对齐点落在该在的时间上
 // （快速对齐时按倍速、音调不变）；用时远小于视频时长；不在 YouTube 页面上也能做；全程没有网络请求。
+// 带上原声字幕（DECISIONS §84）：默认勾着；字幕按"你选的字幕文件 → 原视频文件里嵌着的 → YouTube 页面上这个视频自带的"找，
+// 都没有时停下来问；写成视频里的一条字幕轨，还能另存成 .srt。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { check, MOCK, root, shots } from '../harness.mjs';
@@ -73,8 +75,23 @@ export async function dubFull(t) {
   };
   const phase = (/** @type {string} */ want, timeout = 20000) => panel.locator(`[data-testid="dub-export"][data-phase="${want}"]`).first().waitFor({ timeout });
 
+  const exportSubsSetting = async () => /** @type {any} */ (await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('settings'))).settings?.dub?.exportSubtitles;
+  /** 勾上 / 取消"带上原声字幕"，等它存下 */
+  const setSubs = async (/** @type {boolean} */ on) => {
+    if ((await panel.getByTestId('dub-full-subs').isChecked()) !== on) await panel.getByTestId('dub-full-subs').click();
+    for (let i = 0; i < 30 && (await exportSubsSetting()) !== on; i++) await panel.waitForTimeout(100);
+  };
+
   console.log('\n[保存完整双语视频：入口在「配音」页，不用开启配音、不用播放]');
   await panel.getByTestId('dub-full').waitFor({ timeout: 10000 });
+  const subsAuto = (await text('dub-full-subs-auto')).replace(/\s+/g, ' ');
+  check(
+    (await panel.getByTestId('dub-full-subs').isChecked()) && subsAuto.includes('字幕不在视频文件里') && subsAuto.includes('从这个 YouTube 页面取这个视频自带的原声字幕') && (await panel.getByTestId('dub-full-subs-pick').count()) === 1,
+    `"带上原声字幕"默认勾着，并写明字幕为什么要另找、从哪找：${subsAuto.slice(0, 60)}…`,
+  );
+  // 前面几节先看不带字幕的合成（和以前一样）；带字幕的在后面
+  await setSubs(false);
+  check((await exportSubsSetting()) === false && (await panel.getByTestId('dub-full-subs-source').count()) === 0, '取消勾选：存进设置，字幕来源的说明收起');
   const about = (await text('dub-full-about')).replace(/\s+/g, ' ');
   check(
     about.includes('不用播放') && about.includes('画面原样照搬') && about.includes('全部 1 个对齐点') && about.includes('不下载 YouTube 的视频') && !about.includes('实时录'),
@@ -208,6 +225,7 @@ export async function dubFull(t) {
     `从选好文件到文件下载下来用了 ${(first.wallMs / 1000).toFixed(1)} 秒，视频长 ${DUB_FULL_VIDEO.seconds} 秒：不到一半（界面上写的：${/用时[^·]*/.exec(first.done)?.[0]}）`,
   );
   check(first.name === 'mock watch_双语完整版.mp4' && (await text('dub-export-file')) === first.name, `文件名：${first.name}`);
+  check(!first.bytes.includes(Buffer.from('tx3g')) && (await text('dub-export-no-subs')).includes('没有带字幕') && (await panel.getByTestId('dub-export-srt').count()) === 0, '没勾"带上原声字幕"：文件里没有字幕轨，界面写明这一份没有带字幕');
   check(first.done.includes('全片 0:16') && first.done.includes('画面原样照搬') && first.done.includes('中文 2 段') && (await text('dub-export-saved')).includes('存进下载文件夹'), `界面写明合成好了：${first.done}`);
   const v1 = first.measured.video;
   check(Math.abs(v1.duration - 16) < 0.1 && v1.width === 320 && v1.height === 180, `新文件能放：${v1.width}×${v1.height}，时长 ${v1.duration.toFixed(2)} 秒 = 整片`);
@@ -256,10 +274,155 @@ export async function dubFull(t) {
   const newReqs = requests.slice(reqStart).filter((r) => !(r.path === '/watch' || r.path === `/media/${ID}.wav` || r.path === '/favicon.ico' || r.path.startsWith('/youtube/v3/videos')));
   check(newReqs.length === 0, `合成完整双语视频没有发出任何网络请求${newReqs.length ? `：${[...new Set(newReqs.map((r) => r.path))].join(', ')}` : ''}`);
 
-  // 收尾：移除配音，关掉页面
-  await panel.getByTestId('dub-export-other').getByRole('button', { name: '收起', exact: true }).click();
+  // ── 带上原声字幕（DECISIONS §84）──
+  const VTT = `WEBVTT
+Kind: captions
+Language: en
+
+00:00:00.500 --> 00:00:03.000 align:start position:0%
+ 
+So<00:00:00.900><c> in</c><00:00:01.200><c> college</c>
+
+00:00:03.000 --> 00:00:03.010 align:start position:0%
+So in college
+ 
+
+00:00:03.010 --> 00:00:06.000 align:start position:0%
+So in college
+I<00:00:03.400><c> was</c><c> a</c><c> government</c><c> major</c>
+
+00:00:06.000 --> 00:00:06.010 align:start position:0%
+I was a government major
+ 
+
+00:00:06.010 --> 00:00:10.000 align:start position:0%
+I was a government major
+which means 写了很多论文
+`;
+  const VTT_LINES = ['So in college', 'I was a government major', 'which means 写了很多论文'];
+  const VTT_AS_SRT = '1\n00:00:00,500 --> 00:00:03,010\nSo in college\n\n2\n00:00:03,010 --> 00:00:06,010\nI was a government major\n\n3\n00:00:06,010 --> 00:00:10,000\nwhich means 写了很多论文\n';
+  /** 新文件里有没有一条字幕轨、里面有没有这几句 */
+  const hasSubs = (/** @type {Buffer} */ bytes, /** @type {string[]} */ lines) => bytes.includes(Buffer.from('tx3g')) && bytes.includes(Buffer.from('sbtl')) && lines.every((l) => bytes.includes(Buffer.from(l, 'utf8')));
+  /** 在文件对话框里选一个文件（点 testId 这个按钮） */
+  const choose = async (/** @type {string} */ testId, /** @type {string | { name: string, mimeType: string, buffer: Buffer }} */ file) => {
+    const [chooser] = await Promise.all([panel.waitForEvent('filechooser'), panel.getByTestId(testId).first().click()]);
+    await chooser.setFiles(file);
+  };
+  const collapse = async () => {
+    if (await panel.getByTestId('dub-export-other').count()) await panel.getByTestId('dub-export-other').getByRole('button', { name: '收起', exact: true }).click();
+    else if (await panel.getByTestId('dub-export').count()) await panel.getByTestId('dub-export').getByRole('button', { name: '收起', exact: true }).click();
+  };
+  const savedFile = async (/** @type {import('playwright').Download} */ dl) => ({ name: dl.suggestedFilename(), bytes: readFileSync(/** @type {string} */ (await dl.path())) });
+
+  console.log('\n[保存完整双语视频 · 原声字幕：没有字幕来源时停下来问，不悄悄合成一份没字幕的]');
+  await collapse();
   await page.goto(`${MOCK}/watch?v=${ID}`);
+  await panel.getByTestId('dub-full').waitFor({ timeout: 10000 });
+  const subsReqStart = requests.length;
+  await setSubs(true);
+  await pick(SOURCE);
+  await phase('need-subs', 40000);
+  const need = (await text('dub-export-need-subs')).replace(/\s+/g, ' ');
+  check(
+    need.includes('没有找到字幕') && need.includes('原视频文件里没有嵌着字幕') && need.includes('从 YouTube 页面也没取到') && (await panel.getByTestId('dub-export-subs-skip').count()) === 1,
+    `原视频文件里没有字幕、这个页面上也取不到：停下来说明原因，给出"选字幕文件 / 不带字幕继续 / 取消"：${need.slice(0, 90)}…`,
+  );
+  // 选了一个不是字幕的文件：留在原地，说明哪里不对
+  await choose('dub-export-subs-pick', { name: 'notes.srt', mimeType: 'application/x-subrip', buffer: Buffer.from('just some notes\nno timings here') });
+  await panel.getByTestId('dub-export-need-subs').filter({ hasText: '用不了' }).waitFor({ timeout: 10000 });
+  check((await text('dub-export-need-subs')).includes('「notes.srt」用不了') && (await text('dub-export-need-subs')).includes('一句字幕都没读到'), '选的文件不是字幕：说明读不出来，仍然等你决定');
+  // 选一个 YouTube 自动字幕导出的 .vtt（每句带着上一句、夹着过渡句）
+  const [subDl] = await Promise.all([panel.waitForEvent('download', { timeout: 60000 }), choose('dub-export-subs-pick', { name: 'talk.en.vtt', mimeType: 'text/vtt', buffer: Buffer.from(VTT, 'utf8') })]);
+  await phase('done');
+  const withFile = await savedFile(subDl);
+  const subsLine = (await text('dub-export-subs')).replace(/\s+/g, ' ');
+  check(hasSubs(withFile.bytes, VTT_LINES), `选了字幕文件后接着合成：新文件里有一条字幕轨，三句都在（${withFile.name}，${withFile.bytes.length} 字节）`);
+  check(
+    subsLine.includes('原声字幕：3 句') && subsLine.includes('你选的字幕文件（talk.en.vtt）') && subsLine.includes('可以关') && subsLine.includes('另存字幕（.srt）'),
+    `界面写明字幕有几句、从哪来、哪些播放器认：${subsLine.slice(0, 80)}…`,
+  );
+  const [srtDl] = await Promise.all([panel.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('dub-export-srt').click()]);
+  const srt = await savedFile(srtDl);
+  check(srt.name === 'mock watch_双语完整版.srt' && srt.bytes.toString('utf8') === VTT_AS_SRT, `"另存字幕（.srt）"：和视频同名；滚动字幕的重复去掉了，一句接一句：${JSON.stringify(srt.bytes.toString('utf8').slice(0, 60))}…`);
+  await panel.screenshot({ path: join(shots, '76-dub-export-subs.png'), fullPage: true });
+
+  console.log('\n[保存完整双语视频 · 原声字幕：原视频文件里嵌着字幕轨时直接用它]');
+  await collapse();
+  check((await text('dub-full-subs-chosen')).includes('talk.en.vtt') && (await text('dub-full-subs-chosen')).includes('3 句'), '刚才选的字幕文件记着（这次打开侧边栏期间），可以不用');
+  await panel.getByTestId('dub-full-subs-drop').click();
+  await panel.getByTestId('dub-full-subs-auto').waitFor({ timeout: 5000 });
+  // 拿上一步合成出来的文件当原视频：它里面嵌着一条字幕轨
+  const [embDl] = await Promise.all([panel.waitForEvent('download', { timeout: 60000 }), pick({ name: 'with-subs.mp4', mimeType: 'video/mp4', buffer: withFile.bytes })]);
+  await phase('done');
+  const emb = await savedFile(embDl);
+  const embLine = (await text('dub-export-subs')).replace(/\s+/g, ' ');
+  check(hasSubs(emb.bytes, VTT_LINES) && embLine.includes('原声字幕：3 句') && embLine.includes('原视频文件里嵌着的字幕'), `没选字幕文件、原视频文件里有字幕轨：直接用它，不去 YouTube 取：${embLine.slice(0, 60)}…`);
+
+  console.log('\n[保存完整双语视频 · 原声字幕：这一次不带；事先选好字幕文件]');
+  await collapse();
+  await pick(SOURCE);
+  await phase('need-subs', 40000);
+  const [skipDl] = await Promise.all([panel.waitForEvent('download', { timeout: 60000 }), panel.getByTestId('dub-export-subs-skip').click()]);
+  await phase('done');
+  const skipped = await savedFile(skipDl);
+  check(!skipped.bytes.includes(Buffer.from('tx3g')) && (await text('dub-export-no-subs')).includes('没有带字幕') && (await exportSubsSetting()) === true, '点"不带字幕，继续合成"：这一份不带，设置不变');
+  await collapse();
+  await choose('dub-full-subs-pick', { name: 'broken.srt', mimeType: 'application/x-subrip', buffer: Buffer.from('{"events":[]}') });
+  await panel.getByTestId('dub-full-subs-problem').waitFor({ timeout: 10000 });
+  check((await text('dub-full-subs-problem')).includes('不是 .srt 或 .vtt 格式'), '事先选的字幕文件格式不对：当场说明');
+  await choose('dub-full-subs-pick', { name: 'talk.srt', mimeType: 'application/x-subrip', buffer: Buffer.from(VTT_AS_SRT, 'utf8') });
+  await panel.getByTestId('dub-full-subs-chosen').waitFor({ timeout: 10000 });
+  const [preDl] = await Promise.all([panel.waitForEvent('download', { timeout: 60000 }), pick(SOURCE)]);
+  await phase('done');
+  const pre = await savedFile(preDl);
+  check(hasSubs(pre.bytes, VTT_LINES) && (await text('dub-export-subs')).includes('你选的字幕文件（talk.srt）'), '事先选好 .srt 再选原视频文件：不用再问，直接带上');
+  const subReqs = requests.slice(subsReqStart).filter((r) => !(r.path === '/watch' || r.path === `/media/${ID}.wav` || r.path === '/favicon.ico' || r.path.startsWith('/youtube/v3/videos')));
+  check(subReqs.length === 0, `用字幕文件、嵌着的字幕时没有发出任何网络请求${subReqs.length ? `：${[...new Set(subReqs.map((r) => r.path))].join(', ')}` : ''}`);
+  await collapse();
+  await panel.getByTestId('dub-full-subs-drop').click();
+
+  console.log('\n[保存完整双语视频 · 原声字幕：开着这个视频的 YouTube 页面时，取它自带的原声字幕]');
+  const CC_ID = 'ccDubSubs007';
+  const [ccPage] = await Promise.all([context.waitForEvent('page'), panel.evaluate((u) => /** @type {any} */ (globalThis).chrome.tabs.create({ url: u, active: true }), `${MOCK}/watch?v=${CC_ID}`)]);
+  ccPage.on('pageerror', (e) => consoleErrors.push(`dub subs pageerror: ${e.message}`));
+  ccPage.on('console', (m) => m.type() === 'error' && consoleErrors.push(`dub subs: ${m.text()}`));
+  await ccPage.waitForFunction(() => (document.querySelector('video')?.readyState ?? 0) >= 1, null, { timeout: 20000 });
+  await panel.getByTestId('dub-pick').waitFor({ timeout: 10000 });
+  await panel.getByTestId('dub-file').setInputFiles(M4A);
+  await panel.getByTestId('dub-done').waitFor({ timeout: 15000 });
+  await panel.getByTestId('dub-full-subs-auto').waitFor({ timeout: 10000 });
+  const ccReqStart = requests.length;
+  const nativeBefore = await ccPage.evaluate(() => document.querySelector('.ytp-subtitles-button')?.getAttribute('aria-pressed'));
+  const [ccDl] = await Promise.all([panel.waitForEvent('download', { timeout: 90000 }), pick(SOURCE)]);
+  await phase('done');
+  const cc = await savedFile(ccDl);
+  const ccLine = (await text('dub-export-subs')).replace(/\s+/g, ' ');
+  const CC_LINES = ['so in college', 'i was a government major', 'which means i had to write a lot of papers', 'thank you'];
+  check(hasSubs(cc.bytes, CC_LINES) && !cc.bytes.includes(Buffer.from('上大学的时候', 'utf8')), '新文件里的字幕轨是这个视频的英文原声字幕（四句都在），不是中文那一条');
+  check(
+    ccLine.includes('原声字幕：4 句') && ccLine.includes('取自 YouTube 上这个视频的字幕（English (auto-generated)）'),
+    `界面写明取的是哪一条：${ccLine.slice(0, 70)}…`,
+  );
+  const tt = requests.slice(ccReqStart).filter((r) => r.path === '/api/timedtext' && r.headers['x-mock-player'] !== '1');
+  check(
+    tt.length >= 1 && tt.every((r) => r.query.v === CC_ID && r.query.lang === 'en' && r.query.kind === 'asr' && !!r.query.pot && !r.query.tlang),
+    `字幕是复用播放器自己的字幕请求取的：只取了英文自动字幕这一种，带着播放器的令牌，没用自动翻译（${tt.length} 次）`,
+  );
+  const nativeAfter = await ccPage.evaluate(() => ({ pressed: document.querySelector('.ytp-subtitles-button')?.getAttribute('aria-pressed'), paused: /** @type {HTMLVideoElement} */ (document.querySelector('video')).paused, t: /** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime }));
+  check(nativeBefore === 'false' && nativeAfter.pressed === 'false' && nativeAfter.paused && nativeAfter.t === 0, '取完之后播放器的原生字幕关回去了（原来就是关着的），视频没有被播放');
+  const ccOther = requests.slice(ccReqStart).filter((r) => !(r.path === '/watch' || r.path === '/api/timedtext' || r.path.startsWith('/media/') || r.path === '/favicon.ico' || r.path.startsWith('/youtube/v3/videos')));
+  check(ccOther.length === 0, `除了那一处字幕请求，没有别的网络请求${ccOther.length ? `：${[...new Set(ccOther.map((r) => r.path))].join(', ')}` : ''}`);
+  await panel.screenshot({ path: join(shots, '77-dub-export-youtube-subs.png'), fullPage: true });
+  await collapse();
+  await panel.getByTestId('dub-remove').click();
+  await panel.getByTestId('dub-remove-yes').click();
+  await panel.getByTestId('dub-pick').waitFor({ timeout: 10000 });
+  await ccPage.close();
+  await page.bringToFront();
+  await panel.evaluate((u) => /** @type {any} */ (globalThis).chrome.tabs.query({ url: u }).then((/** @type {any[]} */ tabs) => /** @type {any} */ (globalThis).chrome.tabs.update(tabs[0].id, { active: true })), `${MOCK}/watch?v=${ID}*`);
   await panel.getByTestId('dub-remove').waitFor({ timeout: 10000 });
+
+  // 收尾：移除配音，关掉页面
   await panel.getByTestId('dub-remove').click();
   await panel.getByTestId('dub-remove-yes').click();
   await panel.getByTestId('dub-pick').waitFor({ timeout: 10000 });
