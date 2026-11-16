@@ -145,6 +145,22 @@ const fill = (css, value) =>
      el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true;`,
     [css, value],
   );
+/**
+ * 对 mock 站点拦住 / 放开没点过的页面的声音（Firefox 的"自动播放"网站权限，设成"阻止音频和视频"）：
+ * 拦着时，没被真的点过的页面里 AudioContext 一直起不来（实测等 3 秒仍是 suspended），点过之后 30 毫秒内起来。
+ * 权限同步到页面所在的进程要一小会儿。
+ * @param {boolean} blocked
+ */
+const setMockAutoplayBlocked = async (blocked) => {
+  await b.chrome(
+    `const p = Services.scriptSecurityManager.createContentPrincipal(Services.io.newURI(arguments[0]), {});
+     if (arguments[1]) Services.perms.addFromPrincipal(p, 'autoplay-media', Ci.nsIAutoplay.BLOCKED_ALL);
+     else Services.perms.removeFromPrincipal(p, 'autoplay-media');
+     return true;`,
+    [MOCK, blocked],
+  );
+  await new Promise((r) => setTimeout(r, 300));
+};
 /** 从侧边栏打开一个前台标签页，返回它的句柄（侧边栏跟踪的就是这个"当前标签页"） @param {string} url */
 async function openActiveTab(url) {
   await b.switchTo(handles.panel);
@@ -358,7 +374,12 @@ try {
   await b.run(`await document.querySelector('video').play();`);
   await b.switchTo(handles.panel);
   await b.waitFor(`document.querySelector('[data-testid=clip-status]')?.textContent.includes('可以开始录制')`, { what: '可以开始录制' });
-  // 页面从没被点过（视频是脚本放起来的）：Firefox 不让它处理声音，录制停下来说明怎么办，不录一段没声音的
+  // 页面从没被点过（视频是脚本放起来的）：Firefox 不让它处理声音，录制停下来说明怎么办，不录一段没声音的。
+  // 这个测试用的 Firefox 把自动播放整个放开了（media.autoplay.default = 0，脚本才能直接把视频放起来）——那样没点过的页面
+  // 其实也能处理声音，看不看得到这句说明只取决于第一次启动声音有没有超过 CLIPS.audioResumeMs（同一流程实测 23 毫秒到 1.6 秒都有，
+  // 2026-11-16 在 CI 上就因为启动得快而没看到）。所以这一步对 mock 站点按 Firefox 出厂的方式拦住声音（你没改过设置时的真实情况）：
+  // 没点过就一直起不来，真的点一下才起得来；录上之后撤掉，后面各节照旧。
+  await setMockAutoplayBlocked(true);
   await tap('[data-testid=clip-start]');
   await b.waitFor(`document.querySelector('#clips, .app')?.textContent.includes('浏览器还没允许这个页面处理声音')`, { what: '没点过页面时的说明' });
   check(true, '页面没被点过时：说明"在视频画面上点一下再录"，不录没声音的片段');
@@ -369,6 +390,8 @@ try {
   let before = downloaded();
   await tap('[data-testid=clip-start]');
   await b.waitFor(`document.querySelector('[data-testid=clip-status]')?.textContent.includes('正在录制')`, { what: '正在录制' });
+  check(true, '在视频上真的点一下之后：声音仍被拦着的设置下也能开始录制');
+  await setMockAutoplayBlocked(false);
   const badge = await b.run(`const [t] = (await browser.tabs.query({})).filter((x) => String(x.url).includes('clipFree0001')); return browser.action.getBadgeText({ tabId: t.id });`);
   check(badge === 'REC', `录制中工具栏图标显示 REC（实际："${badge}"）`);
   await sleep(3500);
