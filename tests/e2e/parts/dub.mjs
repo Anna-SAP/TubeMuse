@@ -285,6 +285,47 @@ export async function dub(t) {
   await panel.getByTestId('dub-delay-input').blur();
   r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - 10)) < 0.05, '改回 +10 秒');
   await waitMapText('dub-gap-value', (x) => near(x, total - 10), '改回 +10 秒后读数跟着变');
+  // 侧边栏放大到 125%（DECISIONS §80）：图跟着变大但不撑出去；鼠标位置按缩放换算过，指哪里、拖多少仍然准
+  {
+    const zf = 1.25;
+    // 不用 Playwright 的 click()：它点之前会先把吸顶的按钮"滚到可见"，把页面滚走
+    const zoomClick = (/** @type {string} */ id) => panel.getByTestId(id).evaluate((el) => /** @type {HTMLElement} */ (el).click());
+    await zoomClick('zoom-in');
+    await zoomClick('zoom-in');
+    await panel.locator('[data-testid=zoom][data-zoom="125"]').waitFor();
+    await detail.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(300);
+    const fit = await panel.evaluate(() => {
+      const svg = /** @type {SVGSVGElement} */ (document.querySelector('[data-testid=dub-map-detail]'));
+      const map = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-map]'));
+      return { svg: svg.getBoundingClientRect().width, map: map.getBoundingClientRect().width, overflowX: document.documentElement.scrollWidth - innerWidth };
+    });
+    check(Math.abs(fit.svg - fit.map) < 2 * zf && fit.overflowX <= 0, `放大到 125%：对齐图跟着变大，仍然正好占满这一栏（图 ${fit.svg.toFixed(0)}px，栏 ${fit.map.toFixed(0)}px），没有横向滚动条`);
+    const zbox = /** @type {{ x: number, y: number, width: number, height: number }} */ (await detail.boundingBox());
+    const plot = zbox.width / zf - 36;
+    const zPxPerSec = (plot / 120) * zf;
+    const zCenterX = zbox.x + (30 + plot / 2) * zf;
+    await panel.mouse.move(zCenterX - 5 * zPxPerSec, zbox.y + 26 * zf);
+    const zHover = await waitMapText('dub-map-hover', (x) => x.includes('视频 1:05'), '125% 时指着 1:05');
+    check(zHover.includes('视频 1:05：中文停下等画面，只有原声'), `125% 时指着英文那条的 1:05：说的还是 1:05（${zHover.slice(0, 24)}…）`);
+    const zDragBy = 50;
+    const zWant = Math.round((10 + zDragBy / zPxPerSec) * 10) / 10;
+    const zy = zbox.y + 95 * zf;
+    await panel.mouse.move(zCenterX, zy);
+    await panel.mouse.down();
+    await panel.mouse.move(zCenterX + zDragBy, zy, { steps: 6 });
+    await panel.mouse.up();
+    r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - zWant)) < 0.15, '125% 时拖完存下');
+    check(Math.abs(r.anchors[0].dub - (anchorVideo - zWant)) < 0.15, `125% 时把中文往右拖 ${zDragBy} 像素 = 推后 ${(zWant - 10).toFixed(1)} 秒（屏幕上每秒 ${zPxPerSec.toFixed(2)} 像素）：存下的偏移是 +${(anchorVideo - r.anchors[0].dub).toFixed(1)} 秒`);
+    await panel.getByTestId('dub-map').screenshot({ path: join(shots, '72b-dub-align-map-zoom-125.png') });
+    await zoomClick('zoom-reset');
+    await panel.locator('[data-testid=zoom][data-zoom="100"]').waitFor();
+    await panel.getByTestId('dub-delay-input').fill('10');
+    await panel.getByTestId('dub-delay-input').press('Enter');
+    await panel.getByTestId('dub-delay-input').blur();
+    r = await waitStored((x) => Math.abs(x.anchors?.[0]?.dub - (anchorVideo - 10)) < 0.05, '恢复 100%、改回 +10 秒');
+    await waitMapText('dub-gap-value', (x) => near(x, total - 10), '恢复 100%、改回 +10 秒后读数跟着变');
+  }
   await panel.getByTestId('dub-map-zoom').filter({ hasText: '30 秒' }).click();
   check((await panel.getByTestId('dub-map-zoom').filter({ hasText: '30 秒' }).getAttribute('aria-pressed')) === 'true', '附近可以放大到 30 秒');
   await panel.getByTestId('dub-map').screenshot({ path: join(shots, '72-dub-align-map.png') });

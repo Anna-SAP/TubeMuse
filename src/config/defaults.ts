@@ -261,8 +261,25 @@ export const DEFAULT_SETTINGS = {
   ui: {
     /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
     pinNav: false,
+    /** 侧边栏整体缩放的百分比（头部、导航栏和各页内容一起缩放）；可选的档位见 UI_ZOOM（DECISIONS §80） */
+    zoom: 100,
   },
 };
+
+/**
+ * 侧边栏缩放（DECISIONS §80）。档位和浏览器自己的页面缩放一致，用起来不用重新适应；
+ * 缩小是为了一屏看到更多，放大是为了看清某一处。
+ */
+export const UI_ZOOM = {
+  /** 可选的档位（百分比，从小到大）；放大 / 缩小一次走一档 */
+  levels: [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200],
+  /** 默认（"恢复"回到的）档位 */
+  default: 100,
+  /** Ctrl + 滚轮：累计滚过这么多像素走一档（鼠标滚轮一格约 100；触控板的细碎滚动攒够了才走） */
+  wheelStepPx: 100,
+  /** Ctrl + 滚轮：停了这么久（毫秒）之后，之前没攒够一档的零头作废 */
+  wheelIdleMs: 250,
+} as const;
 
 export type SubtitleAsrEngine = 'browser' | 'openai';
 export type SubtitleTranslationEngine = 'local' | 'llm';

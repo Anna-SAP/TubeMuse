@@ -15,6 +15,7 @@ import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState,
 import { emptyXyzSaved, sanitizeXyzSaved, type XyzListen, type XyzSaved, type XyzSnapshotRecord, type XyzTranscript } from '../core/xyz';
 import type { Mp3Scan } from '../core/podcast-audio';
 import { sanitizeDubIndex, type DubIndex } from '../core/dub';
+import { normalizeZoom } from '../core/zoom';
 import type {
   Adjustment,
   ClusterState,
@@ -125,7 +126,7 @@ export function mergeSettings(stored: unknown): Settings {
     muse: { ...d.muse, ...(s.muse as object) },
     xyz: { ...d.xyz, ...(s.xyz as object) },
     dub: { ...d.dub, ...(s.dub as object) },
-    ui: { ...d.ui, ...(s.ui as object) },
+    ui: { ...d.ui, ...(s.ui as object), zoom: normalizeZoom(s.ui?.zoom) },
   } as Settings;
 }
 

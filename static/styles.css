@@ -116,6 +116,87 @@ code {
   font-weight: 650;
   white-space: nowrap;
 }
+/* 品牌名和它下面的缩放控件：头部的高度由右边几行配额条撑着，竖着放这两样不多占地方 */
+.brand-col {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+/* ── 侧边栏缩放（DECISIONS §80）：「− 100% +」 ── */
+.zoom {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.zoom button {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.zoom .zoom-step {
+  min-width: 22px;
+  font-size: 14px;
+}
+.zoom .zoom-level {
+  min-width: 42px;
+  border-inline: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+/* 不是默认大小时用强调色标出来：一眼看得出现在缩放过，点一下就回去 */
+.zoom .zoom-level.changed {
+  color: var(--accent);
+  font-weight: 650;
+}
+.zoom button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.zoom button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.zoom button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+/* 侧边栏按"排版宽度"而不是窗口宽度调整布局：放大之后排版宽度变窄（窗口宽度 ÷ 缩放倍数），
+   @media 看的是窗口宽度、察觉不到，所以用容器查询（.app 的内容宽度 = 排版宽度 − 左右各 10px） */
+.sidepanel .app {
+  container: tm-panel / inline-size;
+}
+/* 很窄（或放得很大）时配额条挪到头部的第二行，不和品牌名、按钮挤在一起；
+   排成两列，头部是吸顶的，少占一点高度 */
+@container tm-panel (max-width: 299px) {
+  .top {
+    flex-wrap: wrap;
+  }
+  .top .quota {
+    order: 9;
+    flex: 1 0 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 10px;
+  }
+  .top .quota-bar {
+    grid-template-columns: auto 1fr auto;
+    gap: 4px;
+  }
+  /* 第一行只剩品牌名、缩放和两个按钮：「问 muse」的图片缩到和品牌那一列一样高 */
+  .top .muse-btn img {
+    width: 30px;
+    height: 36px;
+  }
+}
 .tabs {
   display: flex;
   align-items: center;
@@ -1338,8 +1419,8 @@ a.db-title:hover {
     color: #f0b860;
   }
 }
-/* 侧边栏较窄时，6 个标签页仍放得下一行 */
-@media (max-width: 380px) {
+/* 侧边栏较窄时，6 个标签页仍放得下一行（按排版宽度算，见上面 tm-panel 的说明；360 = 原来的窗口宽度 380 − 左右内边距） */
+@container tm-panel (max-width: 360px) {
   .tab {
     font-size: 12px;
   }
@@ -2230,4 +2311,32 @@ a.db-title:hover {
 }
 .dub-map-key.skip {
   background: repeating-linear-gradient(45deg, var(--no) 0 1.5px, var(--no-soft) 1.5px 4px);
+}
+
+/* ── 排版宽度很窄时（窗口本来就窄，或侧边栏放大到 150%–200%，DECISIONS §80）──
+   放在文件最后：要盖过前面各处的写法。头部的配额条去掉进度条、只留数字（超了仍然变色），能排两列就排两列；
+   几处本来不换行的行改成能换行，免得撑出横向滚动条（打分的 1–10、回显下面的按钮、豆瓣的署名行、文字很长的按钮） */
+@container tm-panel (max-width: 259px) {
+  .top .quota {
+    grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  }
+  .top .quota-bar {
+    grid-template-columns: auto auto;
+    justify-content: space-between;
+  }
+  .top .quota-track {
+    display: none;
+  }
+  .rating,
+  .echo-actions,
+  .db-byline {
+    flex-wrap: wrap;
+  }
+  .btn {
+    white-space: normal;
+  }
+  /* 结果卡的标题在封面旁边只剩很窄一列：长单词也在词中间折行 */
+  .card .title {
+    overflow-wrap: anywhere;
+  }
 }

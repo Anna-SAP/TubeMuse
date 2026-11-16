@@ -151,6 +151,194 @@ export async function core(t) {
     await panel.evaluate(() => window.scrollTo(0, 0));
   }
 
+  // ── 侧边栏缩放（DECISIONS §80）：头部、导航栏、各页内容一起放大 / 缩小；按钮、Ctrl +/−/0、Ctrl + 滚轮；存在设置里 ──
+  console.log('\n[侧边栏缩放]');
+  {
+    const look = () =>
+      panel.evaluate(() => {
+        const h = (/** @type {string} */ sel) => /** @type {HTMLElement} */ (document.querySelector(sel)).getBoundingClientRect().height;
+        const root = document.documentElement;
+        return {
+          label: (document.querySelector('[data-testid=zoom-reset]')?.textContent ?? '').trim(),
+          css: /** @type {any} */ (root).currentCSSZoom,
+          style: root.style.zoom,
+          brand: h('.brand'),
+          tab: h('.tab'),
+          title: h('.card .title'),
+          overflowX: root.scrollWidth - innerWidth,
+          pageH: root.scrollHeight,
+        };
+      });
+    const waitZoom = (/** @type {number} */ pct, /** @type {import('playwright').Page} */ page = panel) => page.locator(`[data-testid=zoom][data-zoom="${pct}"]`).waitFor({ timeout: 5000 });
+    const storedZoom = async () => /** @type {any} */ (await sw.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('settings'))).settings?.ui?.zoom;
+    const waitStoredZoom = async (/** @type {number} */ pct) => {
+      for (const end = Date.now() + 5000; Date.now() < end; await new Promise((r) => setTimeout(r, 50))) if ((await storedZoom()) === pct) return true;
+      return false;
+    };
+    const ratio = (/** @type {number} */ a, /** @type {number} */ b, /** @type {number} */ want) => Math.abs(a / b - want) < 0.02;
+    const base = await look();
+    check(base.label === '100%' && base.css === 1 && base.style === '' && ((await storedZoom()) ?? 100) === 100, '默认 100%：头部品牌名下面有「− 100% +」，页面没有加任何缩放');
+    /** 一档一档点到指定的大小（到头的按钮是灰的，不多点） @param {'zoom-in' | 'zoom-out'} btn @param {number} pct */
+    const stepTo = async (btn, pct) => {
+      for (let i = 0; i < 12 && (await look()).label !== `${pct}%`; i++) await panel.getByTestId(btn).click();
+      await waitZoom(pct);
+    };
+    check((await panel.getByTestId('zoom').evaluate((el) => !!el.closest('header.top'))) === true, '缩放控件在吸顶的头部里：滚到哪里都点得到');
+
+    // 放大一档：头部、导航栏、正文按同一个倍数变大，不出现横向滚动条
+    await panel.getByTestId('zoom-in').click();
+    await waitZoom(110);
+    const up = await look();
+    check(
+      up.label === '110%' && Math.abs(up.css - 1.1) < 0.001 && ratio(up.brand, base.brand, 1.1) && ratio(up.tab, base.tab, 1.1) && up.overflowX <= 0,
+      `点 + 放大到 110%：头部（${base.brand} → ${up.brand.toFixed(1)}）和导航栏（${base.tab} → ${up.tab.toFixed(1)}）一起变大，没有横向滚动条`,
+    );
+    check(await waitStoredZoom(110), '选的档位存进本机设置（ui.zoom = 110）');
+    check((await panel.getByTestId('zoom-reset').evaluate((el) => el.classList.contains('changed'))) === true, '不是默认大小时，百分比用强调色标出');
+
+    // 缩小：同样的空间里看到更多
+    await stepTo('zoom-out', 80);
+    const down = await look();
+    check(
+      down.label === '80%' && Math.abs(down.css - 0.8) < 0.001 && ratio(down.brand, base.brand, 0.8) && ratio(down.tab, base.tab, 0.8) && down.pageH < base.pageH * 0.9 && down.overflowX <= 0,
+      `点 − 缩小到 80%：字变小，整页从 ${base.pageH}px 缩到 ${down.pageH}px（同样的空间看到更多）`,
+    );
+    await panel.screenshot({ path: join(shots, '02b-zoom-80.png') });
+
+    // 键盘：Ctrl + / − / 0
+    await panel.keyboard.press('Control+0');
+    await waitZoom(100);
+    const reset = await look();
+    check(reset.style === '' && reset.css === 1 && reset.brand === base.brand && reset.pageH === base.pageH, 'Ctrl+0 恢复 100%：和没缩放时完全一样');
+    await panel.keyboard.press('Control+Equal');
+    await panel.keyboard.press('Control+Equal');
+    await waitZoom(125);
+    await panel.keyboard.press('Control+Minus');
+    await waitZoom(110);
+    check(true, 'Ctrl+= 放大、Ctrl+− 缩小，一次一档（100 → 110 → 125 → 110）');
+    await panel.keyboard.press('Control+0');
+    await waitZoom(100);
+
+    // 往下滚之后缩放：紧贴头部下面的那一处留在原处（文字重新折行、上面的内容变高了也不跑掉）
+    const mark = () =>
+      panel.evaluate(() => {
+        const head = /** @type {HTMLElement} */ (document.querySelector('header.top')).getBoundingClientRect().bottom;
+        const el = /** @type {HTMLElement} */ (document.elementFromPoint(innerWidth / 2, head + 1));
+        el.setAttribute('data-e2e-zoom-anchor', '1');
+        const r = el.getBoundingClientRect();
+        return { card: el.closest('.card')?.getAttribute('data-video-id'), what: el.tagName.toLowerCase(), frac: (head + 1 - r.top) / r.height, scrollY };
+      });
+    const marked = () =>
+      panel.evaluate(() => {
+        const head = /** @type {HTMLElement} */ (document.querySelector('header.top')).getBoundingClientRect().bottom;
+        const r = /** @type {HTMLElement} */ (document.querySelector('[data-e2e-zoom-anchor]')).getBoundingClientRect();
+        return { frac: (head + 1 - r.top) / r.height, offBy: Math.max(r.top - (head + 1), head + 1 - r.bottom, 0), scrollY };
+      });
+    await panel.locator('.card').nth(3).evaluate((el) => window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 120));
+    const before = await mark();
+    // 这里不用 Playwright 的 click()：它点之前会先把吸顶的按钮"滚到可见"，把页面滚走（真人点击不会）
+    await panel.getByTestId('zoom-in').evaluate((el) => /** @type {HTMLElement} */ (el).click());
+    await waitZoom(110);
+    await panel.getByTestId('zoom-in').evaluate((el) => /** @type {HTMLElement} */ (el).click());
+    await waitZoom(125);
+    await panel.waitForTimeout(100);
+    const after = await marked();
+    check(
+      !!before.card && after.offBy === 0 && Math.abs(after.frac - before.frac) < 0.1 && after.scrollY > before.scrollY * 1.2,
+      `往下滚之后放大到 125%：头部下面还是原来那一处（${before.card} 里的 ${before.what}，位置 ${before.frac.toFixed(2)} → ${after.frac.toFixed(2)}；滚动位置跟着从 ${before.scrollY} 调到 ${Math.round(after.scrollY)}）`,
+    );
+    await panel.evaluate(() => document.querySelector('[data-e2e-zoom-anchor]')?.removeAttribute('data-e2e-zoom-anchor'));
+
+    // Ctrl + 滚轮：鼠标下面的那一条留在鼠标下面
+    const underPointer = (/** @type {number} */ y) =>
+      panel.evaluate((y) => {
+        const el = document.elementFromPoint(210, y)?.closest('.card');
+        if (!el) return undefined;
+        const r = el.getBoundingClientRect();
+        return { id: el.getAttribute('data-video-id'), frac: (y - r.top) / r.height };
+      }, y);
+    const pointerY = 520;
+    await panel.mouse.move(210, pointerY);
+    const pBefore = await underPointer(pointerY);
+    await panel.keyboard.down('Control');
+    await panel.mouse.wheel(0, 100);
+    await waitZoom(110);
+    await panel.mouse.wheel(0, 100);
+    await waitZoom(100);
+    await panel.mouse.wheel(0, 100);
+    await waitZoom(90);
+    await panel.waitForTimeout(100);
+    const pAfter = await underPointer(pointerY);
+    check(!!pBefore && !!pAfter && pAfter.id === pBefore.id && Math.abs(pAfter.frac - pBefore.frac) < 0.1, `Ctrl + 滚轮往下滚 3 格：125% → 90%，鼠标下面还是同一条结果（${pBefore?.id}，位置 ${pBefore?.frac.toFixed(2)} → ${pAfter?.frac.toFixed(2)}）`);
+    await panel.mouse.wheel(0, -100);
+    await waitZoom(100);
+    // 触控板的细碎滚动：攒够一格才走一档
+    await panel.mouse.wheel(0, -30);
+    await panel.mouse.wheel(0, -30);
+    await panel.waitForTimeout(100);
+    const partial = (await look()).label;
+    await panel.mouse.wheel(0, -40);
+    await waitZoom(110);
+    check(partial === '100%', 'Ctrl + 滚轮往上滚放大；细碎的滚动攒够一格才走一档');
+    await panel.keyboard.up('Control');
+    await panel.mouse.wheel(0, -100);
+    await panel.waitForTimeout(100);
+    check((await look()).label === '110%', '不按 Ctrl 的滚轮只滚动页面，不缩放');
+    await panel.evaluate(() => window.scrollTo(0, 0));
+
+    // 缩放之后图钉照样管用：导航栏吸附在头部下沿（头部高度是缩放后量出来的，写回 CSS 时换算过）
+    const box = (/** @type {string} */ sel) =>
+      panel.locator(sel).first().evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom };
+      });
+    await panel.getByTestId('pin-nav').click();
+    await panel.getByTestId('nav').and(panel.locator('.pinned')).waitFor();
+    for (const [pct, btn] of /** @type {[number, 'zoom-in' | 'zoom-out'][]} */ ([[150, 'zoom-in'], [75, 'zoom-out']])) {
+      await stepTo(btn, pct);
+      await panel.evaluate(() => window.scrollTo(0, 700));
+      await panel.getByTestId('nav').and(panel.locator('.stuck')).waitFor();
+      await panel.waitForTimeout(100);
+      const header = await box('header.top');
+      const nav = await box('[data-testid=nav]');
+      const onTop = await panel.evaluate((y) => !!document.elementFromPoint(200, y)?.closest('[data-testid=nav]'), (nav.top + nav.bottom) / 2);
+      check(Math.abs(nav.top - header.bottom) < 1 && onTop, `${pct}% 时固定导航栏：吸附在头部下沿（头部下沿 ${header.bottom.toFixed(1)}，导航栏上沿 ${nav.top.toFixed(1)}），盖在正文之上`);
+      await panel.getByRole('tab', { name: '画像' }).click();
+      const content = await box('main > :not([hidden])');
+      check(content.top >= nav.bottom - 1 && content.top - nav.bottom < 30 * (pct / 100), `${pct}% 时切换标签页：回到新页面开头，紧贴导航栏下方`);
+      if (pct === 150) await panel.screenshot({ path: join(shots, '02c-zoom-150-pinned.png') });
+      await panel.getByRole('tab', { name: '找片' }).click();
+      await panel.evaluate(() => window.scrollTo(0, 0));
+    }
+    await panel.getByTestId('pin-nav').click();
+    await panel.getByTestId('nav').and(panel.locator('.pinned')).waitFor({ state: 'detached' });
+
+    // 两端：最小 50%、最大 200%，到头后按钮变灰
+    await stepTo('zoom-out', 50);
+    const min = await look();
+    check(min.label === '50%' && (await panel.getByTestId('zoom-out').isDisabled()) && min.overflowX <= 0, '最小 50%：到头后 − 变灰');
+    await panel.keyboard.press('Control+Minus');
+    await panel.waitForTimeout(100);
+    check((await look()).label === '50%', '到最小之后再按 Ctrl+− 不再变');
+    await stepTo('zoom-in', 200);
+    const max = await look();
+    check(max.label === '200%' && (await panel.getByTestId('zoom-in').isDisabled()) && max.overflowX <= 0, `最大 200%：到头后 + 变灰，仍然没有横向滚动条（排版宽度 ${Math.round(420 / 2)}px）`);
+    await panel.screenshot({ path: join(shots, '02d-zoom-200.png') });
+    check(await waitStoredZoom(200), '连点时只在停下来之后存一次，存下的是最后的档位');
+
+    // 另一个侧边栏（另一个窗口）：一打开就是存下的大小；在那边改，这边跟着变
+    const other = await context.newPage();
+    await other.goto(`chrome-extension://${extId}/sidepanel.html`);
+    await waitZoom(200, other);
+    check((await other.evaluate(() => document.documentElement.style.zoom)) === '2', '重新打开侧边栏：直接按存下的 200% 显示');
+    await other.getByTestId('zoom-reset').click();
+    await waitZoom(100, other);
+    await waitZoom(100, panel);
+    const end = await look();
+    check(end.style === '' && end.css === 1 && end.brand === base.brand && (await waitStoredZoom(100)), '点百分比恢复 100%；另一个窗口的侧边栏跟着恢复');
+    await other.close();
+  }
+
   const echoKinds = await panel.locator('.echo-row').evaluateAll((els) => els.map((e) => e.getAttribute('data-kind')));
   check(['recency', 'sort', 'topic', 'format'].every((k) => echoKinds.includes(k)), `回显包含全部约束：${echoKinds.join(', ')}`);
   const statuses = await panel.locator('.echo-row .status').allTextContents();
