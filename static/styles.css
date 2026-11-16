@@ -2113,6 +2113,45 @@ a.db-title:hover {
   color: var(--muted);
 }
 
+/* 快速对齐（DECISIONS §82）：建议倍速是一个大按钮，点一下中文整段按它放；开着时描绿边，写明倍速和"切回手动对齐" */
+.dub-quick {
+  margin: 6px 0 4px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.dub-quick.on {
+  border-color: var(--ok);
+}
+.dub-quick-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+.dub-quick p {
+  margin: 6px 0 0;
+}
+.btn.dub-quick-rate {
+  padding: 4px 14px;
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.dub-quick-num {
+  font-variant-numeric: tabular-nums;
+  color: var(--ok);
+}
+.dub-kept {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.dub-kept summary {
+  cursor: pointer;
+}
+
 /* 对齐图（DECISIONS §77）：上英文原声、下中文配音；色带连着的是同时听到的 */
 .dub-map {
   margin: 8px 0 10px;

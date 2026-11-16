@@ -397,6 +397,176 @@ export async function dub(t) {
   await panel.getByTestId('dub-anchor-undo').click();
   r = await waitStored((x) => x.anchors?.length === 1, '撤销删除');
   check(Math.abs(r.anchors[0].video - 70) < 0.3 && Math.abs(r.anchors[0].dub - 80) < 0.05, '删除对齐点可以撤销');
+
+  console.log('\n[中文配音：快速对齐（DECISIONS §82）——点建议的倍速，中文整段变速放满全片，"还差多少"直接到 0；手动对齐点留着，可以切回]');
+  // 这时手动对齐里有一个对齐点（视频 1:10 ↔ 中文 1:20），开头不偏移
+  const manualBefore = await storedRec();
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 30;
+    void v.play();
+  });
+  await waitState((x) => x.playing && x.videoTime > 30.3 && x.videoTime < 40, '回到 0:30 放着');
+  const quickWant = Number((durs.dubDuration / durs.videoDuration).toFixed(6));
+  const quickLabel = `${quickWant.toFixed(2)}×`;
+  const applyBtn = panel.getByTestId('dub-quick-apply');
+  await applyBtn.waitFor({ timeout: 5000 });
+  const quickBox = async () => ((await panel.getByTestId('dub-quick').textContent()) ?? '').replace(/\s+/g, ' ');
+  const suggestText = await quickBox();
+  check(
+    ((await applyBtn.textContent()) ?? '').trim() === quickLabel && suggestText.includes(`中文 1:32.0 ÷ 英文 2:00.0 = ${quickWant.toFixed(4)}（约 ${quickWant.toFixed(2)}）`) && suggestText.includes('建议中文慢放到'),
+    `"对齐"一栏给出建议的中文倍速 = 中文时长 ÷ 视频时长：按钮上写 ${quickLabel}，旁边写算式（${suggestText.slice(0, 60)}…）`,
+  );
+  const quickPlace = await panel.evaluate(() => {
+    const q = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-quick]'));
+    const g = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-gap]'));
+    const map = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-map]'));
+    const align = /** @type {HTMLElement} */ (document.querySelector('[data-testid=dub-align]'));
+    return { inAlign: align.contains(q), afterGap: !!(g.compareDocumentPosition(q) & Node.DOCUMENT_POSITION_FOLLOWING), beforeMap: !!(q.compareDocumentPosition(map) & Node.DOCUMENT_POSITION_FOLLOWING), on: q.getAttribute('data-on') };
+  });
+  check(quickPlace.inAlign && quickPlace.afterGap && quickPlace.beforeMap && quickPlace.on === 'false', '快速对齐在"对齐"一栏里，紧跟在"还差多少"读数下面、对齐图上面；还没开');
+  const gapBefore = gapOf(await mapText('dub-gap-value'));
+  check(Math.abs(gapBefore) > 5, `点之前（手动对齐）还差 ${gapBefore} 秒`);
+  // 截视口（不截整栏）：整栏比视口高，吸顶的读数会盖住它下面的卡片
+  await panel.getByTestId('dub-quick').evaluate((el) => el.scrollIntoView({ block: 'center' }));
+  await page.waitForTimeout(200);
+  await panel.screenshot({ path: join(shots, '74-dub-quick-suggest.png') });
+  await applyBtn.click();
+  r = await waitStored((x) => x.quickRate === quickWant, '存下快速对齐的倍速');
+  check(
+    r.delaySec === manualBefore.delaySec && JSON.stringify(r.anchors) === JSON.stringify(manualBefore.anchors) && r.anchors.length === 1,
+    `点建议的倍速：按视频存下倍速 ${r.quickRate}（精确值，不是四舍五入的 ${quickWant.toFixed(2)}）；手动的开头偏移和对齐点原样留着：${JSON.stringify(r.anchors)}`,
+  );
+  gapNow = await waitMapText('dub-gap-value', (x) => x.trim() === '0.0 秒', '应用后还差 0.0 秒');
+  const quickNote = await mapText('dub-gap-note');
+  check(
+    (await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'done' &&
+      (await mapText('dub-gap')).includes('快速对齐：全片时长差由变速匀到整段；0 = 全部对完') &&
+      quickNote.includes(`快速对齐：中文按 ${quickWant.toFixed(4)}× 慢放（中文 1:32.0 ÷ 英文 2:00.0），全片时长差 ${total.toFixed(1)} 秒匀到整段，中文和视频同时结束`),
+    `应用之后"还差多少没对上"直接是 ${gapNow}（变绿），说明写清是怎么抵掉的：${quickNote}`,
+  );
+  s = await waitState((x) => x.quickRate === quickWant && x.playing && x.status.includes(`快速对齐，中文按 ${quickLabel} 慢放`), '页面里按倍速放起来');
+  await page.waitForTimeout(1200);
+  const q1 = await dubState();
+  await page.waitForTimeout(2500);
+  const q2 = await dubState();
+  const speed = (q2.dubTime - q1.dubTime) / (q2.videoTime - q1.videoTime);
+  check(
+    Math.abs(q2.dubTime - q2.videoTime * quickWant) < 0.4 && Math.abs(speed - quickWant) < 0.08,
+    `中文位置 = 视频位置 × 倍速（视频 ${q2.videoTime.toFixed(2)} × ${quickWant.toFixed(4)} = ${(q2.videoTime * quickWant).toFixed(2)}，中文 ${q2.dubTime.toFixed(2)}），中文真的在慢放（这 ${(q2.videoTime - q1.videoTime).toFixed(1)} 秒里中文走了 ${(q2.dubTime - q1.dubTime).toFixed(2)} 秒，${speed.toFixed(2)} 倍）`,
+  );
+  check(near(await mapText('dub-gap-value'), 0), `播放推进，读数一直是 0（${await mapText('dub-gap-value')}）`);
+  // 界面：写明开着、用的倍速；手动的那些控件收起来，留着的对齐点列出来（不能删）；对齐图一段到底
+  const onText = await quickBox();
+  check(
+    (await panel.getByTestId('dub-quick').getAttribute('data-on')) === 'true' &&
+      onText.includes(`快速对齐已开`) &&
+      onText.includes(`中文整段按 ${quickLabel}（精确 ${quickWant.toFixed(4)}）慢放`) &&
+      onText.includes('开头偏移和 1 个对齐点都留着') &&
+      !/逐句|逐词/.test(onText),
+    `开着时写明倍速、手动对齐的东西留着：${onText.slice(0, 70)}…`,
+  );
+  check(
+    (await panel.getByTestId('dub-anchor-add').count()) === 0 && (await panel.getByTestId('dub-delay-input').count()) === 0 && (await panel.getByTestId('dub-position-range').count()) === 0 && (await panel.getByTestId('dub-anchor-remove').count()) === 0,
+    '快速对齐开着时，手动的偏移、"中文位置"、"加对齐点"都收起来（不会误改）',
+  );
+  const kept = ((await panel.getByTestId('dub-kept').textContent()) ?? '').replace(/\s+/g, ' ');
+  check(kept.includes('手动对齐留着的：开头偏移和 1 个对齐点') && kept.includes('视频 1:10 ↔ 中文 1:20') && ((await panel.getByTestId('dub-segment').textContent()) ?? '').includes('快速对齐，全程一段'), `留着的对齐点列在下面：${kept.slice(0, 80)}`);
+  overall = await mapText('dub-map-overall');
+  check(
+    (await panel.getByTestId('dub-map').getAttribute('data-quick')) === 'on' &&
+      overall.includes(`快速对齐：中文整段按 ${quickWant.toFixed(4)}× 慢放，和视频同时开始、同时结束`) &&
+      (await panel.getByTestId('dub-map-hold').count()) === 0 &&
+      (await panel.getByTestId('dub-map-skip').count()) === 0 &&
+      (await panel.getByTestId('dub-map-anchor').count()) === 0 &&
+      (await panel.getByTestId('dub-map-overview-anchor').count()) === 0 &&
+      (await mapText('dub-map-now-gap')) === `${quickLabel} 慢放`,
+    `对齐图：一段到底，没有停下等、没有跳过，不画留着不用的对齐点：${overall.slice(0, 50)}…`,
+  );
+  // 指着图：英文的某一刻 ↔ 中文按倍速换算的那一刻（中文按倍速拉长画，竖着对上）
+  {
+    // 先把图滚到视口中间：鼠标要指到图的下半条
+    await detail.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(200);
+    const qbox = /** @type {{ x: number, y: number, width: number, height: number }} */ (await detail.boundingBox());
+    const qpx = (qbox.width - 36) / 120;
+    const qcx = qbox.x + 30 + (qbox.width - 36) / 2;
+    const at = (await dubState()).videoTime;
+    await panel.mouse.move(qcx - 5 * qpx, qbox.y + 26);
+    const hv = await waitMapText('dub-map-hover', (x) => x.startsWith('视频 ') && x.includes('快速对齐'), '快速对齐时指着英文');
+    await panel.mouse.move(qcx - 5 * qpx, qbox.y + 90);
+    const hz = await waitMapText('dub-map-hover', (x) => x.startsWith('中文 ') && x.includes('快速对齐'), '快速对齐时指着中文');
+    const clockSec = (/** @type {string} */ c) => c.split(':').reduce((n, p) => n * 60 + Number(p), 0);
+    const mv = /视频 ([\d:]+) ↔ 中文 ([\d:]+)/.exec(hv);
+    const mz = /中文 ([\d:]+) → 在视频 ([\d:]+) 放/.exec(hz);
+    check(
+      !!mv && !!mz && Math.abs(clockSec(mv[2]) - clockSec(mv[1]) * quickWant) <= 1.5 && Math.abs(clockSec(mz[1]) - clockSec(mz[2]) * quickWant) <= 1.5 && Math.abs(clockSec(mv[1]) - (at - 5)) < 6 && Math.abs(clockSec(mz[2]) - (at - 5)) < 6,
+      `指着图上同一处：英文那条说"${hv}"，中文那条说"${hz}"——上下对着的是同时听到的`,
+    );
+    await panel.mouse.move(qbox.x + 5, qbox.y - 30);
+  }
+  await panel.getByTestId('dub-align').screenshot({ path: join(shots, '75-dub-quick-on.png') });
+  // "保存完整双语视频"（DECISIONS §81）录的是开着配音时听到的声音：快速对齐开着时写明中文是按倍速慢放叠上去的，不再说对齐点
+  const fullAboutQuick = ((await panel.getByTestId('dub-full-about').textContent()) ?? '').replace(/\s+/g, ' ');
+  check(fullAboutQuick.includes(`中文按快速对齐的 ${quickLabel} 慢放叠上去`) && !fullAboutQuick.includes('对齐点'), `"保存完整双语视频"的说明跟着变：${fullAboutQuick.slice(0, 70)}…`);
+  // 倍速跟着视频的倍速；拖进度、暂停照常跟随
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).playbackRate = 1.5));
+  await page.waitForTimeout(2000);
+  s = await dubState();
+  check(Math.abs(s.dubTime - s.videoTime * quickWant) < 0.45, `视频 1.5 倍速：中文按 1.5 × ${quickWant.toFixed(2)} 跟着（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}，应在 ${(s.videoTime * quickWant).toFixed(2)}）`);
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.playbackRate = 1;
+    // 手动对齐时这里（1:05）中文停着等画面；快速对齐照常放
+    v.currentTime = 65;
+  });
+  s = await waitState((x) => x.playing && x.videoTime > 65.8 && x.videoTime < 75, '拖到 1:05 后继续放');
+  check(Math.abs(s.dubTime - s.videoTime * quickWant) < 0.4 && !s.status.includes('等画面'), `拖到 1:05：中文跳到 ${s.dubTime.toFixed(2)}（= ${s.videoTime.toFixed(2)} × ${quickWant.toFixed(4)}），不停下等画面、不看留着的对齐点`);
+  // 快到结尾：中文也快放完，两边同时结束
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.pause();
+    v.currentTime = 118;
+  });
+  s = await waitState((x) => !x.playing && Math.abs(x.videoTime - 118) < 0.3 && Math.abs(x.dubTime - 118 * quickWant) < 0.3, '停在 1:58，中文对好位置');
+  check(
+    s.status.includes('视频暂停') && s.dubDuration - s.dubTime < 2.2 && s.dubDuration - s.dubTime > 0.8 && near(await mapText('dub-gap-value'), 0),
+    `视频还剩 2 秒时中文也只剩 ${(s.dubDuration - s.dubTime).toFixed(2)} 秒（中文 ${s.dubTime.toFixed(2)} / ${s.dubDuration.toFixed(2)}）：同时结束，读数仍是 0`,
+  );
+  // 切回手动对齐：倍速去掉，开头偏移和对齐点照旧生效
+  await panel.getByTestId('dub-quick-off').click();
+  r = await waitStored((x) => x.quickRate === undefined, '切回手动对齐');
+  check(JSON.stringify(r) === JSON.stringify(manualBefore), `切回手动对齐：存储和开快速对齐之前一模一样（${JSON.stringify(r.anchors)}）`);
+  check(((await panel.getByTestId('dub-align-note').textContent()) ?? '').includes('已切回手动对齐：开头偏移和 1 个对齐点照旧生效'), '说明已切回、对齐点照旧生效');
+  check((((await panel.getByTestId('dub-full-about').textContent()) ?? '')).includes('中文按开头的偏移和全部 1 个对齐点叠上去'), '"保存完整双语视频"的说明回到"按开头的偏移和全部 1 个对齐点"');
+  await panel.getByTestId('dub-anchor-add').waitFor({ timeout: 5000 });
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 75;
+    void v.play();
+  });
+  s = await waitState((x) => x.playing && x.videoTime > 76 && x.quickRate === undefined && x.segment?.index === 0, '手动对齐接着放');
+  await page.waitForTimeout(1200);
+  const m1 = await dubState();
+  await page.waitForTimeout(1500);
+  const m2 = await dubState();
+  const manualSpeed = (m2.dubTime - m1.dubTime) / (m2.videoTime - m1.videoTime);
+  check(
+    Math.abs(m2.videoTime + 10 - m2.dubTime) < 0.4 && Math.abs(manualSpeed - 1) < 0.08 && m2.status.includes('配音播放中，跟着视频走'),
+    `切回后按留着的对齐点跟随、中文回到正常速度（视频 ${m2.videoTime.toFixed(2)} · 中文 ${m2.dubTime.toFixed(2)}，${manualSpeed.toFixed(2)} 倍）`,
+  );
+  check(
+    near(await mapText('dub-gap-value'), total + 10) && (await panel.getByTestId('dub-map').getAttribute('data-quick')) === 'off' && (await panel.getByTestId('dub-anchor').count()) === 1 && (await panel.getByTestId('dub-map-overview-anchor').count()) === 1,
+    `读数回到手动对齐的"还差"（${await mapText('dub-gap-value')}），对齐点回到图上和列表里，建议倍速的按钮又出现了：${((await applyBtn.textContent()) ?? '').trim()}`,
+  );
+  // "撤销"：切回手动之后点撤销 = 重新开快速对齐
+  await panel.getByTestId('dub-anchor-undo').click();
+  await waitStored((x) => x.quickRate === quickWant, '撤销切回 = 重新开快速对齐');
+  await waitMapText('dub-gap-value', (x) => x.trim() === '0.0 秒', '重新开后还差 0.0 秒');
+  await panel.getByTestId('dub-quick-off').click();
+  r = await waitStored((x) => x.quickRate === undefined, '再切回手动对齐');
+  check(JSON.stringify(r) === JSON.stringify(manualBefore), '切回可以撤销（重新开快速对齐），再切回仍和原来一样');
+  await waitState((x) => x.quickRate === undefined, '页面里回到手动对齐');
   await panel.getByTestId('dub-anchor-remove').click();
   await waitStored((x) => !x.anchors, '再删除');
   await page.evaluate(() => {
@@ -480,6 +650,18 @@ export async function dub(t) {
   check(withDub.dubNote.includes('录下的片段是双语混音') && withDub.mixingNote.includes('正在录双语混音'), `片段页写明配音开着、录的是双语混音：${withDub.dubNote}`);
   check(withDub.rest > 0.05, `配音开着时录下的片段里有中文配音（去掉原声后响度 ${withDub.rest.toFixed(3)}）：${withDub.name}`);
   check(withDub.record?.dubbed === true && withDub.readyText.includes('双语混音'), '"最近录过的片段"记下这一段是双语混音');
+  // 快速对齐开着时录片段（DECISIONS §82）：录下的同样是双语混音——慢放的中文也录得进去，原声仍按 80%
+  await panel.getByTestId('dub-quick-apply').click();
+  await waitStored((x) => x.quickRate === quickWant, '录制前开快速对齐');
+  await waitState((x) => x.quickRate === quickWant && x.playing, '快速对齐放着');
+  const withQuick = await recordClip(2.5);
+  check(
+    withQuick.rest > 0.05 && Math.abs(withQuick.tone / withDub.tone - 1) < 0.1 && withQuick.record?.dubbed === true,
+    `快速对齐开着时录片段：慢放的中文也在录音里（去掉原声后响度 ${withQuick.rest.toFixed(3)}），原声照样按 80%（单音振幅 ${withQuick.tone.toFixed(3)}，不开快速对齐时 ${withDub.tone.toFixed(3)}）`,
+  );
+  await panel.getByTestId('dub-quick-off').click();
+  await waitStored((x) => x.quickRate === undefined, '录完切回手动对齐');
+  await waitState((x) => x.quickRate === undefined && x.playing, '切回后照常放');
   await panel.getByTestId('dub-toggle').click();
   await waitState((x) => !x.active && !x.playing, '关闭');
   check(Math.abs((await vol()) - 0.5) < 0.005, `关闭配音：配音停、原声恢复成你的音量（${await vol()}）`);

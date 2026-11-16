@@ -10,6 +10,8 @@ import {
   dubMapOf,
   isDubPortRequest,
   probeM4a,
+  quickAlignSuggestion,
+  sanitizeQuickRate,
   withAnchor,
   withSegmentOffset,
   type DubAnchor,
@@ -57,6 +59,11 @@ export async function attachDub(ctx: AppContext, input: AttachInput): Promise<Du
     }
     const old = index[input.videoId];
     previous = old?.fileId;
+    const videoDurationSec = input.videoDurationSec && Number.isFinite(input.videoDurationSec) ? Math.round(input.videoDurationSec * 1000) / 1000 : old?.videoDurationSec;
+    // 快速对齐开着时换文件（DECISIONS §82）：倍速按新文件的时长重新算（要的是"整段放满"，旧倍速对新文件多半不对）；
+    // 新的倍速超出能用的范围时回到手动对齐；算不出来（读不到时长）时先留着旧的，界面上会如实显示还差多少
+    const quick = old?.quickRate !== undefined ? quickAlignSuggestion(probe.durationSec, videoDurationSec) : undefined;
+    const quickRate = old?.quickRate === undefined ? undefined : quick ? (quick.ok ? quick.rate : undefined) : old.quickRate;
     const rec: DubRecord = {
       videoId: input.videoId,
       fileId,
@@ -66,9 +73,10 @@ export async function attachDub(ctx: AppContext, input: AttachInput): Promise<Du
       delaySec: old?.delaySec ?? 0,
       // 同一个视频换一版配音：偏移和对齐点多半还能用，保留（界面上说明，不对再删）
       ...(old?.anchors?.length ? { anchors: old.anchors } : {}),
+      ...(quickRate !== undefined ? { quickRate } : {}),
       addedAt: ctx.now(),
       ...(probe.durationSec ? { durationSec: probe.durationSec } : {}),
-      ...(input.videoDurationSec && Number.isFinite(input.videoDurationSec) ? { videoDurationSec: Math.round(input.videoDurationSec * 1000) / 1000 } : old?.videoDurationSec ? { videoDurationSec: old.videoDurationSec } : {}),
+      ...(videoDurationSec ? { videoDurationSec } : {}),
       ...(input.title ? { title: input.title.slice(0, DUB.titleMaxChars) } : old?.title ? { title: old.title } : {}),
     };
     saved = rec;
@@ -140,6 +148,24 @@ export async function removeDubAnchor(ctx: AppContext, videoId: string, k: numbe
     if (!rec?.anchors || k < 0 || k >= rec.anchors.length) return index;
     return { ...index, [videoId]: withMap(rec, { delaySec: rec.delaySec, anchors: rec.anchors.filter((_, i) => i !== k) }) };
   });
+}
+
+/**
+ * 快速对齐（DECISIONS §82）：给倍速 = 开（中文整段按这个倍速放）；undefined = 切回手动对齐。
+ * 开头的偏移和对齐点始终原样留着。倍速不在能用的范围里时不存（返回 false）
+ */
+export async function setDubQuickRate(ctx: AppContext, videoId: string, rate: number | undefined): Promise<boolean> {
+  const quick = rate === undefined ? undefined : sanitizeQuickRate(rate);
+  if (rate !== undefined && quick === undefined) return false;
+  let done = false;
+  await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
+    const rec = index[videoId];
+    if (!rec) return index;
+    done = true;
+    const { quickRate: _old, ...rest } = rec;
+    return { ...index, [videoId]: quick === undefined ? rest : { ...rest, quickRate: quick } };
+  });
+  return done;
 }
 
 /** 本机存储的核对：没人用的音频（例如关联写到一半浏览器关了）删掉；对应关系还在、音频却没了的列出来 */
