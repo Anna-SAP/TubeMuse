@@ -759,49 +759,40 @@ try {
   check(JSON.stringify(await b.run(`return (await browser.storage.local.get('dubs')).dubs;`)) === '{}', 'Firefox：移除后对应关系清空');
   await closeTab(dubPage);
 
-  console.log('\n[中文配音：录下完整双语视频（DECISIONS §81）——Firefox 里从头实时录到结尾，放完自动保存]');
+  console.log('\n[中文配音：保存完整双语视频（DECISIONS §83）——Firefox 里选原视频文件、离线合成、自动下载，不播放]');
   await tapText('配音', '[role=tab]');
   const fullPage = await openActiveTab(`${MOCK}/watch?v=dubFull00001`);
   await b.switchTo(fullPage);
   await b.waitFor(`(document.querySelector('video')?.readyState ?? 0) >= 2`, { timeout: 30_000, what: '视频可以播放' });
   await b.switchTo(handles.panel);
   await b.waitFor(`!!document.querySelector('[data-testid=dub-pick]')`, { what: '可以选文件' });
-  await b.exec(
-    `const bytes = Uint8Array.from(atob(arguments[0]), (c) => c.charCodeAt(0));
-     const dt = new DataTransfer(); dt.items.add(new File([bytes], 'xyz-tones.m4a', { type: 'audio/mp4' }));
-     const input = document.querySelector('[data-testid=dub-file]'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true;`,
-    [readFileSync(join(root, 'tests', 'fixtures', 'xyz-tones.m4a')).toString('base64')],
-  );
+  /** 测试里没有文件对话框：把文件放进文件框（和你在对话框里选中一样触发 change） */
+  const chooseFile = (/** @type {string} */ testId, /** @type {string} */ path, /** @type {string} */ name, /** @type {string} */ type) =>
+    b.exec(
+      `const bytes = Uint8Array.from(atob(arguments[0]), (c) => c.charCodeAt(0));
+       const dt = new DataTransfer(); dt.items.add(new File([bytes], arguments[2], { type: arguments[3] }));
+       const input = document.querySelector('[data-testid=' + arguments[1] + ']'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true;`,
+      [readFileSync(path).toString('base64'), testId, name, type],
+    );
+  await chooseFile('dub-file', join(root, 'tests', 'fixtures', 'xyz-tones.m4a'), 'xyz-tones.m4a', 'audio/mp4');
   await b.waitFor(`!!document.querySelector('[data-testid=dub-done]')`, { timeout: 15_000, what: '关联好了' });
-  const fullBlocked = await b
-    .waitFor(`(document.querySelector('[data-testid=dub-full-blocked]')?.textContent ?? '').includes('先开启配音') && document.querySelector('[data-testid=dub-full-start]')?.disabled === true`, { what: '配音没开时的说明' })
-    .then(() => true, () => false);
-  check(fullBlocked, 'Firefox：「配音」页有"保存完整双语视频"，配音没开时点不了');
-  const fullTab = await b.run(`const [t] = (await browser.tabs.query({})).filter((x) => String(x.url).includes('dubFull00001')); return t.id;`);
-  const fullDub = () => b.run(`return await browser.tabs.sendMessage(args[0], { type: 'tubemuse:dub:get-state' });`, [fullTab]);
-  const fullClip = () => b.run(`return await browser.tabs.sendMessage(args[0], { type: 'tubemuse:clips:get-state' });`, [fullTab]);
-  await tap('[data-testid=dub-toggle]');
-  await b.switchTo(fullPage);
-  await b.click('video');
-  await b.run(`const v = document.querySelector('video'); v.currentTime = 9; await v.play();`);
-  await b.switchTo(handles.panel);
-  let fullS = await fullDub();
-  for (let i = 0; i < 60 && !(fullS?.playing && fullS.phase === 'ready'); i++) {
-    await sleep(250);
-    fullS = await fullDub();
-  }
-  await b.waitFor(`document.querySelector('[data-testid=dub-full-start]') && !document.querySelector('[data-testid=dub-full-start]').disabled`, { what: '可以录整片' });
+  // 一个对齐点：视频 8 秒 ↔ 中文 30.5 秒（和 Chrome 的测试一样）
+  await b.run(`const { dubs } = await browser.storage.local.get('dubs'); dubs.dubFull00001.anchors = [{ video: 8, dub: 30.5 }]; await browser.storage.local.set({ dubs });`);
+  await b.waitFor(`(document.querySelector('[data-testid=dub-full-about]')?.textContent ?? '').includes('全部 1 个对齐点') && !document.querySelector('[data-testid=dub-full-pick]').disabled`, { what: '可以选原视频文件' });
   const fullBefore = downloaded();
-  await tap('[data-testid=dub-full-start]');
-  let fullC = await fullClip();
-  for (let i = 0; i < 60 && !(fullC?.phase === 'recording' && fullC.mode === 'full' && !fullC.waiting && fullC.recordedSec >= 1); i++) {
-    await sleep(250);
-    fullC = await fullClip();
-  }
-  check(fullC?.mode === 'full' && fullC.position < 5 && fullC.status === '正在录完整双语视频', `Firefox：点了之后视频跳回开头、开始录整片（视频 ${fullC?.position} 秒，${fullC?.status}）`);
-  const fullFile = await waitDownload(fullBefore, /_双语完整版\.webm$/, 60_000);
-  fullC = await fullClip();
-  check(fullC?.phase === 'idle' && fullC.ready?.full?.issues.length === 0 && fullC.ready.endedBy === 'ended' && fullC.ready.fileName === fullFile, `Firefox：视频放完自动结束、自动保存，录完整了：${fullFile}`);
+  const fullStarted = Date.now();
+  await chooseFile('dub-full-file', join(root, 'tests', 'fixtures', 'dub-source.mp4'), 'dub-source.mp4', 'video/mp4');
+  const fullFile = await waitDownload(fullBefore, /_双语完整版\.mp4$/, 60_000);
+  const fullWall = Date.now() - fullStarted;
+  await b.waitFor(`document.querySelector('[data-testid=dub-export]')?.getAttribute('data-phase') === 'done'`, { what: '合成好了' });
+  const fullDone = ((await text('[data-testid=dub-export-done]')) ?? '').replace(/\s+/g, ' ');
+  check(fullWall < 8000 && fullDone.includes('全片 0:16') && fullDone.includes('画面原样照搬'), `Firefox：选好原视频文件后 ${(fullWall / 1000).toFixed(1)} 秒文件就下载好了（视频长 16 秒），没有播放：${fullDone}`);
+  const fullBytes = readFileSync(join(downloads, fullFile));
+  const sourceBytes = readFileSync(join(root, 'tests', 'fixtures', 'dub-source.mp4'));
+  // 画面的数据原样在新文件里：原文件的数据区一开头就是第一帧画面（关键帧，2.5 KB），取它中间的 2000 个字节，在新文件里要能一字不差地找到
+  const mdatAt = sourceBytes.indexOf(Buffer.from('mdat'));
+  const keyframe = sourceBytes.subarray(mdatAt + 20, mdatAt + 2020);
+  check(fullBytes.subarray(4, 8).toString() === 'ftyp' && mdatAt > 0 && fullBytes.includes(keyframe), `Firefox：新文件是 MP4，原文件第一帧画面的数据原样在里面（${fullBytes.length} 字节）`);
   await b.switchTo(fullPage);
   const fullInfo = await b.run(
     `const bytes = Uint8Array.from(atob(args[0]), (c) => c.charCodeAt(0));
@@ -811,16 +802,16 @@ try {
      const amp = (hz, from, to) => { const a = Math.floor(from * sr), z = Math.min(ch.length, Math.floor(to * sr)), w = 2 * Math.PI * hz / sr; let re = 0, im = 0;
        for (let i = a; i < z; i++) { re += ch[i] * Math.cos(w * i); im -= ch[i] * Math.sin(w * i); } return z > a ? 2 * Math.sqrt(re * re + im * im) / (z - a) : -1; };
      const tones = []; for (let t = 0.5; t + 0.5 <= buf.duration - 0.5; t += 0.5) tones.push(amp(200, t, t + 0.5));
-     return { duration: buf.duration, tone: tones.sort((x, y) => x - y)[Math.floor(tones.length / 2)], first: amp(300, 1.2, 1.6), second: amp(320, 4.2, 4.6), wrong: amp(320, 1.2, 1.6) };`,
-    [readFileSync(join(downloads, fullFile)).toString('base64')],
+     let onset = -1; for (let s = 0; s < 4 && onset < 0; s += 0.005) if (amp(300, s, s + 0.02) > 0.15) onset = s;
+     return { duration: buf.duration, tone: tones.sort((x, y) => x - y)[Math.floor(tones.length / 2)], first: amp(300, 1.2, 1.6), second: amp(320, 4.2, 4.6), jumped: amp(500, 8.7, 9.1), last: amp(540, 14.7, 15.1), wrong: amp(340, 8.7, 9.1), onset };`,
+    [fullBytes.toString('base64')],
   );
   await b.switchTo(handles.panel);
-  // 配音的第 0 段音（300 Hz）在 0.5–2.3 秒、第 1 段（320 Hz）在 3.5–5.3 秒：没设偏移，录下的整片里也该在这两处
+  // 中文第 0、1 段音（300、320 Hz）在开头那一段；视频 8 秒处跳到中文 30.5 秒，之后是第 10、12 段（500、540 Hz）
   check(
-    Math.abs(fullInfo.duration - 16) < 1 && Math.abs(fullInfo.tone - 0.16) < 0.03 && fullInfo.first > 0.15 && fullInfo.second > 0.15 && fullInfo.wrong < 0.05,
-    `Firefox：录下的文件是整片（${Number(fullInfo.duration).toFixed(2)} 秒），原声按 80%（200 Hz 振幅 ${Number(fullInfo.tone).toFixed(3)}），中文在该在的时间上（1.4 秒处 300 Hz ${Number(fullInfo.first).toFixed(2)}、4.4 秒处 320 Hz ${Number(fullInfo.second).toFixed(2)}）`,
+    Math.abs(fullInfo.duration - 16) < 0.2 && Math.abs(fullInfo.tone - 0.16) < 0.02 && fullInfo.first > 0.2 && fullInfo.second > 0.2 && fullInfo.jumped > 0.2 && fullInfo.last > 0.2 && fullInfo.wrong < 0.05 && Math.abs(fullInfo.onset - 0.5) < 0.04,
+    `Firefox：新文件的声音是整片（${Number(fullInfo.duration).toFixed(2)} 秒），原声按 80%（200 Hz 振幅 ${Number(fullInfo.tone).toFixed(3)}），中文按对齐点落在该在的时间上（1.4 秒 300 Hz ${Number(fullInfo.first).toFixed(2)}、4.4 秒 320 Hz ${Number(fullInfo.second).toFixed(2)}、8.9 秒 500 Hz ${Number(fullInfo.jumped).toFixed(2)}、14.9 秒 540 Hz ${Number(fullInfo.last).toFixed(2)}；第一段音在 ${Number(fullInfo.onset).toFixed(3)} 秒响起）`,
   );
-  await b.waitFor(`(document.querySelector('[data-testid=dub-full-complete]')?.textContent ?? '').includes('录完整了')`, { what: '配音页写明录完整了' });
   await tap('[data-testid=dub-remove]');
   await tap('[data-testid=dub-remove-yes]');
   await b.waitFor(`!!document.querySelector('[data-testid=dub-pick]')`, { what: '移除后回到选文件' });

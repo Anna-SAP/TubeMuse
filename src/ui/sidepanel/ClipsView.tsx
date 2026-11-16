@@ -321,8 +321,7 @@ export function ClipsView() {
                 {state.range && <progress class="clip-progress" max={state.range.end - state.range.start} value={Math.min(state.recordedSec, state.range.end - state.range.start)} />}
                 <div class="muted small">
                   {state.format}
-                  {state.burn ? ' · 带字幕' : ''}
-                  {state.mode === 'full' ? ' · 完整双语视频（从「配音」页开始的，放到结尾自动保存）' : ` · 单段上限 ${formatTimecode(state.maxSec)}`}
+                  {state.burn ? ' · 带字幕' : ''} · 单段上限 {formatTimecode(state.maxSec)}
                 </div>
                 <div class="row">
                   {state.waiting === 'user' ? (
@@ -370,8 +369,7 @@ export function ClipsView() {
                 <div class="muted small">
                   {formatTimecode(ready.durationSec)} · {formatBytes(ready.bytes)} · {ready.format}
                   {ready.burned ? ' · 带字幕' : ''}
-                  {ready.dubbed ? ' · 双语混音' : ''}
-                  {ready.full ? (ready.full.issues.length ? ' · 整片（没录完整，详见「配音」页）' : ' · 完整双语视频') : ''} · {CLIP_STOP_LABELS[ready.endedBy]}
+                  {ready.dubbed ? ' · 双语混音' : ''} · {CLIP_STOP_LABELS[ready.endedBy]}
                 </div>
                 {ready.savedAt ? (
                   <p class="small" data-testid="clip-saved">
@@ -412,8 +410,7 @@ export function ClipsView() {
                   {SITE_TEXT[r.site ?? 'youtube'].logTag}
                   {formatTimecode(r.start)}–{formatTimecode(r.end)} · {formatBytes(r.bytes)}
                   {r.burned ? ' · 带字幕' : ''}
-                  {r.dubbed ? ' · 双语混音' : ''}
-                  {r.mode === 'full' ? (r.partial ? ' · 整片（没录完整）' : ' · 完整双语视频') : ''} · {formatRelative(r.savedAt, Date.now())}
+                  {r.dubbed ? ' · 双语混音' : ''} · {formatRelative(r.savedAt, Date.now())}
                 </span>
                 <span class="muted small clip-file">{r.fileName}</span>
               </li>
