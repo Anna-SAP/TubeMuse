@@ -34,6 +34,9 @@
 // 7. 中文配音（用户 2026-11-13 要求，见 DECISIONS §76）：YouTube 上配音开着时，录下的片段是双语混音——原声按 80%（和你听到的一样）
 //    加中文配音。配音的 <audio> 由同一个隔离环境里的配音脚本交过来（core/dub-mix.ts），这里对它调 captureStream()，
 //    和对视频做的一样；混音后过一道限幅，免得两路声音叠在一起削波。配音关着时录音和以前完全一样。
+// 8. 整片录制（用户 2026-11-16 选定，见 DECISIONS §80）：你在「配音」页点"录下完整双语视频"时，把这个视频跳到开头、
+//    从头实时录到结尾（双语混音），放完自动保存。为了不缺内容，录不了的时候（标签页在后台、你按了暂停）把视频也暂停，
+//    能录了再接着放（位置跑到前面去了就先跳回上次录到的地方）。仍然是实时录下正在播放的画面和声音：不下载、不加速、不发网络请求。
 // 受版权保护（DRM）的视频浏览器不允许录制或截图，本脚本不绕过。
 
 import { CLIPS, DEFAULT_SETTINGS, DUB, MUSE } from '../config/defaults';
@@ -42,6 +45,7 @@ import { MULTICC_LINE_COLORS } from '../core/multi-captions';
 import { MUSE_MSG, museItem, museUnavailable, type MuseSnapshot } from '../core/muse';
 import { parseXhsUrl, xhsPath } from '../core/xhs';
 import {
+  CLIP_FULL_WAIT_LABELS,
   CLIP_MSG,
   CLIP_STOP_LABELS,
   CLIP_WAIT_LABELS,
@@ -49,11 +53,18 @@ import {
   bytesToBase64,
   checkCapture,
   checkClipStart,
+  checkFullStart,
   clipFileName,
   clipUnavailable,
   decideClip,
   formatTimecode,
   feedPostTitle,
+  fullFileName,
+  fullHold,
+  fullIssues,
+  fullJump,
+  fullMaxSec,
+  fullPlan,
   igProfileName,
   isBiliPage,
   isDouyinPage,
@@ -155,6 +166,11 @@ interface Recording {
   limiter?: GainNode;
   /** 这一段里混进过配音 */
   dubbed: boolean;
+  /**
+   * 整片录制（DECISIONS §80）。duration：开始时视频的总时长；held：视频现在是我们暂停着的（标签页在后台、你按了暂停）；
+   * jumps、rateChanged、dubLost、dubPlayedSec：录制中进度被拖动的次数、改过倍速、配音被关掉过、配音出声了多少秒——结果里据此写明是不是录完整了
+   */
+  full?: { duration: number; held: boolean; jumps: number; rateChanged: boolean; dubLost: boolean; dubPlayedSec: number };
   canvasTrack: MediaStreamTrack;
   recorder: MediaRecorder;
   /** 录音机等到第一次真正要录时才 start()，见 startRecorder */
@@ -751,9 +767,12 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   lastError = undefined;
   const video = videoEl();
   const { videoId, shorts } = currentIds();
-  const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
-  // Instagram 和 YouTube Shorts 的视频放到结尾会自己从头再放
-  const loops = SITE === 'ig' || shorts;
+  const full = req.mode === 'full';
+  // 整片：画面多大、码率多少按视频时长定；时长上限也按视频时长（不受"单段时长上限"管）
+  const plan = full && video ? fullPlan(video.duration, video.videoWidth, video.videoHeight) : undefined;
+  const maxSec = full && video && Number.isFinite(video.duration) ? fullMaxSec(video.duration) : Math.round(Math.max(1, settings.maxMinutes) * 60);
+  // Instagram 和 YouTube Shorts 的视频放到结尾会自己从头再放；整片录制时 YouTube 开着"循环播放"的也一样，录完一遍就结束
+  const loops = SITE === 'ig' || shorts || (full && !!video?.loop);
   const problem = checkClipStart(req, {
     site: SITE,
     feed: onFeed(),
@@ -769,6 +788,10 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     maxSec,
   });
   if (problem || !video || !videoId) return fail(problem ?? '没找到播放器里的视频');
+  if (full) {
+    const p = checkFullStart({ site: SITE, shorts, dubReady: !!dubMix()?.audio(), duration: video.duration, rate: video.playbackRate, ad: adShowing(), plan });
+    if (p) return fail(p);
+  }
   // 跳到起点会改动广告的播放进度：等广告结束再截取
   if (req.mode === 'range' && adShowing()) return fail('正在播广告：广告结束后再开始截取');
   if (drmProtected(video)) {
@@ -801,7 +824,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     void ac.close();
     return fail('浏览器还没允许这个页面处理声音', '在视频画面上点一下（暂停再播放也行），再开始录制');
   }
-  const size = outputSize(video.videoWidth, video.videoHeight);
+  const size = plan ? { width: plan.width, height: plan.height } : outputSize(video.videoWidth, video.videoHeight);
   const canvas = document.createElement('canvas');
   canvas.width = size.width;
   canvas.height = size.height;
@@ -825,7 +848,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   try {
     recorder = new MediaRecorder(new MediaStream([canvasTrack, audioTrack]), {
       mimeType: format.mimeType,
-      videoBitsPerSecond: videoBitrate(size.height),
+      videoBitsPerSecond: plan?.videoBps ?? videoBitrate(size.height),
       audioBitsPerSecond: CLIPS.audioBitrate,
     });
   } catch (e) {
@@ -860,6 +883,7 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
     audioNodes: new Map(),
     origGain,
     dubbed: false,
+    ...(full ? { full: { duration: video.duration, held: false, jumps: 0, rateChanged: false, dubLost: false, dubPlayedSec: 0 } } : {}),
     canvasTrack,
     recorder,
     started: false,
@@ -878,6 +902,10 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   };
   connectAudio(r);
   connectDub(r);
+  if (full && !r.dub) {
+    cleanup(r);
+    return fail('浏览器没让录下中文配音的声音，没有开始', '在「配音」页把配音关掉再开启一次，再试');
+  }
   source.addEventListener('addtrack', () => rec === r && connectAudio(r));
   source.addEventListener('removetrack', () => rec === r && connectAudio(r));
   recorder.ondataavailable = (e) => {
@@ -896,8 +924,9 @@ async function startRecording(req: ClipStartRequest): Promise<void> {
   updateBurn(r);
   drawFrame(r);
   startFrames(r);
-  if (req.mode === 'range') {
-    video.currentTime = req.start!;
+  if (req.mode === 'range' || full) {
+    // 整片：从头录
+    video.currentTime = full ? 0 : req.start!;
     if (video.paused) void video.play().catch(() => undefined);
   }
   // 录音机先不开始，由下一轮判断该不该录（例如广告中、正在跳到起点），第一次该录时才 start()
@@ -984,12 +1013,21 @@ function finish(r: Recording): void {
     return;
   }
   releaseReady();
-  const start = r.mode === 'range' ? r.start! : r.mediaFirst;
-  const end = r.mode === 'free' ? (r.mediaLast ?? r.mediaFirst) : reason === 'range-end' ? r.end! : Math.min(r.end!, Math.max(r.mediaLast ?? r.end!, r.start!));
+  // 整片：没有一条"没录完整"的原因才算录完整了
+  const full = r.full ? { duration: r.full.duration, issues: fullIssues({ endedBy: reason, jumps: r.full.jumps, rateChanged: r.full.rateChanged, dubLost: r.full.dubLost, dubbed: r.dubbed, dubPlayedSec: r.full.dubPlayedSec }) } : undefined;
+  const whole = !!full && full.issues.length === 0;
+  const start = whole ? 0 : r.mode === 'range' ? r.start! : r.mediaFirst;
+  const end = whole
+    ? full.duration
+    : r.mode !== 'range'
+      ? (r.mediaLast ?? r.mediaFirst)
+      : reason === 'range-end'
+        ? r.end!
+        : Math.min(r.end!, Math.max(r.mediaLast ?? r.end!, r.start!));
   ready = {
     id: r.id,
     blob: new Blob(r.chunks, { type: r.format.mimeType.split(';')[0] }),
-    fileName: clipFileName(r.title, r.videoId, start, end, r.format.ext, SITE),
+    fileName: whole ? fullFileName(r.title, r.videoId, r.format.ext) : clipFileName(r.title, r.videoId, start, end, r.format.ext, SITE),
     bytes: r.bytes,
     durationSec: Math.round(r.recordedSec * 10) / 10,
     start,
@@ -998,13 +1036,15 @@ function finish(r: Recording): void {
     burned: r.burn,
     ...(r.dubbed ? { dubbed: true } : {}),
     endedBy: reason,
+    ...(full ? { full } : {}),
     videoId: r.videoId,
     pageUrl: r.pageUrl,
     ...(r.title ? { title: r.title } : {}),
     mode: r.mode,
   };
   r.chunks = [];
-  if (settings.autoSave) saveReady();
+  // 整片放完了：直接保存（你多半不在电脑前）。中途停下的按"停止后直接保存"的设置来
+  if (settings.autoSave || (full && reason === 'ended')) saveReady();
   broadcast();
 }
 
@@ -1034,6 +1074,7 @@ function saveReady(): void {
     fileName: c.fileName,
     burned: c.burned,
     ...(c.dubbed ? { dubbed: true } : {}),
+    ...(c.full?.issues.length ? { partial: true } : {}),
     savedAt: c.savedAt,
   };
   try {
@@ -1164,12 +1205,31 @@ function museSnapshot(): MuseSnapshot {
 
 // ── 每一轮 ──
 
+/**
+ * 整片录制：录不了的时候（标签页在后台、你按了暂停）把视频也暂停，免得它自己往前放、文件里缺一段；能录了再接着放。
+ * 接着放之前，位置要是已经跑到上次录到的地方后面（暂停下得晚了一点），先跳回去
+ */
+function holdVideo(r: Recording, full: NonNullable<Recording['full']>, d: ReturnType<typeof decideClip>): void {
+  const v = r.video;
+  const act = fullHold(d, { paused: v.paused, ad: adShowing(), held: full.held });
+  if (act === 'pause') {
+    v.pause();
+    full.held = true;
+  } else if (act === 'play') {
+    full.held = false;
+    if (r.mediaLast !== undefined && v.currentTime - r.mediaLast > CLIPS.full.resumeRewindSec) v.currentTime = r.mediaLast;
+    // 浏览器不让接着放时（很少见）视频停着，状态里写"视频已暂停；继续播放时接着录"，你点一下播放就行
+    void v.play().catch(() => undefined);
+  } else if (act === 'release') full.held = false;
+}
+
 function tick(): void {
   if (!alive()) return teardown();
   const r = rec;
   if (r && !r.stopping) {
     const now = performance.now();
-    if (r.recorder.state === 'recording') r.recordedSec += (now - r.lastTick) / 1000;
+    const elapsed = (now - r.lastTick) / 1000;
+    if (r.recorder.state === 'recording') r.recordedSec += elapsed;
     r.lastTick = now;
     const v = r.video;
     const { videoId } = currentIds();
@@ -1196,11 +1256,19 @@ function tick(): void {
         duration: v.duration,
       },
     );
+    if (r.full) holdVideo(r, r.full, d);
     if (d.kind === 'stop') stopRecording(d.reason);
     else if (d.kind === 'record') {
       if (!r.started) startRecorder(r);
       else if (r.recorder.state === 'paused') r.recorder.resume();
       if (!r.stopping) {
+        if (r.full) {
+          // 整片：记下和"完整的双语视频"不一样的地方，结果里写明（不拦着你）
+          if (fullJump(r.mediaLast, v.currentTime, elapsed, v.playbackRate)) r.full.jumps += 1;
+          if (Math.abs(v.playbackRate - 1) > 0.001) r.full.rateChanged = true;
+          if (!r.dub) r.full.dubLost = true;
+          else if (!r.dub.el.paused) r.full.dubPlayedSec += elapsed;
+        }
         r.waiting = undefined;
         r.mediaFirst ??= v.currentTime;
         r.mediaLast = v.currentTime;
@@ -1224,14 +1292,21 @@ function tabState(precise = false): ClipTabState {
   // 录制中报告的是录的这个视频和它的帖子（X 上滚动时"最该录的"会变；信息流里它暂停着滚出屏幕时，已经不算"锁定的"了）
   const videoId = (r && FEED_SITE ? feedRecordingId(r) : null) ?? now.videoId;
   const video = r?.video ?? videoEl();
-  const maxSec = Math.round(Math.max(1, settings.maxMinutes) * 60);
+  const maxSec = r?.maxSec ?? Math.round(Math.max(1, settings.maxMinutes) * 60);
   // YouTube 播放页上视频元素几乎立刻就有，沿用原来的判断（不因"还没有视频"挡住）；小红书的图文笔记、X 的文字帖子没有视频。
   // Shorts 看的是 Shorts 播放器里有没有视频：页面上另有一个藏着的 #movie_player，不能拿它算"有视频"
   const unavailable = clipUnavailable(SITE, { feed: onFeed(), enabled: settings.enabled, videoId, hasVideo: (SITE === 'youtube' && !shorts) || !!video });
   const t = video?.currentTime ?? 0;
   let status: string;
   if (r?.stopping) status = '正在收尾…';
-  else if (r) status = r.waiting ? CLIP_WAIT_LABELS[r.waiting] : r.mode === 'range' ? `正在截取 ${formatTimecode(r.start!)} – ${formatTimecode(r.end!)}` : '正在录制';
+  else if (r)
+    status = r.waiting
+      ? ((r.full ? CLIP_FULL_WAIT_LABELS[r.waiting] : undefined) ?? CLIP_WAIT_LABELS[r.waiting])
+      : r.mode === 'range'
+        ? `正在截取 ${formatTimecode(r.start!)} – ${formatTimecode(r.end!)}`
+        : r.full
+          ? '正在录完整双语视频'
+          : '正在录制';
   else if (unavailable) status = unavailable;
   else if (ready) status = ready.savedAt ? `已保存：${ready.fileName}` : `录好了（${CLIP_STOP_LABELS[ready.endedBy]}），还没保存`;
   else status = '可以开始录制';
@@ -1320,7 +1395,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
       reply();
       return false;
     case CLIP_MSG.start: {
-      const mode: ClipMode = msg.mode === 'range' ? 'range' : 'free';
+      const mode: ClipMode = msg.mode === 'range' ? 'range' : msg.mode === 'full' ? 'full' : 'free';
       const start = num(msg.start);
       const end = num(msg.end);
       void startRecording({ mode, ...(start !== undefined ? { start } : {}), ...(end !== undefined ? { end } : {}) }).then(reply, (e: unknown) => {
@@ -1374,4 +1449,8 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
 });
 
 timer = setInterval(tick, CLIPS.tickMs);
+// 标签页切到后台时定时器会被浏览器放慢到一秒一次：录制中一看到切走 / 切回就立刻处理（整片录制要马上把视频也暂停）
+document.addEventListener('visibilitychange', () => {
+  if (rec) tick();
+});
 tick();

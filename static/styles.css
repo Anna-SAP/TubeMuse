@@ -1906,6 +1906,15 @@ a.db-title:hover {
   padding-top: 8px;
   border-top: 1px solid var(--border);
 }
+/* 保存完整双语视频（DECISIONS §80） */
+.dub-full {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.dub-full .clip-timer {
+  flex-wrap: wrap;
+}
 .dub-delay-value {
   font-variant-numeric: tabular-nums;
   color: var(--accent);
