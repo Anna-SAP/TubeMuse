@@ -506,7 +506,7 @@ export async function dub(t) {
     await panel.mouse.move(qbox.x + 5, qbox.y - 30);
   }
   await panel.getByTestId('dub-align').screenshot({ path: join(shots, '75-dub-quick-on.png') });
-  // "保存完整双语视频"（DECISIONS §81）录的是开着配音时听到的声音：快速对齐开着时写明中文是按倍速慢放叠上去的，不再说对齐点
+  // "保存完整双语视频"（DECISIONS §83）合成的是开着配音时听到的声音：快速对齐开着时写明中文是按倍速慢放叠上去的，不再说对齐点
   const fullAboutQuick = ((await panel.getByTestId('dub-full-about').textContent()) ?? '').replace(/\s+/g, ' ');
   check(fullAboutQuick.includes(`中文按快速对齐的 ${quickLabel} 慢放叠上去`) && !fullAboutQuick.includes('对齐点'), `"保存完整双语视频"的说明跟着变：${fullAboutQuick.slice(0, 70)}…`);
   // 倍速跟着视频的倍速；拖进度、暂停照常跟随

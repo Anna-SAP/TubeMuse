@@ -1,11 +1,11 @@
 // 「配音」页（DECISIONS §74、§75）：给当前 YouTube 视频关联一个本地中文配音（.m4a），开 / 关，调偏移、加对齐点，移除；管理所有关联过的视频。
-// "录下完整双语视频"（DECISIONS §81）：让片段录制脚本把这个视频从头到尾实时录一遍（双语混音），放完自动保存。
+// "保存完整双语视频"（DECISIONS §83）：你选原视频文件（MP4），在这个页面里离线合成（画面照搬，声音换成双语混音），不用播放。
 // 还有侧边栏顶部的一行提示（DubPrompt）：当前视频有中文配音、还没开启时显示。
 // 状态来自注入 YouTube 页面的配音脚本（只在本扩展内部传递）；对应关系在本机存储，音频在扩展自己的 IndexedDB。
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { DUB } from '../../config/defaults';
-import { CLIP_MSG, formatTimecode, fullIssueText, fullStartBlocked, type ClipTabState } from '../../core/clips';
+import { formatTimecode } from '../../core/clips';
 import { formatClock } from '../../core/time';
 import {
   DUB_MSG,
@@ -29,10 +29,12 @@ import {
   type QuickAlignSuggestion,
 } from '../../core/dub';
 import { quickFormulaText } from '../../core/dub-align';
+import { exportSupported } from '../../services/dub-export';
 import { addDubAnchor, attachDub, checkDubStorage, removeDub, removeDubAnchor, setDubQuickRate, setDubSegmentOffset } from '../../services/dub-service';
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
 import { DubAlignMap, DubGapReadout, useDubAlignNow } from './DubAlignMap';
+import { exportJob, useExportJob, type ExportJob } from './dub-export-job';
 import { Notice } from '../shared/components';
 import { openInCurrentTab } from '../shared/download';
 import { useActiveTabState } from '../shared/tab-state';
@@ -89,128 +91,139 @@ async function previewSegment(tabId: number | undefined, msg: { videoId: string;
   }
 }
 
+/** 中文是怎么叠上去的（和开着配音播放时一样）：快速对齐的倍速，或开头的偏移加对齐点 */
+const alignSummary = (rec: DubRecord): string => {
+  if (rec.quickRate !== undefined) return `中文按快速对齐的 ${rateText(rec.quickRate)} ${rateWord(rec.quickRate)}叠上去（音调不变）`;
+  const n = rec.anchors?.length ?? 0;
+  return `中文按开头的偏移和${n ? `全部 ${n} 个对齐点` : '现在的对齐'}叠上去`;
+};
+
+const secondsUsed = (ms: number) => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))} 秒` : `${Math.floor(ms / 60_000)} 分 ${Math.round((ms % 60_000) / 1000)} 秒`);
+
+/** 一次合成的状态：正在读文件 / 时长对不上等确认 / 正在合成（进度）/ 做完了 / 出错 / 已取消 */
+function ExportStatus({ job, withTitle }: { job: ExportJob; withTitle?: boolean }) {
+  const src = job.source;
+  const sourceLine = src ? `${job.sourceName} · ${formatBytes(job.sourceBytes)} · ${formatTimecode(Math.round(src.durationSec))} · 画面 ${src.video.label} ${src.video.width}×${src.video.height} · 原声 ${src.audio.label}` : `${job.sourceName} · ${formatBytes(job.sourceBytes)}`;
+  return (
+    <div class="clip-ready" data-testid="dub-export" data-phase={job.phase}>
+      {withTitle && <strong>完整双语视频：{job.title}</strong>}
+      <div class="muted small clip-file" data-testid="dub-export-source">
+        原视频：{sourceLine}
+      </div>
+      {job.phase === 'checking' && <p class="small">正在读这个文件的索引…</p>}
+      {job.phase === 'confirm' && src && (
+        <>
+          <p class="small warn-text" data-testid="dub-export-mismatch">
+            这个文件长 {formatTimecode(Math.round(src.durationSec))}，YouTube 上这个视频是 {formatTimecode(Math.round(job.expectedSec ?? 0))}，差 {Math.abs(src.durationSec - (job.expectedSec ?? 0)).toFixed(1)}{' '}
+            秒。对齐是按 YouTube 上的视频时间标的：用别的版本（剪过的、另一次上传的）合成，中文会对不上。先确认是不是选错了文件。
+          </p>
+          <div class="row">
+            <button class="btn" data-testid="dub-export-confirm" onClick={() => void exportJob.confirm()}>
+              仍然合成
+            </button>
+            <button class="btn" onClick={() => exportJob.cancel()}>
+              取消
+            </button>
+          </div>
+        </>
+      )}
+      {job.phase === 'mixing' && (
+        <>
+          <div class="clip-timer">
+            <span class="rec-dot" aria-hidden="true" />
+            <span data-testid="dub-export-progress">{formatTimecode(Math.floor(job.doneSec))}</span>
+            {src && <span class="muted"> / {formatTimecode(Math.round(src.durationSec))}</span>}
+            <span class="muted"> · 已用 {secondsUsed(Date.now() - job.startedAt)}</span>
+          </div>
+          {src && <progress class="clip-progress" max={src.durationSec} value={Math.min(job.doneSec, src.durationSec)} />}
+          <p class="muted small">正在本机合成：解码原声和中文、混音、重新编码成一条音轨；画面不动。可以切到别的标签页或侧边栏别的页，别关侧边栏。</p>
+          <div class="row">
+            <button class="btn" data-testid="dub-export-cancel" onClick={() => exportJob.cancel()}>
+              取消
+            </button>
+          </div>
+        </>
+      )}
+      {job.phase === 'done' && job.result && (
+        <>
+          <strong class="clip-file" data-testid="dub-export-file">
+            {job.result.fileName}
+          </strong>
+          <div class="small" data-testid="dub-export-done">
+            合成好了：全片 {formatTimecode(Math.round(job.result.durationSec))} · {formatBytes(job.result.bytes)} · 画面原样照搬 · 声音 {job.result.audioLabel}（原声降 20% + 中文 {job.result.pieces} 段）· 用时{' '}
+            {secondsUsed(job.result.elapsedMs)}
+          </div>
+          {job.result.audioCodec === 'opus' && (
+            <p class="small warn-text" data-testid="dub-export-opus">
+              {job.result.aacFailed ? `AAC 编码器出错了（${job.result.aacFailed}），改用 Opus 重新合成了一遍。` : '这个浏览器编不了 AAC，声音用的是 Opus。'}
+              浏览器、VLC、mpv、IINA 能正常播放；Windows 自带的播放器、QuickTime 和一些手机可能放出来没有声音。
+            </p>
+          )}
+          <p class="small" data-testid="dub-export-saved">
+            已在 {formatClock(job.result.savedAt)} 交给浏览器存进下载文件夹。保存完之前别挪动、别删你选的那个原视频文件（新文件里的画面是从它那里直接写过去的）。没看到文件？浏览器可能拦下了下载：点"再存一次"。
+          </p>
+          <div class="row">
+            <button class="btn" data-testid="dub-export-again" onClick={() => exportJob.saveAgain()}>
+              再存一次
+            </button>
+            <button class="btn" onClick={() => exportJob.clear()}>
+              收起
+            </button>
+          </div>
+        </>
+      )}
+      {job.phase === 'error' && job.error && <ProblemBox problem={job.error} onClose={() => exportJob.clear()} />}
+      {job.phase === 'cancelled' && (
+        <div class="row">
+          <span class="small" data-testid="dub-export-cancelled">
+            已取消，没有生成文件。
+          </span>
+          <button class="btn link small" onClick={() => exportJob.clear()}>
+            收起
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
- * 保存完整双语视频（用户 2026-11-16 选定的做法，DECISIONS §81）：片段录制脚本把这个视频跳到开头、从头实时录到结尾，
- * 声音是开着配音时听到的双语混音，放完自动存进下载文件夹。这里只发开始 / 暂停 / 停止，显示进度和结果
+ * 保存完整双语视频（用户 2026-11-16 选定的做法，DECISIONS §83）：你选这个视频的原视频文件（MP4），在这个页面里离线合成——
+ * 画面原样照搬，声音换成"原声降 20% + 按现在的对齐叠上去的中文"，做完自动存进下载文件夹。不播放、不联网，一般不到一分钟
  */
-function FullSave({ tabId, dub, rec }: { tabId: number | undefined; dub: DubTabState; rec: DubRecord }) {
-  // 推送里不含播放位置：每秒问一次
-  const { state: clip } = useActiveTabState<ClipTabState>(CLIP_MSG.getState, CLIP_MSG.state, 1000);
-  const [busy, setBusy] = useState(false);
-  const [noReply, setNoReply] = useState(false);
-  const send = async (msg: Record<string, unknown>) => {
-    if (tabId === undefined) return;
-    setBusy(true);
-    setNoReply(false);
-    try {
-      await chrome.tabs.sendMessage(tabId, msg);
-    } catch {
-      setNoReply(true);
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (clip === undefined) return null;
-  const live = !!clip && clip.phase !== 'idle' && clip.mode === 'full';
-  const blocked = fullStartBlocked(dub, clip);
-  const duration = (live && clip.duration > 0 ? clip.duration : undefined) ?? dub.videoDuration ?? rec.videoDurationSec;
-  const anchors = rec.anchors?.length ?? 0;
-  const ready = clip?.ready?.full ? clip.ready : undefined;
-  const full = ready?.full;
+function FullSave({ rec, missing, onPick }: { rec: DubRecord; missing: boolean; onPick: () => void }) {
+  const job = useExportJob();
+  const mine = job?.videoId === rec.videoId ? job : undefined;
+  const busy = exportJob.busy();
+  const supported = exportSupported();
+  const blocked = !supported
+    ? '这个浏览器没有音频编解码接口（WebCodecs），做不了离线合成：请用最新版 Google Chrome 或 Firefox。'
+    : missing
+      ? '本机的配音音频不见了：先在上面重新选择 .m4a 文件。'
+      : busy && !mine
+        ? `正在合成另一个视频（${job?.title ?? ''}），做完再来。`
+        : undefined;
   return (
     <div class="dub-full" data-testid="dub-full">
       <div class="row">
         <strong>保存完整双语视频</strong>
       </div>
-      {live && clip ? (
-        <div class="clip-live" data-testid="dub-full-live">
-          <div class="clip-timer">
-            <span class={`rec-dot${clip.waiting || clip.phase === 'finishing' ? ' paused' : ''}`} aria-hidden="true" />
-            <span data-testid="dub-full-position">{formatTimecode(clip.position)}</span>
-            {clip.duration > 0 && <span class="muted"> / {formatTimecode(clip.duration)}</span>}
-            {clip.duration > 0 && <span class="muted"> · 还要约 {formatTimecode(Math.max(0, clip.duration - clip.position))}</span>}
-            <span class="muted"> · {formatBytes(clip.bytes)}</span>
-          </div>
-          {clip.duration > 0 && <progress class="clip-progress" max={clip.duration} value={Math.min(clip.position, clip.duration)} />}
-          <div class="muted small" data-testid="dub-full-status">
-            {clip.status}
-            {clip.format ? ` · ${clip.format}` : ''}
-            {clip.burn ? ' · 带字幕' : ''}
-          </div>
-          <div class="row">
-            {clip.waiting === 'user' ? (
-              <button class="btn" disabled={busy || clip.phase === 'finishing'} onClick={() => void send({ type: CLIP_MSG.resume })}>
-                继续
-              </button>
-            ) : (
-              <button class="btn" data-testid="dub-full-pause" disabled={busy || clip.phase === 'finishing'} onClick={() => void send({ type: CLIP_MSG.pause })}>
-                暂停
-              </button>
-            )}
-            <button class="btn" data-testid="dub-full-stop" disabled={busy || clip.phase === 'finishing'} onClick={() => void send({ type: CLIP_MSG.stop })}>
-              ■ 停止（不录到结尾）
-            </button>
-          </div>
-          <p class="muted small">
-            不用盯着，但这个标签页要一直开在前台：切到别的标签页或把窗口最小化时，视频和录制一起暂停，切回来接着录。录的就是这一遍放出来的样子——中途别拖进度条、别改倍速、别关配音；关掉侧边栏不影响。
-          </p>
-        </div>
-      ) : (
-        <>
-          <p class="muted small" data-testid="dub-full-about">
-            把这个视频从头到尾实时录一遍，放完自动存进下载文件夹：画面，加上开着配音时听到的声音（原声降 20%，中文按{rec.quickRate !== undefined ? `快速对齐的 ${rateText(rec.quickRate)} ${rateWord(rec.quickRate)}` : `开头的偏移和${anchors ? `全部 ${anchors} 个对齐点` : '现在的对齐'}`}叠上去）。
-            {duration ? `要花和视频一样长的时间（${formatTimecode(duration)}）——` : '要花和视频一样长的时间——'}
-            不用盯着，但这个标签页要一直开在前台（切走时视频和录制一起暂停，切回来接着录）。没法不播放就拿到整个视频：TubeMuse 不下载 YouTube 的视频。
-          </p>
-          <div class="row">
-            <button class="btn primary" data-testid="dub-full-start" disabled={busy || !!blocked || tabId === undefined} onClick={() => void send({ type: CLIP_MSG.start, mode: 'full' })}>
-              ● 录下完整双语视频
-            </button>
-          </div>
-          {blocked && (
-            <p class="muted small" data-testid="dub-full-blocked">
-              {blocked}
-            </p>
-          )}
-        </>
+      <p class="muted small" data-testid="dub-full-about">
+        选这个视频的原视频文件（MP4），TubeMuse 在本机直接合成，不用播放：画面原样照搬（不重新编码），声音换成开着配音时听到的那样——原声降 20%，{alignSummary(rec)}。
+        {rec.videoDurationSec ? `${formatTimecode(Math.round(rec.videoDurationSec))} 的视频` : '一般'}几十秒就好，做完自动存进下载文件夹；合成时可以切到别的标签页，别关侧边栏。
+        原视频文件要你自己准备：TubeMuse 不下载 YouTube 的视频。
+      </p>
+      <div class="row">
+        <button class="btn primary" data-testid="dub-full-pick" disabled={busy || !!blocked} onClick={onPick}>
+          选择原视频文件（.mp4）…
+        </button>
+      </div>
+      {blocked && (
+        <p class="muted small" data-testid="dub-full-blocked">
+          {blocked}
+        </p>
       )}
-      {noReply && <ProblemBox problem={{ message: '这个标签页没有响应', hint: '刷新一下 YouTube 页面再试（扩展安装或更新之前打开的页面里还没有录制脚本）。' }} onClose={() => setNoReply(false)} />}
-      {!live && clip?.error && <ProblemBox problem={clip.error} />}
-      {!live && ready && full && (
-        <div class="clip-ready" data-testid="dub-full-ready">
-          <strong class="clip-file">{ready.fileName}</strong>
-          <div class="muted small">
-            {formatTimecode(ready.durationSec)} · {formatBytes(ready.bytes)} · {ready.format}
-            {ready.burned ? ' · 带字幕' : ''}
-          </div>
-          {full.issues.length === 0 ? (
-            <p class="small" data-testid="dub-full-complete">
-              录完整了：全片 {formatTimecode(full.duration)}，双语混音。
-            </p>
-          ) : (
-            <ul class="small warn-text dub-notes" data-testid="dub-full-issues">
-              {full.issues.map((i) => (
-                <li>{fullIssueText(i, { endedBy: ready.endedBy, end: ready.end, duration: full.duration })}</li>
-              ))}
-            </ul>
-          )}
-          {ready.savedAt ? (
-            <p class="small" data-testid="dub-full-saved">
-              已在 {formatClock(ready.savedAt)} 交给浏览器存进下载文件夹。没看到文件？浏览器可能拦下了"自动下载多个文件"：在地址栏右侧允许后点"再存一次"。
-            </p>
-          ) : (
-            <p class="small warn-text">还没保存：录下的内容只在那个标签页的内存里，关掉或刷新页面就没了。</p>
-          )}
-          <div class="row">
-            <button class={`btn${ready.savedAt ? '' : ' primary'}`} data-testid="dub-full-save" disabled={busy} onClick={() => void send({ type: CLIP_MSG.save })}>
-              {ready.savedAt ? '再存一次' : '保存到本地'}
-            </button>
-            <button class="btn" disabled={busy} onClick={() => void send({ type: CLIP_MSG.discard })}>
-              {ready.savedAt ? '释放内存' : '丢弃'}
-            </button>
-          </div>
-        </div>
-      )}
+      {mine && <ExportStatus job={mine} />}
     </div>
   );
 }
@@ -594,6 +607,10 @@ export function DubView() {
 
   /** 选文件那一刻的视频（文件对话框开着时你可能换了标签页） */
   const pickFor = useRef<string>();
+  /** 保存完整双语视频：选原视频文件的那个输入框，和这次是给哪个视频选的 */
+  const sourceRef = useRef<HTMLInputElement>(null);
+  const exportFor = useRef<string>();
+  const job = useExportJob();
   const fileIds = index ? Object.values(index).map((r) => r.fileId).sort().join(',') : undefined;
   // 核对本机存储：清掉没人用的音频，标出音频不见了的
   useEffect(() => {
@@ -614,6 +631,19 @@ export function DubView() {
     setDone(undefined);
     pickFor.current = videoId;
     fileRef.current?.click();
+  };
+  const pickSource = (vid: string) => {
+    exportFor.current = vid;
+    sourceRef.current?.click();
+  };
+  const onSource = (input: HTMLInputElement) => {
+    const file = input.files?.[0];
+    input.value = '';
+    // 用此刻存着的对齐（选文件的工夫里可能又调过）
+    const vid = exportFor.current ?? videoId;
+    exportFor.current = undefined;
+    const target = vid ? index[vid] : undefined;
+    if (file && target) void exportJob.start(target, file, ctx.dubAudio);
   };
   const onFile = async (input: HTMLInputElement) => {
     const file = input.files?.[0];
@@ -689,6 +719,12 @@ export function DubView() {
   return (
     <div class="dub">
       <input type="file" accept=".m4a,audio/mp4,audio/x-m4a" hidden ref={fileRef} data-testid="dub-file" onChange={(e) => void onFile(e.currentTarget)} />
+      <input type="file" accept=".mp4,.m4v,video/mp4" hidden ref={sourceRef} data-testid="dub-full-file" onChange={(e) => onSource(e.currentTarget)} />
+      {job && job.videoId !== videoId && (
+        <section class="panel" data-testid="dub-export-other">
+          <ExportStatus job={job} withTitle />
+        </section>
+      )}
       {!settings.dub.enabled && (
         <Notice kind="warn">
           中文配音已在设置中关闭。
@@ -763,7 +799,7 @@ export function DubView() {
               </button>
             </div>
             {removeConfirm(rec.videoId)}
-            <FullSave tabId={tabId} dub={state} rec={rec} />
+            <FullSave rec={rec} missing={missing.includes(rec.videoId)} onPick={() => pickSource(rec.videoId)} />
             <AlignControl key={rec.videoId} rec={rec} tabId={tabId} state={state} onNote={setAlignNote} />
             {alignNote && (
               <Notice kind="ok" onClose={() => setAlignNote(undefined)}>
@@ -816,6 +852,9 @@ export function DubView() {
                   </div>
                   {r.videoId !== videoId && (
                     <>
+                      <button class="btn link small" data-testid="dub-item-export" disabled={exportJob.busy() || missing.includes(r.videoId) || !exportSupported()} onClick={() => pickSource(r.videoId)}>
+                        保存完整双语视频…
+                      </button>
                       <button class="btn link small" onClick={() => setConfirmRemove(r.videoId)}>
                         移除…
                       </button>
@@ -840,7 +879,7 @@ export function DubView() {
           </li>
           <li>配音开启时，原声降到你的音量的 80%（降 20%），中文保持正常音量、不跟 YouTube 的音量与静音走；关闭、换视频、离开页面时原声恢复。广告期间配音暂停、原声恢复。</li>
           <li>
-            "录下完整双语视频"和「片段」页是同一种录法：实时录下正在播放的画面和声音，所以要把视频真的放一遍。TubeMuse 不下载 YouTube 的视频，也就没法不播放就生成文件。整段在保存前都在那个标签页的内存里，长视频会自动降低码率或分辨率；要更清晰，先在播放器里把清晰度调高。中途插播的广告不会录进去。
+            "保存完整双语视频"不用播放：你选这个视频的原视频文件（MP4），TubeMuse 在侧边栏里离线合成——画面原样照搬，原声和中文解码后按现在的对齐混在一起，重新编码成一条音轨（能用 AAC 就用 AAC，否则用 Opus）。快速对齐时中文用变速不变调的算法放慢 / 放快，和播放时听到的是同一种效果，波形不会逐个样本相同。原视频文件只在合成时读，不存进扩展；TubeMuse 不下载 YouTube 的视频，这个文件要你自己准备。不在 YouTube 页面上也能做：在"已关联的视频"里点"保存完整双语视频…"。
           </li>
           <li>配音由 YouTube 页面里的 TubeMuse 脚本播放，关掉侧边栏也继续；刷新页面后要重新开启（只提示，不自动出声）。</li>
           <li>音频文件存在这个浏览器里（扩展自己的 IndexedDB），不上传、不发任何网络请求；导出数据时只导出视频与文件名、偏移的对应关系，不含音频本身；"清空全部数据"会一并删除。</li>
