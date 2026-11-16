@@ -1,5 +1,5 @@
 // 「配音」页（DECISIONS §74、§75）：给当前 YouTube 视频关联一个本地中文配音（.m4a），开 / 关，调偏移、加对齐点，移除；管理所有关联过的视频。
-// "录下完整双语视频"（DECISIONS §80）：让片段录制脚本把这个视频从头到尾实时录一遍（双语混音），放完自动保存。
+// "录下完整双语视频"（DECISIONS §81）：让片段录制脚本把这个视频从头到尾实时录一遍（双语混音），放完自动保存。
 // 还有侧边栏顶部的一行提示（DubPrompt）：当前视频有中文配音、还没开启时显示。
 // 状态来自注入 YouTube 页面的配音脚本（只在本扩展内部传递）；对应关系在本机存储，音频在扩展自己的 IndexedDB。
 
@@ -84,7 +84,7 @@ async function previewSegment(tabId: number | undefined, msg: { videoId: string;
 }
 
 /**
- * 保存完整双语视频（用户 2026-11-16 选定的做法，DECISIONS §80）：片段录制脚本把这个视频跳到开头、从头实时录到结尾，
+ * 保存完整双语视频（用户 2026-11-16 选定的做法，DECISIONS §81）：片段录制脚本把这个视频跳到开头、从头实时录到结尾，
  * 声音是开着配音时听到的双语混音，放完自动存进下载文件夹。这里只发开始 / 暂停 / 停止，显示进度和结果
  */
 function FullSave({ tabId, dub, rec }: { tabId: number | undefined; dub: DubTabState; rec: DubRecord }) {

@@ -22,6 +22,9 @@ import { ReminderBanner } from './ReminderBanner';
 import { HostAccessBanner } from '../shared/host-access';
 import { useMuseAsk } from './MuseAsk';
 import { runScheduledJobs } from '../../services/summary-service';
+import { normalizeZoom } from '../../core/zoom';
+import { cssZoomOf } from '../shared/css-zoom';
+import { applyZoom, useZoom, ZoomControl } from './zoom';
 
 type Tab = 'find' | 'discover' | 'douban' | 'xhs' | 'xyz' | 'email' | 'subtitles' | 'dub' | 'clips' | 'records' | 'profile' | 'changes';
 
@@ -112,7 +115,7 @@ function SetupBanner() {
  * 所以用 ResizeObserver 量出来写进 CSS 变量 --top-h。导航栏原位置滚出视野、真正吸附住时加一道分隔阴影；
  * scroll-padding-top 让页面内的跳转定位、键盘聚焦不被头部和导航栏挡住。
  */
-function usePinnedNav(pinned: boolean) {
+function usePinnedNav(pinned: boolean, zoom: number) {
   const header = useRef<HTMLElement>(null);
   const nav = useRef<HTMLElement>(null);
   /** 导航栏原来的位置（紧贴在它前面的空元素）：它滚到头部下沿之上，就说明导航栏吸附住了 */
@@ -124,10 +127,12 @@ function usePinnedNav(pinned: boolean) {
       // 用 getBoundingClientRect 的小数高度：offsetHeight 取整，会让没滚动时也误判为"吸附住"
       const headerH = header.current?.getBoundingClientRect().height ?? 0;
       const navH = pinned ? (nav.current?.getBoundingClientRect().height ?? 0) : 0;
-      root.style.setProperty('--top-h', `${headerH}px`);
+      // 量出来的是缩放之后的视口像素，写回 CSS 的长度是缩放之前的（侧边栏缩放，DECISIONS §80）：除以缩放倍数
+      const z = cssZoomOf(header.current);
+      root.style.setProperty('--top-h', `${headerH / z}px`);
       // 固定着的导航栏有多高（没固定时 0）：配音页的差距读数吸在它下面（DECISIONS §78）
-      root.style.setProperty('--nav-h', `${navH}px`);
-      root.style.scrollPaddingTop = `${headerH + navH}px`;
+      root.style.setProperty('--nav-h', `${navH / z}px`);
+      root.style.scrollPaddingTop = `${(headerH + navH) / z}px`;
       setStuck(pinned && !!anchor.current && anchor.current.getBoundingClientRect().top < headerH - 0.5);
     };
     const ro = new ResizeObserver(update);
@@ -139,7 +144,8 @@ function usePinnedNav(pinned: boolean) {
       ro.disconnect();
       window.removeEventListener('scroll', update);
     };
-  }, [pinned]);
+    // 缩放变了也重新量一次：头部的高度（缩放前的像素）可能因为重新折行而变
+  }, [pinned, zoom]);
   /** 固定并吸附着时切换标签页：回到新页面的开头（紧贴导航栏下方），而不是停在上一页滚到的位置 */
   const toContentTop = () => {
     if (!stuck || !anchor.current || !header.current) return;
@@ -158,7 +164,7 @@ function PinIcon({ on }: { on: boolean }) {
   );
 }
 
-function App() {
+function App({ initialZoom }: { initialZoom: number }) {
   const [tab, setTab] = useState<Tab>('find');
   const [prefill, setPrefill] = useState<{ text: string; n: number; autoSubmit?: boolean }>();
   const quota = useQuota();
@@ -167,7 +173,8 @@ function App() {
   const llm = useLlmSpend();
   const settings = useStore(stores.settings);
   const pinned = settings?.ui.pinNav ?? false;
-  const pin = usePinnedNav(pinned);
+  const zoom = useZoom(settings?.ui.zoom, initialZoom);
+  const pin = usePinnedNav(pinned, zoom.zoom);
   const muse = useMuseAsk();
   const togglePin = () => void stores.settings.update(appCtx().kv, appCtx().locker, (s) => ({ ...s, ui: { ...s.ui, pinNav: !s.ui.pinNav } }));
   const go = (id: Tab) => {
@@ -181,9 +188,12 @@ function App() {
   return (
     <div class="app">
       <header class="top" ref={pin.header}>
-        <div class="brand">
-          <img src="icons/icon-32.png" alt="" width={18} height={18} />
-          TubeMuse
+        <div class="brand-col">
+          <div class="brand">
+            <img src="icons/icon-32.png" alt="" width={18} height={18} />
+            TubeMuse
+          </div>
+          <ZoomControl state={zoom} />
         </div>
         <QuotaMeter snap={quota} x={x} sub={sub} llm={llm} />
         {muse.button}
@@ -263,4 +273,14 @@ function App() {
   );
 }
 
-render(<App />, document.getElementById('app')!);
+// 先读出存下的缩放档位、用上，再画页面：免得每次打开先按 100% 闪一下再跳到你选的大小。读不到就按 100% 画
+void stores.settings
+  .read(appCtx().kv)
+  .then(
+    (s) => normalizeZoom(s.ui.zoom),
+    () => normalizeZoom(undefined),
+  )
+  .then((zoom) => {
+    applyZoom(zoom);
+    render(<App initialZoom={zoom} />, document.getElementById('app')!);
+  });

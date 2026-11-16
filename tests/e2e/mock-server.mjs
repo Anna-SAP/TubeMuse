@@ -74,7 +74,7 @@ export const WATCH_VIDEOS = [
  * 原声是一个固定的 200 Hz 单音（振幅 0.2）：录片段时按这个频率单独量原声，看它在双语混音里是不是按 80% 混进去的（DECISIONS §76）
  */
 export const DUB_VIDEO = { id: 'dubVideo0001', seconds: 120, toneHz: 200, toneAmp: 0.2 };
-/** "录下完整双语视频"（DECISIONS §80）用的播放页：16 秒，整片实时录一遍也只要十几秒；原声同样是 200 Hz 的单音 */
+/** "录下完整双语视频"（DECISIONS §81）用的播放页：16 秒，整片实时录一遍也只要十几秒；原声同样是 200 Hz 的单音 */
 export const DUB_FULL_VIDEO = { id: 'dubFull00001', seconds: 16, toneHz: 200, toneAmp: 0.2 };
 
 /** 16-bit 单声道 16 kHz 的单音 WAV */

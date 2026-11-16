@@ -10,6 +10,7 @@
 import type { RefObject } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { DUB } from '../../config/defaults';
+import { cssZoomOf } from '../shared/css-zoom';
 import { clampDelay, formatClockSec, formatSeconds, type DubMap } from '../../core/dub';
 import {
   alignNowText,
@@ -146,7 +147,8 @@ function useWidth(): [RefObject<HTMLDivElement>, number] {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    setWidth(Math.max(200, Math.round(el.getBoundingClientRect().width)));
+    // 除以侧边栏的缩放倍数（DECISIONS §80）：SVG 的宽度按缩放前的像素写，和下面 ResizeObserver 给的一致
+    setWidth(Math.max(200, Math.round(el.getBoundingClientRect().width / cssZoomOf(el))));
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width;
       if (w) setWidth(Math.max(200, Math.round(w)));
@@ -278,8 +280,11 @@ function Nearby(props: {
     return out;
   };
   const local = (e: PointerEvent) => {
-    const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    // 鼠标位置换成图里的坐标：侧边栏缩放（DECISIONS §80）后，屏幕上的 1 像素是图里的 1 / 倍数 像素
+    const svg = e.currentTarget as SVGSVGElement;
+    const r = svg.getBoundingClientRect();
+    const z = cssZoomOf(svg);
+    return { x: (e.clientX - r.left) / z, y: (e.clientY - r.top) / z };
   };
   const finish = (commit: boolean) => {
     const d = drag.current;

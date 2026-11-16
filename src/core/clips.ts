@@ -9,7 +9,7 @@ import { canonicalXhsUrl, isXhsId } from './xhs';
 
 /**
  * free：从现在的位置录到你停止；range：按时间段截取；
- * full：整片（配音页"录下完整双语视频"，只在 YouTube 播放页、配音开着时，见 DECISIONS §80）——跳到开头，从头录到结尾，放完自动保存
+ * full：整片（配音页"录下完整双语视频"，只在 YouTube 播放页、配音开着时，见 DECISIONS §81）——跳到开头，从头录到结尾，放完自动保存
  */
 export type ClipMode = 'free' | 'range' | 'full';
 
@@ -702,7 +702,7 @@ export function checkClipStart(req: ClipStartRequest, c: ClipStartContext): stri
   return undefined;
 }
 
-// ── 整片录制（配音页"录下完整双语视频"，DECISIONS §80）──
+// ── 整片录制（配音页"录下完整双语视频"，DECISIONS §81）──
 
 /** 整片录制用多大的画面、多少码率 */
 export interface FullPlan {
@@ -1074,7 +1074,7 @@ export interface ReadyClipInfo {
   dubbed?: boolean;
   /** 这一段为什么结束 */
   endedBy: ClipStopReason;
-  /** 整片录制（DECISIONS §80）：视频总时长，和没录完整的原因（空的 = 录完整了） */
+  /** 整片录制（DECISIONS §81）：视频总时长，和没录完整的原因（空的 = 录完整了） */
   full?: { duration: number; issues: FullIssue[] };
   savedAt?: number;
 }
@@ -1137,7 +1137,7 @@ export interface ClipRecord {
   burned: boolean;
   /** 混进了中文配音（双语混音，DECISIONS §76）；没有这一项的是没混 */
   dubbed?: boolean;
-  /** 整片录制（mode 是 full）没录完整：中途停了、进度被拖动过等（DECISIONS §80）；没有这一项的是录完整了 */
+  /** 整片录制（mode 是 full）没录完整：中途停了、进度被拖动过等（DECISIONS §81）；没有这一项的是录完整了 */
   partial?: boolean;
   savedAt: number;
 }
@@ -1171,7 +1171,7 @@ export function sanitizeClipRecord(raw: unknown, site: ClipSite = 'youtube'): Cl
   const videoId = typeof r.videoId === 'string' && (site === 'xhs' ? isXhsId(r.videoId) : idFromUrl || VIDEO_ID.test(r.videoId)) ? r.videoId : null;
   const sourceUrl = clipSourceUrl(site, r.url, videoId);
   if (sourceUrl === null) return null;
-  // 整片录制只在 YouTube 上（DECISIONS §80）
+  // 整片录制只在 YouTube 上（DECISIONS §81）
   const mode = r.mode === 'free' || r.mode === 'range' || (r.mode === 'full' && site === 'youtube') ? r.mode : null;
   const start = num(r.start, 1e6);
   const end = num(r.end, 1e6);
