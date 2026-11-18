@@ -9,14 +9,15 @@
 // （用户要求，页面结构相同，见 DECISIONS §58、§59）；
 // 2026-11-11 起也注入 B 站网页版（www.bilibili.com），录页面主播放器里正在看的这个视频：普通视频、番剧影视、课程、播放列表、活动页
 // 用的是同一个播放器（用户要求"所有视频"，见 DECISIONS §64）；
-// 2026-11-11 起 YouTube Shorts（/shorts/<ID>）也录，录的是 Shorts 播放器（#shorts-player）里的视频，放完一遍就结束（用户要求，见 DECISIONS §66）：
+// 2026-11-11 起 YouTube Shorts（/shorts/<ID>）也录，录的是 Shorts 播放器（#shorts-player）里的视频，放完一遍就结束（用户要求，见 DECISIONS §66）；
+// 2026-11-18 起也注入优酷（v.youku.com），录播放页 /v_show/id_<视频ID>.html 播放器里的视频（用户要求，见 DECISIONS §89）：
 // 1. 只在你从侧边栏"片段"页或快捷键开始录制后工作：把正在播放的这个视频逐帧画到一块不放进页面的画布上
 //    （开启字幕烧录时再叠加播放器里当时显示的字幕，只限 YouTube），声音经 video.captureStream() 取这个视频的音轨，
 //    交给浏览器自带的 MediaRecorder 编码。不是麦克风、不是整个标签页；不抓取、不下载这些网站的音视频流。
 // 2. 广告（YouTube 认得出；酷播只认得出"不是正片的流、又很短"的片头广告；X 认不出；Instagram 的广告帖子没有帖子链接，不让录；抖音没有片头广告；
-//    B 站实测时没碰到片头广告，有的话认不出）、
+//    B 站实测时没碰到片头广告，有的话认不出；优酷认得出片头的贴片广告和正片开头的品牌头条，别的认不出）、
 //    暂停、缓冲、标签页在后台时自动暂停录制；切到别的视频（小红书：关掉这篇笔记；X：离开这条帖子；酷播：换一部或换一集；
-//    Instagram：离开首页；抖音：划到下一条或关掉这条视频；B 站：换一集、换一 P 或连播到下一个视频）时这一段自动结束。
+//    Instagram：离开首页；抖音：划到下一条或关掉这条视频；B 站：换一集、换一 P 或连播到下一个视频；优酷：换一集或自动播下一集）时这一段自动结束。
 // 3. 录好的片段只在这个页面的内存里；你点"保存"（或开着"停止后直接保存"）时由浏览器存进下载文件夹，
 //    之后只把文件名、时间段、大小交给扩展后台记一笔。本脚本不发任何网络请求、不改动页面
 //    （画布和下载链接都不放进页面），除了自己的下载链接不点击任何东西，构建时自动检查。
@@ -24,6 +25,7 @@
 //    X、Instagram 首页信息流上另读锁定的视频所在那一条帖子的链接、作者名和正文（显示、起文件名、记下回到帖子的链接），别的帖子不读；
 //    抖音另读当前这条视频上的作者昵称和描述（页面标题在划到下一条时不更新，不能用），别的视频不读。
 //    B 站只读播放器状态、页面标题和网址：UP 主、简介、评论、弹幕、推荐列表都不读。
+//    优酷也只读播放器状态、页面标题和网址，外加播放器广告层里"有没有广告在放"（只看在不在，不读广告内容）：简介、评论、弹幕都不读。
 // 5. Capture 截图（用户 2026-11-06 要求，见 DECISIONS §50、§52）：只在你点按钮时，把这一帧按视频的真实尺寸
 //    画到不放进页面的画布上，在本机编成 PNG，由侧边栏取走后交给浏览器保存（这里不保存：从这个页面连续下载，
 //    第二次起会被 Chrome 拦下）。不录声音、不带字幕和播放器控件，广告时不截。
@@ -63,6 +65,7 @@ import {
   isKubbPage,
   isXHomeUrl,
   isXPage,
+  isYoukuPage,
   layoutBurnIn,
   loopedToStart,
   mp4TrackKinds,
@@ -72,6 +75,7 @@ import {
   parseIgPostUrl,
   parseKubbPlayUrl,
   parseXStatusUrl,
+  parseYoukuUrl,
   pickClipFormat,
   pickFeedVideo,
   pickXVideo,
@@ -101,7 +105,7 @@ type ClipSettings = typeof DEFAULT_SETTINGS.clips;
 
 const FONT = '"YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans JP", sans-serif';
 
-/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版、B 站网页版或 YouTube */
+/** 这个页面是哪个站：小红书网页版（xiaohongshu.com / rednote.com）、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版、B 站网页版、优酷（v.youku.com）或 YouTube */
 const SITE: ClipSite = xhsPath(location.href)
   ? 'xhs'
   : isXPage(location.href)
@@ -114,7 +118,9 @@ const SITE: ClipSite = xhsPath(location.href)
           ? 'douyin'
           : isBiliPage(location.href)
             ? 'bilibili'
-            : 'youtube';
+            : isYoukuPage(location.href)
+              ? 'youku'
+              : 'youtube';
 /** X 和 Instagram：一页有好几个视频，录的是哪个、属于哪条帖子要从页面上认（见 feedSiteNow） */
 const FEED_SITE = SITE === 'x' || SITE === 'ig';
 
@@ -474,12 +480,40 @@ function biliPage(): { id: string; url: string } | undefined {
   return page && (page.kind !== 'page' || biliVideoEl()) ? page : undefined;
 }
 
+/**
+ * 优酷播放页上播放器的视频（2026-11-18 实测）：#ykPlayer 里 .video-layer 的直接子元素，正片是同源的 blob: 流；
+ * 换集、放完自动播下一集都用同一个元素，只换片源。贴片广告另用 .advertise-layer 里的 <video> 放（见 youkuAdShowing），不是它。
+ * 不是播放页时不找。
+ */
+const YOUKU_PLAYER_VIDEO = '#ykPlayer .video-layer > video';
+
+function youkuVideoEl(): HTMLVideoElement | null {
+  return parseYoukuUrl(location.href) ? document.querySelector<HTMLVideoElement>(YOUKU_PLAYER_VIDEO) : null;
+}
+
+/**
+ * 优酷的广告（2026-11-18 实测，两种都认）：
+ * - 贴片广告（免费剧集开头一组，每条 15 秒左右，两次实测一共放了约 1 分钟和 2 分钟）：在 #ykPlayer .advertise-layer 里另用 <video> 放（直接给地址的短片），
+ *   正片的 <video> 停在开头等着；放完这些 <video> 就从页面上撤掉。预先加载着的下一条是藏着的（不占地方），不算。
+ * - 品牌头条（正片开头十来秒处插进来的 15 秒左右的品牌广告，会员剧集试看时也有）：做在正片的流里，和正片是同一个 <video>、
+ *   同一条时间线，优酷自己的进度也照走；放的时候播放器在 #youku-advertise 里放一块可点的区域（点了打开广告主的页面），放完就撤掉。
+ * 只看这两样在不在，不读广告的内容。暂停时弹出的图片广告在别的层里，不算：暂停下来照样能截图。
+ */
+function youkuAdShowing(): boolean {
+  if (document.querySelector('#ykPlayer #youku-advertise > *')) return true;
+  return [...document.querySelectorAll<HTMLVideoElement>('#ykPlayer .advertise-layer video')].some((v) => {
+    const r = v.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+}
+
 function videoEl(): HTMLVideoElement | null {
   if (SITE === 'youtube') return youtubeVideoEl();
   const now = feedSiteNow();
   if (now) return now.video;
   if (SITE === 'kubb') return kubbVideoEl();
   if (SITE === 'bilibili') return biliVideoEl();
+  if (SITE === 'youku') return youkuVideoEl();
   if (SITE === 'douyin') return douyinItem()?.querySelector('video') ?? null;
   let all = document.querySelectorAll<HTMLVideoElement>(XHS_PLAYER_VIDEO);
   if (!all.length) all = document.querySelectorAll<HTMLVideoElement>(XHS_ANY_VIDEO);
@@ -488,6 +522,7 @@ function videoEl(): HTMLVideoElement | null {
 }
 
 function adShowing(): boolean {
+  if (SITE === 'youku') return youkuAdShowing();
   if (SITE === 'kubb') {
     // 广告和正片用同一个 <video> 放，看它现在放的是什么（判断见 isKubbAd）
     const v = rec?.video ?? kubbVideoEl();
@@ -500,7 +535,8 @@ function adShowing(): boolean {
 /**
  * YouTube 的视频 ID（Shorts 的也是，shorts 为 true）；小红书的笔记 ID（网址是笔记详情时）；X 的帖子 ID（网址是帖子页时；首页信息流上是锁定的视频所在的帖子）；
  * 酷播的影片 ID（网址是播放页时，剧集带分集 ID）；Instagram 的帖子短码（首页信息流上锁定的视频所在的帖子）；
- * 抖音的视频 ID（网址里的 modal_id）；B 站的 BV 号（分 P 带第几 P）、番剧或课程的 ep / ss 号，别的带播放器的页面用路径（见 biliPage）
+ * 抖音的视频 ID（网址里的 modal_id）；B 站的 BV 号（分 P 带第几 P）、番剧或课程的 ep / ss 号，别的带播放器的页面用路径（见 biliPage）；
+ * 优酷的视频 ID（网址是播放页时，见 parseYoukuUrl）
  */
 function currentIds(): { videoId: string | null; shorts: boolean } {
   if (SITE === 'youtube') return videoIdFromUrl(location.href);
@@ -509,6 +545,7 @@ function currentIds(): { videoId: string | null; shorts: boolean } {
   if (SITE === 'kubb') return { videoId: parseKubbPlayUrl(location.href)?.id ?? null, shorts: false };
   if (SITE === 'douyin') return { videoId: parseDouyinUrl(location.href)?.id ?? null, shorts: false };
   if (SITE === 'bilibili') return { videoId: biliPage()?.id ?? null, shorts: false };
+  if (SITE === 'youku') return { videoId: parseYoukuUrl(location.href)?.id ?? null, shorts: false };
   const link = parseXhsUrl(location.href);
   return { videoId: link?.kind === 'note' ? link.noteId : null, shorts: false };
 }
@@ -519,7 +556,7 @@ function pageTitle(): string | undefined {
   if (now?.feed) return now.title;
   if (SITE === 'douyin') return douyinTitle();
   const t = titleFromDocumentTitle(document.title || '', SITE);
-  return t && !/^(?:YouTube|小红书|rednote|酷播|bilibili|哔哩哔哩)$/i.test(t) ? t : undefined;
+  return t && !/^(?:YouTube|小红书|rednote|酷播|bilibili|哔哩哔哩|优酷)$/i.test(t) ? t : undefined;
 }
 
 /** 回到原处的链接：首页信息流（X、Instagram）上是这条帖子的链接（网址只是首页），别处就是网址 */
@@ -539,7 +576,7 @@ function drmProtected(v: HTMLVideoElement): boolean {
 
 /**
  * 画面读得到吗：来自别的网站、又没有放行的视频，画到画布上会被浏览器标为"不可读"，录不了。
- * YouTube、小红书、X、酷播、B 站的视频现在都是同源的 blob: 流；X 的动图（GIF）例外，直接从 video.twimg.com 加载。
+ * YouTube、小红书、X、酷播、B 站、优酷的视频现在都是同源的 blob: 流；X 的动图（GIF）例外，直接从 video.twimg.com 加载。
  */
 function framesReadable(v: HTMLVideoElement): boolean {
   try {

@@ -353,7 +353,7 @@ function ReadProblem({ read, shortcut }: { read: Exclude<StoryTabRead, { ok: tru
     );
   }
   const text: Record<string, string> = {
-    skipped: '这个网站有自己的约定（YouTube、小红书、Gmail、Instagram、抖音、B 站、小宇宙、酷播），故事不读它的页面。想查里面的内容，把文字粘贴到下面"粘贴文字来查"里。',
+    skipped: '这个网站有自己的约定（YouTube、小红书、Gmail、Instagram、抖音、B 站、小宇宙、酷播、优酷），故事不读它的页面。想查里面的内容，把文字粘贴到下面"粘贴文字来查"里。',
     'x-nopost': '这是 X 的信息流或个人主页：点开一条帖子（网址里有 /status/）再读。故事只读那一条帖子，不读信息流。',
     'x-not-found': '这是一条 X 帖子，但页面上没找到它（可能还没加载完、帖子已删除，或 X 改版了）：等页面加载完再点一次。',
     empty: '这个页面上没读到正文（可能还没加载完，或者正文在框架 / 图片里）：等页面加载完再试，或者选中要查的文字后再点。',

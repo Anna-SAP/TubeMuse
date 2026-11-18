@@ -29,6 +29,7 @@ import {
   isKubbPage,
   isXHomeUrl,
   isXPage,
+  isYoukuPage,
   layoutBurnIn,
   loopedToStart,
   mp4TrackKinds,
@@ -39,6 +40,7 @@ import {
   parseKubbPlayUrl,
   parseTimecode,
   parseXStatusUrl,
+  parseYoukuUrl,
   pickClipFormat,
   pickFeedVideo,
   pickXVideo,
@@ -1393,6 +1395,164 @@ describe('B 站（www.bilibili.com）', () => {
     const saved = await recordSavedClip(ctx, { ...record, url: 'https://www.bilibili.com/bangumi/play/ep733317?from_spmid=666.25.episode.0' }, 'bilibili');
     expect(saved).toMatchObject({ site: 'bilibili', videoId: 'ep733317', url: 'https://www.bilibili.com/bangumi/play/ep733317' });
     expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_bili']);
+  });
+});
+
+describe('优酷（v.youku.com）', () => {
+  // 2026-11-18 实测的视频 ID：用户举的例子（第 4 集）、同一部剧的第 1 集、一个老视频（结尾只有一个 =）
+  const VID = 'XNjU4MjM4NjQxNg==';
+  const VID1 = 'XNjU4MjM4MjEyMA==';
+  const OLD = 'XOTEwODkzODA=';
+  const PAGE = `https://v.youku.com/v_show/id_${VID}.html`;
+  const record = {
+    id: 'clip_youku',
+    videoId: VID,
+    title: '《点燃我，温暖你》命韵峋环CP版 第4集 项目中标张晓蓓抢夺成果',
+    mode: 'free',
+    start: 40,
+    end: 70,
+    durationSec: 30,
+    bytes: 3_800_000,
+    format: 'MP4（H.264 + AAC）',
+    fileName: '《点燃我，温暖你》命韵峋环CP版 第4集 项目中标张晓蓓抢夺成果_00m40s-01m10s.mp4',
+    burned: false,
+    savedAt: 1_700_000_000_000,
+  };
+
+  it('判断站点：只认 v.youku.com 本身；首页、频道页（www.youku.com）是别的域名', () => {
+    expect(isYoukuPage(`${PAGE}?spm=a2hkn.playlist.myhome.d_3&s=aace2910c3784944a0ad`)).toBe(true);
+    expect(isYoukuPage('https://v.youku.com/video?vid=XNjU4MjM4MjEyMA==')).toBe(true);
+    expect(isYoukuPage('https://www.youku.com/ku/webhome')).toBe(false);
+    expect(isYoukuPage(`https://youku.com/v_show/id_${VID}.html`)).toBe(false);
+    expect(isYoukuPage(`https://v.youku.com.evil.example/v_show/id_${VID}.html`)).toBe(false);
+    expect(isBiliPage(PAGE)).toBe(false);
+    expect(isKubbPage(PAGE)).toBe(false);
+  });
+
+  it('播放页（用户举的例子）：ID 是视频 ID，链接只留 /v_show/id_<ID>.html，节目 ID 和来源标记去掉', () => {
+    expect(parseYoukuUrl(`${PAGE}?spm=a2hkn.playlist.myhome.d_3&s=aace2910c3784944a0ad`)).toEqual({ id: VID, url: PAGE });
+    expect(parseYoukuUrl(PAGE)).toEqual({ id: VID, url: PAGE });
+    // 实测：在选集里点第 1 集后，网址换成 /v_show/id_<第 1 集>.html?s=…&scm=…&spm=…（不重新加载页面）
+    expect(parseYoukuUrl(`https://v.youku.com/v_show/id_${VID1}.html?s=aace2910c3784944a0ad&scm=20140719.apircmd.298496.video_${VID1}&spm=a2hkt.13141534.298496.d_2_1`)).toEqual({
+      id: VID1,
+      url: `https://v.youku.com/v_show/id_${VID1}.html`,
+    });
+    // 老视频的 ID 结尾只有一个 =；= 写成 %3D 的也认
+    expect(parseYoukuUrl(`https://v.youku.com/v_show/id_${OLD}.html?s=cbff9f68962411de83b1`)).toEqual({ id: OLD, url: `https://v.youku.com/v_show/id_${OLD}.html` });
+    expect(parseYoukuUrl('https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg%3D%3D.html')).toEqual({ id: VID, url: PAGE });
+    expect(parseYoukuUrl(`https://v.youku.com/v_show/id_${VID}`)?.id).toBe(VID);
+    expect(parseYoukuUrl(`${PAGE}#comment`)?.url).toBe(PAGE);
+  });
+  it('站内列表、推荐里的 /video?vid=<ID>（打开后跳到播放页）：一样认；整部剧的 /video?s=<节目ID> 网址里没有视频 ID，不认', () => {
+    expect(parseYoukuUrl(`https://v.youku.com/video?vid=${VID1}&scm=20140719.apircmd.298496.video_XNjU4MjM4MjEyMA%3D%3D`)).toEqual({ id: VID1, url: `https://v.youku.com/v_show/id_${VID1}.html` });
+    expect(parseYoukuUrl('https://v.youku.com/video?vid=XNjU4MjM4MjEyMA%3D%3D')?.id).toBe(VID1);
+    expect(parseYoukuUrl('https://v.youku.com/video?s=aace2910c3784944a0ad')).toBeUndefined();
+    expect(parseYoukuUrl('https://v.youku.com/video')).toBeUndefined();
+  });
+  it('不是播放页、ID 写得不对、不是优酷的网址：不认', () => {
+    for (const url of [
+      'https://v.youku.com/',
+      'https://v.youku.com/v_show/',
+      'https://v.youku.com/v_show/id_.html',
+      'https://v.youku.com/v_show/id_abc.html',
+      'https://v.youku.com/v_show/id_XNjU4.html',
+      'https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg===.html',
+      'https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg==.html/extra',
+      'https://v.youku.com/v_show/id_XNjU4M%ZZ.html',
+      'https://v.youku.com/video?vid=../../x',
+      `https://v.youku.com/other/id_${VID}.html`,
+      `https://www.youku.com/v_show/id_${VID}.html`,
+      `http://v.youku.com/v_show/id_${VID}.html`,
+      `https://v.youku.com.evil.example/v_show/id_${VID}.html`,
+      `https://v.youku.com@evil.example/v_show/id_${VID}.html`,
+      'not a url',
+    ]) {
+      expect(parseYoukuUrl(url)).toBeUndefined();
+    }
+  });
+
+  it('页面标题（2026-11-18 真实页面的写法）→ 视频标题：去掉"-频道-高清完整正版视频在线观看-优酷"', () => {
+    expect(titleFromDocumentTitle('《点燃我，温暖你》命韵峋环CP版 第4集 项目中标张晓蓓抢夺成果-电视剧-高清完整正版视频在线观看-优酷', 'youku')).toBe('《点燃我，温暖你》命韵峋环CP版 第4集 项目中标张晓蓓抢夺成果');
+    expect(titleFromDocumentTitle('生死制暴-电影-高清完整正版视频在线观看-优酷', 'youku')).toBe('生死制暴');
+    expect(titleFromDocumentTitle('师兄啊师兄 第1话 长寿预见师傅之死，小师妹入门体检-动漫-高清完整正版视频在线观看-优酷', 'youku')).toBe('师兄啊师兄 第1话 长寿预见师傅之死，小师妹入门体检');
+    expect(titleFromDocumentTitle('超正的我们 第20261112期 上：组内分歧吵翻天！推荐官“毒舌”遭当场回怼！-综艺-高清完整正版视频在线观看-优酷', 'youku')).toBe('超正的我们 第20261112期 上：组内分歧吵翻天！推荐官“毒舌”遭当场回怼！');
+    expect(titleFromDocumentTitle('文明之旅 第三季 第20261112集 公元1132年：南宋如何变“盗”为兵？-文化-高清完整正版视频在线观看-优酷', 'youku')).toBe('文明之旅 第三季 第20261112集 公元1132年：南宋如何变“盗”为兵？');
+    expect(titleFromDocumentTitle('蓝色星球 第三季  每朵浪花，皆有故事-纪录片-高清完整正版视频在线观看-优酷', 'youku')).toBe('蓝色星球 第三季 每朵浪花，皆有故事');
+    expect(titleFromDocumentTitle('奇迹少女 第六季  《奇迹少女 第六季》今日开播！-少儿-高清完整正版视频在线观看-优酷', 'youku')).toBe('奇迹少女 第六季 《奇迹少女 第六季》今日开播！');
+  });
+  it('页面标题：标题里自己带连字符时不切错；认不出的写法只去掉"-优酷"；首页、频道页不当标题', () => {
+    expect(titleFromDocumentTitle('Re-Zero 第1话-动漫-高清完整正版视频在线观看-优酷', 'youku')).toBe('Re-Zero 第1话');
+    expect(titleFromDocumentTitle('A-电影-B-电影-高清完整正版视频在线观看-优酷', 'youku')).toBe('A-电影-B');
+    expect(titleFromDocumentTitle('某个视频-高清在线观看-优酷', 'youku')).toBe('某个视频-高清在线观看');
+    expect(titleFromDocumentTitle('没有站名的标题', 'youku')).toBe('没有站名的标题');
+    expect(titleFromDocumentTitle('优酷-热门独播剧集综艺电影在线观看-为好内容全力以赴', 'youku')).toBe('');
+    expect(titleFromDocumentTitle('优酷', 'youku')).toBe('');
+    // 同一个标题按别的站的规则不动：各站的规则不串
+    expect(titleFromDocumentTitle('生死制暴-电影-高清完整正版视频在线观看-优酷')).toBe('生死制暴-电影-高清完整正版视频在线观看-优酷');
+    expect(titleFromDocumentTitle('生死制暴-电影-高清完整正版视频在线观看-优酷', 'bilibili')).toBe('生死制暴-电影-高清完整正版视频在线观看-优酷');
+  });
+  it('文件名：标题_起点-终点；没有标题时用 youku-ID', () => {
+    expect(clipFileName('生死制暴', VID, 40, 70, 'mp4', 'youku')).toBe('生死制暴_00m40s-01m10s.mp4');
+    expect(clipFileName(undefined, VID, 5, 15, 'webm', 'youku')).toBe(`youku-${VID}_00m05s-00m15s.webm`);
+    expect(captureFileName('生死制暴', VID, 30.804, 12, 'youku')).toBe('生死制暴_00-00-30-804_original_00012.png');
+  });
+
+  it('不能录的原因用人话说：不是播放页 / 没找到视频', () => {
+    expect(clipUnavailable('youku', { enabled: true, videoId: null, hasVideo: false })).toContain('不是优酷的播放页');
+    expect(clipUnavailable('youku', { enabled: true, videoId: VID, hasVideo: false })).toContain('没找到播放器里的视频');
+    expect(clipUnavailable('youku', { enabled: true, videoId: VID, hasVideo: true })).toBeUndefined();
+    expect(clipUnavailable('youku', { enabled: false, videoId: VID, hasVideo: true })).toContain('已在设置中关闭');
+  });
+  it('开始录制：播放页上自由录制、按时间段截取都能开始（广告时不让按时间段截取在录制脚本里，e2e 覆盖）；不是播放页时说明原因', () => {
+    const c: ClipStartContext = { site: 'youku', enabled: true, videoId: VID, hasVideo: true, busy: false, duration: 2856.3, currentTime: 0, ended: false, maxSec: 600 };
+    expect(checkClipStart({ mode: 'free' }, c)).toBeUndefined();
+    expect(checkClipStart({ mode: 'range', start: 60, end: 90 }, c)).toBeUndefined();
+    expect(checkClipStart({ mode: 'free' }, { ...c, videoId: null })).toContain('不是优酷的播放页');
+  });
+  it('Capture：广告时不截；受保护、画面没准备好、不是播放页时说明原因', () => {
+    const ctx: ClipCaptureContext = { site: 'youku', enabled: true, videoId: VID, hasVideo: true, ad: false, drm: false, ready: true };
+    expect(checkCapture(ctx)).toBeUndefined();
+    expect(checkCapture({ ...ctx, ad: true })).toContain('广告');
+    expect(checkCapture({ ...ctx, drm: true })).toContain('DRM');
+    expect(checkCapture({ ...ctx, ready: false })).toContain('画面还没准备好');
+    expect(checkCapture({ ...ctx, videoId: null })).toContain('不是优酷的播放页');
+  });
+  it('品牌头条（和正片同一个视频、同一条时间线，正片照样在走）：暂停录制，放完接着录；换一集或自动播下一集时这一段结束', () => {
+    const control: ClipControl = { mode: 'free', videoId: VID1, recordedSec: 4, bytes: 1000, maxSec: 600, maxBytes: CLIPS.maxBytes, userPaused: false };
+    const sample: ClipSample = { videoId: VID1, currentTime: 12, paused: false, ended: false, seeking: false, ready: true, ad: true, visible: true, duration: 2856.3 };
+    expect(decideClip(control, sample)).toEqual({ kind: 'wait', why: 'ad' });
+    expect(decideClip(control, { ...sample, currentTime: 26, ad: false })).toEqual({ kind: 'record' });
+    // 时间段：品牌头条落在时间段里时，那一截不录，放完接着录到终点
+    const range: ClipControl = { ...control, mode: 'range', start: 5, end: 40 };
+    expect(decideClip(range, sample)).toEqual({ kind: 'wait', why: 'ad' });
+    expect(decideClip(range, { ...sample, currentTime: 26, ad: false })).toEqual({ kind: 'record' });
+    expect(decideClip(control, { ...sample, ad: false, videoId: 'XNjU3Mjc0NDI4MA==' })).toEqual({ kind: 'stop', reason: 'video-changed' });
+    expect(decideClip(control, { ...sample, ad: false, ended: true, paused: true })).toEqual({ kind: 'stop', reason: 'ended' });
+  });
+
+  it('录制记录：ID 与链接对得上才收，链接规范化；站点由后台定，不信记录自己写的', () => {
+    const raw = { ...record, url: `${PAGE}?spm=a2hkn.playlist.myhome.d_3&s=aace2910c3784944a0ad`, site: 'youtube' };
+    expect(sanitizeClipRecord(raw, 'youku')).toEqual({ ...record, site: 'youku', url: PAGE });
+    expect(sanitizeClipRecord({ ...raw, url: `https://v.youku.com/video?vid=${VID}&scm=x` }, 'youku')).toMatchObject({ videoId: VID, url: PAGE });
+    // 对不上：别的集、别的域名、整部剧的链接、没有链接、ID 不是字符串
+    expect(sanitizeClipRecord({ ...raw, url: `https://v.youku.com/v_show/id_${VID1}.html` }, 'youku')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: `https://evil.example/v_show/id_${VID}.html` }, 'youku')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: 'https://v.youku.com/video?s=aace2910c3784944a0ad' }, 'youku')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, url: undefined }, 'youku')).toBeNull();
+    expect(sanitizeClipRecord({ ...raw, videoId: 12345 }, 'youku')).toBeNull();
+    // 同样的记录从 B 站页面、YouTube 页面送来：不收（优酷的 ID 带 =，也不像 YouTube 的视频 ID）
+    expect(sanitizeClipRecord(raw, 'bilibili')).toBeNull();
+    expect(sanitizeClipRecord(raw)).toBeNull();
+  });
+  it('回到这个视频：用记录里的链接；万一没有链接，按 ID 拼出播放页（= 原样留着）', () => {
+    expect(clipWatchUrl({ site: 'youku', videoId: VID, url: PAGE, start: 40 })).toBe(PAGE);
+    expect(clipWatchUrl({ site: 'youku', videoId: VID, start: 40 })).toBe(PAGE);
+  });
+  it('后台：优酷的片段存进本地，带上站点和链接', async () => {
+    const ctx = { kv: memoryKV(), locker: memoryLocker() } as unknown as AppContext;
+    const saved = await recordSavedClip(ctx, { ...record, url: `${PAGE}?spm=a2hkn.playlist.myhome.d_3&s=aace2910c3784944a0ad` }, 'youku');
+    expect(saved).toMatchObject({ site: 'youku', videoId: VID, url: PAGE });
+    expect((await stores.clipLog.read(ctx.kv)).map((x) => x.id)).toEqual(['clip_youku']);
   });
 });
 
