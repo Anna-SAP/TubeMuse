@@ -1077,7 +1077,7 @@ export async function dub(t) {
     const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
     const b64 = readFileSync(/** @type {string} */ (await dl.path())).toString('base64');
     // 原声那个 200 Hz 单音的振幅（Goertzel：只量这一个频率，配音的音高不在这里）和去掉它之后剩下的响度（= 配音）。
-    // 按 0.1 秒一段分别量、取中位数：软件编码吃紧时录音偶尔掉几帧声音（咔哒一下），不让这几下左右结果
+    // 按 0.1 秒一段分别量、再取分位数：软件编码吃紧时录音偶尔掉几帧声音（咔哒一下），不让这几下左右结果
     const { tone, rest } = await page.evaluate(
       async ([b64, hz]) => {
         const bytes = Uint8Array.from(atob(/** @type {string} */ (b64)), (c) => c.charCodeAt(0));
@@ -1103,8 +1103,11 @@ export async function dub(t) {
             tones.push(amp);
             rests.push(Math.sqrt(Math.max(0, sum / win - (amp * amp) / 2)));
           }
-          const median = (/** @type {number[]} */ xs) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)] ?? -1;
-          return { tone: median(tones), rest: median(rests) };
+          const at = (/** @type {number[]} */ xs, /** @type {number} */ q) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length * q)] ?? -1;
+          // 原声是连续的单音：取中位数。配音（测试音频）每 3 秒里只有 1.8 秒有声，录的这几秒落在周期的哪里不一定——
+          // 有声的段数可能只比一半多一点，中位数会落在一段音的边上（2026-11-18 CI 上量到 0.006）。取上四分位：
+          // 它总落在有声的那些段里；配音没录进去时各段都接近 0，上四分位也接近 0；偶尔掉几帧（咔哒一下）的那几段到不了四分之一
+          return { tone: at(tones, 0.5), rest: at(rests, 0.75) };
         } catch {
           return { tone: -1, rest: -1 };
         } finally {

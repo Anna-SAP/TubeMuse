@@ -95,7 +95,14 @@ export async function xyz(t) {
   console.log('\n[小宇宙：页面上显示什么（中文 / 英文 / 不显示）]');
   await panel.getByTestId('xyz-display-zh').click();
   await page.waitForTimeout(800);
-  check((await en.textContent()) === '' && ((await zh.textContent()) ?? '').length > 0, '只看中文：第二行不显示');
+  // 测试音频每 3 秒一段音，两段之间有一小会儿没有字幕：只看一眼可能正好落在空档里（2026-11-18 CI 上碰到过）。
+  // 等到屏幕上有一句中文、而第二行空着；设置没生效（第二行一直有字）时等不到，照样判失败
+  let onlyZh = false;
+  for (let i = 0; i < 50 && !onlyZh; i++) {
+    onlyZh = ((await zh.textContent()) ?? '').length > 0 && (await en.textContent()) === '';
+    if (!onlyZh) await page.waitForTimeout(100);
+  }
+  check(onlyZh, '只看中文：第二行不显示');
   await panel.getByTestId('xyz-display-off').click();
   await page.waitForTimeout(800);
   check(await page.evaluate(() => !!document.querySelector('[data-tubemuse="xyz"]')?.shadowRoot?.querySelector('.cap')?.hasAttribute('hidden')), '不在页面上显示：字幕层收起');
