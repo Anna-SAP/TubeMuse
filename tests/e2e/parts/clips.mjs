@@ -1554,7 +1554,10 @@ export async function clips(t) {
     `用户举的播放页（/v_show/id_${YOUKU_EP4.id}.html）认得出：标题来自页面标题（去掉"-电视剧-高清完整正版视频在线观看-优酷"），不提供字幕烧录，有 Capture`,
   );
   const ykNote = (await panel.getByTestId('clip-no-burn').textContent()) ?? '';
-  check(ykNote.includes('弹幕') && ykNote.includes('贴片广告') && ykNote.includes('品牌头条') && ykNote.includes('别的广告认不出来'), '界面写明弹幕不会录进去，认得出贴片广告和品牌头条，别的广告认不出来');
+  check(
+    ykNote.includes('弹幕') && ykNote.includes('贴片广告') && ykNote.includes('品牌头条') && ykNote.includes('别的广告认不出来') && ykNote.includes('DRM') && !ykNote.includes('试看'),
+    '界面写明弹幕不会录进去，认得出贴片广告和品牌头条，别的广告认不出来；带 DRM 模块的浏览器里优酷的剧集是加密的、录不了',
+  );
   await ykShowsDuration(YOUKU_EP4.seconds);
   const ykAdState = await yk.evaluate(
     ([m, a]) => ({ mainPaused: /** @type {HTMLVideoElement} */ (document.querySelector(m)).paused, ads: [...document.querySelectorAll(a)].map((v) => /** @type {HTMLVideoElement} */ (v).paused) }),
