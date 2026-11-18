@@ -7,17 +7,20 @@
 //   4. 写新文件：索引 + 原文件里的画面数据（直接引用你选的那个文件，不复制进内存）+ 新音轨。
 //   5. 你勾了"带上原声字幕"时（DECISIONS §84）：把交进来的一句句字幕排成一条字幕轨写进去（播放器里可以开关）。
 //      字幕从哪来由调用方定（你选的字幕文件 / 原视频文件里嵌着的 / 取自 YouTube）；这里只负责读嵌着的那种和写。
+//   6. 加快英文、整体变速（DECISIONS §87）：画面仍不解码、不重新编码，只把时间表按倍速缩放（core/mp4-remux.ts）；
+//      原声用变速不变调的算法跟着变速，中文按"对应关系 × 画面倍速"放（加快英文时正好是原速），字幕的时间也跟着缩放。
 // 整个过程占的内存只有几秒钟的声音；耗时主要是音频的解码和编码，比视频时长短得多。
 
 import { DUB } from '../config/defaults';
 import { dubAlignment, type DubAlignment } from '../core/dub-align';
-import type { DubMap } from '../core/dub';
+import { trackRates, videoRateFactor, type DubMap } from '../core/dub';
 import { PIECE_FADE_SEC, StreamResampler, TimeStretcher, mixBlock, pieceFade, renderPieces, type RenderPiece } from '../core/dub-render';
 import {
   Mp4Error,
   buildRemux,
   parseMovie,
   pickSource,
+  planRetime,
   readMp4Top,
   trackSeconds,
   videoCodecLabel,
@@ -360,6 +363,10 @@ class OrigStream {
   private readonly dec: TrackDecoder;
   private readonly blocks = new Blocks();
   private resampler: StreamResampler | undefined;
+  /** 加快英文、整体变速（DECISIONS §87）：原声跟着画面变速（音调不变） */
+  private stretcher: TimeStretcher | undefined;
+  /** 解出来的第一块：定好输出的采样率和倍速之后再处理 */
+  private firstBlock: Float32Array[] | undefined;
   private started = false;
   private ended = false;
   /** 开头还要补多少个 0 / 还要丢多少个样本 */
@@ -387,19 +394,33 @@ class OrigStream {
     const shift = Math.round(at * this.rate);
     if (shift > 0) this.lead = shift;
     else this.drop = -shift;
-    this.accept(first.chs);
+    this.firstBlock = first.chs;
     this.started = true;
   }
 
-  /** 输出换成另一个采样率（编码器不认原来的采样率时） */
-  resampleTo(outRate: number): void {
-    if (outRate === this.rate) return;
-    this.resampler = new StreamResampler(this.rate, outRate, this.channels);
-    // 已经攒着的那一块也要过一遍
-    const have = this.blocks.size;
-    const pending = Array.from({ length: this.channels }, () => new Float32Array(have));
-    this.blocks.take(pending, 0, have);
-    this.blocks.push(this.resampler.push(pending));
+  /**
+   * 输出的采样率（编码器不认原来的采样率时换一个）和倍速（画面变速时原声跟着变速，音调不变）。open() 之后、read() 之前调一次
+   */
+  setOutput(outRate: number, speed: number): void {
+    if (Math.abs(speed - 1) > 1e-9) this.stretcher = new TimeStretcher(speed, this.rate, this.channels);
+    if (outRate !== this.rate) this.resampler = new StreamResampler(this.rate, outRate, this.channels);
+    const f = this.firstBlock;
+    this.firstBlock = undefined;
+    if (f) this.accept(f);
+  }
+
+  /** 变速 → 换采样率 → 攒起来；final：后面没有了，把两边留着的尾巴都倒出来 */
+  private through(x: Float32Array[], final: boolean): void {
+    let y = x;
+    if (this.stretcher) {
+      y = this.stretcher.push(y);
+      if (final) y = join(y, this.stretcher.flush());
+    }
+    if (this.resampler) {
+      y = this.resampler.push(y);
+      if (final) y = join(y, this.resampler.flush());
+    }
+    this.blocks.push(y);
   }
 
   private accept(chs: Float32Array[]): void {
@@ -418,18 +439,19 @@ class OrigStream {
         return y;
       });
     }
-    this.blocks.push(this.resampler ? this.resampler.push(x) : x);
+    if (x[0]!.length) this.through(x, false);
   }
 
   /** 正好 n 个样本（声道数 = channels）；原声比画面短时后面补 0 */
   async read(n: number, channels: number): Promise<Float32Array[]> {
     if (!this.started) await this.open();
+    if (this.firstBlock) this.setOutput(this.rate, 1);
     while (this.blocks.size < n && !this.ended) {
       const p = await this.dec.pull();
       if (p) this.accept(p.chs);
       else {
         this.ended = true;
-        if (this.resampler) this.blocks.push(this.resampler.flush());
+        this.through(Array.from({ length: this.channels }, () => new Float32Array(0)), true);
       }
     }
     const out = Array.from({ length: channels }, () => new Float32Array(n));
@@ -774,17 +796,26 @@ export interface ExportInput {
   /** 这个视频的中文配音（m4a） */
   dub: Blob;
   map: DubMap;
+  /** 整体倍速（DECISIONS §87）：两条声音和画面一起变速；不写 = 1 */
+  overallRate?: number;
   /** 原声字幕（你勾了"带上原声字幕"时）：写成新文件里一条可以开关的字幕轨 */
   subtitles?: ExportSubtitles;
   signal?: AbortSignal;
-  /** done / total：已经混好多少秒 / 全片多少秒 */
+  /** done / total：已经混好多少秒 / 全片多少秒（新文件的时间：画面变速时和原视频不一样长） */
   onProgress?: (p: { phase: 'mixing' | 'writing'; done: number; total: number }) => void;
 }
 
 export interface ExportResult {
   blob: Blob;
   bytes: number;
+  /** 新文件多长（秒） */
   durationSec: number;
+  /** 原视频多长（秒） */
+  sourceSec: number;
+  /** 画面和英文原声按什么倍速放（DECISIONS §87；1 = 原速）：实际用的（时间单位换算后的精确值） */
+  speed: number;
+  /** 中文按什么倍速放（相对它自己；加快英文、不整体变速时是 1） */
+  dubSpeed: number;
   /** 新音轨的编码：AAC（到处都能放）；这个浏览器编不了 AAC 时用 Opus */
   audioLabel: string;
   audioCodec: 'aac' | 'opus';
@@ -811,6 +842,12 @@ async function openDub(dub: Blob): Promise<{ read: FileRead; track: AudioTrack; 
   return { read, track: track as AudioTrack, movieTimescale: movie.timescale, seconds: trackSeconds(movie, track) };
 }
 
+/** 字幕的时间换到新文件上：画面变速时（DECISIONS §87）原视频的 t 秒在新文件的 t ÷ 倍速 秒 */
+function scaleCues(cues: SubCue[], speed: number): SubCue[] {
+  if (Math.abs(speed - 1) < 1e-9) return cues;
+  return cues.map((c) => ({ ...c, start: c.start / speed, end: c.end / speed }));
+}
+
 /**
  * 合成完整的双语视频：画面原样照搬，声音 = 原声 × 80% + 按对齐摆好的中文配音。
  * 返回的 Blob 里画面那部分直接引用你选的文件（不占内存）：保存完之前别挪动、别删那个文件
@@ -831,6 +868,10 @@ async function exportOnce(input: ExportInput, avoidAac: boolean): Promise<Export
   const src = probe.source;
   const dub = await openDub(input.dub);
   const alignment = dubAlignment(input.map, src.durationSec, dub.seconds);
+  // 画面（英文）的倍速：加快英文 × 整体倍速（DECISIONS §87）。时间单位换算后的精确值，声音、中文、字幕都按它
+  const retime = planRetime(src.video, videoRateFactor(input.map, input.overallRate));
+  const speed = retime?.speed ?? 1;
+  const outSec = src.durationSec / speed;
   const orig = new OrigStream(readerOf(input.file), src, signal);
   let timeline: DubTimeline | undefined;
   let encoder: Encoder | undefined;
@@ -839,11 +880,11 @@ async function exportOnce(input: ExportInput, avoidAac: boolean): Promise<Export
     const channels = Math.min(2, orig.channels);
     const out = await pickOutput(orig.rate, channels, avoidAac);
     if (!out) throw new Mp4Error('这个浏览器编不了声音（AAC 和 Opus 都不行）', '请用最新版 Google Chrome 或 Firefox。');
-    orig.resampleTo(out.rate);
-    const pieces = renderPieces(alignment, out.rate);
+    orig.setOutput(out.rate, speed);
+    const pieces = renderPieces(alignment, out.rate, speed);
     timeline = new DubTimeline(dub.read, dub.track, dub.movieTimescale, pieces, out.rate, signal);
     encoder = new Encoder(out.enc);
-    const total = Math.round(src.durationSec * out.rate);
+    const total = Math.round(outSec * out.rate);
     const block = Math.round(DUB.export.blockSec * out.rate);
     for (let at = 0; at < total; at += block) {
       checkAbort(signal);
@@ -851,11 +892,11 @@ async function exportOnce(input: ExportInput, avoidAac: boolean): Promise<Export
       const mixed = await orig.read(n, channels);
       mixBlock(mixed, await timeline.read(at, n));
       await encoder.write(mixed, at);
-      input.onProgress?.({ phase: 'mixing', done: (at + n) / out.rate, total: src.durationSec });
+      input.onProgress?.({ phase: 'mixing', done: (at + n) / out.rate, total: outSec });
     }
     const encoded = await encoder.finish();
     checkAbort(signal);
-    input.onProgress?.({ phase: 'writing', done: src.durationSec, total: src.durationSec });
+    input.onProgress?.({ phase: 'writing', done: outSec, total: outSec });
     if (!encoded.frames.length) throw new Mp4Error('编码器没有给出任何声音数据');
     const audio: EncodedAudio =
       out.enc.codec === 'aac'
@@ -871,8 +912,8 @@ async function exportOnce(input: ExportInput, avoidAac: boolean): Promise<Export
             frameSamples: Math.round(((encoded.frameMicros || 20_000) * 48000) / 1e6),
             priming: 0,
           };
-    const text = input.subtitles ? textTrackOf(input.subtitles, src.durationSec) : undefined;
-    const plan = buildRemux(probe.top, src, audio, text?.track);
+    const text = input.subtitles ? textTrackOf({ ...input.subtitles, cues: scaleCues(input.subtitles.cues, speed) }, outSec) : undefined;
+    const plan = buildRemux(probe.top, src, audio, text?.track, retime);
     const blob = new Blob(
       plan.parts.map((p) => (p.kind === 'bytes' ? p.bytes : input.file.slice(p.start, p.end))),
       { type: 'video/mp4' },
@@ -880,7 +921,10 @@ async function exportOnce(input: ExportInput, avoidAac: boolean): Promise<Export
     return {
       blob,
       bytes: plan.size,
-      durationSec: src.durationSec,
+      durationSec: plan.durationSec,
+      sourceSec: src.durationSec,
+      speed,
+      dubSpeed: Number(trackRates(input.map, input.overallRate).zh.toFixed(6)),
       audioLabel: out.enc.label,
       audioCodec: out.enc.codec,
       sampleRate: out.rate,

@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { Mp4Error, assembleRemux, buildRemux, parseMovie, pickSource, readMp4Top, trackSeconds, videoCodecLabel, type EncodedAudio, type FileRead, type TextTrackInput } from '../../src/core/mp4-remux';
+import { Mp4Error, assembleRemux, buildRemux, parseMovie, pickSource, planRetime, readMp4Top, trackSeconds, videoCodecLabel, type EncodedAudio, type FileRead, type TextTrackInput } from '../../src/core/mp4-remux';
 import { SUB_TIMESCALE, cuesFromSamples, decodeTextSample, encodeTextSample, subtitleSamples, type SubCue } from '../../src/core/subtitle-track';
 
 const SOURCE = new Uint8Array(readFileSync(new URL('../fixtures/dub-source.mp4', import.meta.url)));
@@ -208,6 +208,66 @@ describe('写出新文件：带上一条字幕轨（DECISIONS §84）', () => {
     const { src } = await open(SOURCE);
     expect(src.subtitles).toEqual([]);
     expect(src.video.language).toBe('und');
+  });
+});
+
+describe('画面变速（加快英文、整体变速，DECISIONS §87）：帧的数据不动，只缩放时间表', () => {
+  /** 原文件某个盒子的版本号 */
+  const boxVersion = (b: Uint8Array, type: string, from = 0) => {
+    for (let i = from; i < b.length - 8; i++) if (String.fromCharCode(...b.subarray(i + 4, i + 8)) === type) return b[i + 8];
+    return undefined;
+  };
+  async function retimed(want: number) {
+    const { top, src } = await open(SOURCE);
+    const retime = planRetime(src.video, want)!;
+    const encoded: EncodedAudio = { codec: 'aac', sampleRate: 44100, channels: 2, bitrate: 64000, frames: framesOf(SOURCE, src.audio), frameSamples: 1024, priming: 1024 };
+    const plan = buildRemux(top, src, encoded, undefined, retime);
+    const out = await assembleRemux(plan, readOf(SOURCE));
+    return { src, retime, plan, out, again: await open(out) };
+  }
+  it('时间单位细分到每秒约一百万个单位：实际倍速和要的差不到百万分之一；1 倍不用改', async () => {
+    const { src } = await open(SOURCE);
+    expect(planRetime(src.video, 1)).toBeUndefined();
+    for (const want of [1.092805, 0.8, 1.25 * 1.092805, 2, 0.5]) {
+      const r = planRetime(src.video, want)!;
+      expect(Math.abs(r.speed / want - 1), String(want)).toBeLessThan(1e-6);
+      expect(src.video.timescale * r.mult).toBeGreaterThanOrEqual(1e6);
+      expect(Number.isInteger(r.timescale)).toBe(true);
+    }
+    expect(() => planRetime(src.video, 0)).toThrow(Mp4Error);
+  });
+  it('1.0928 倍：16 秒的片子变成 14.64 秒；240 帧画面的字节和原文件逐个相同，帧的时间是原来的 ÷ 倍速', async () => {
+    const { src, retime, plan, out, again } = await retimed(1.092805);
+    expect(plan.durationSec).toBeCloseTo(16 / retime.speed, 6);
+    expect(again.src.durationSec).toBeCloseTo(16 / retime.speed, 2);
+    expect(again.src.movie.duration / again.src.movie.timescale).toBeCloseTo(16 / retime.speed, 2);
+    const v = again.src.video;
+    expect(v).toMatchObject({ count: 240, timescale: retime.timescale, width: 320, height: 180 });
+    for (let i = 0; i < 240; i++) {
+      expect(v.dts[i]! / v.timescale).toBeCloseTo(src.video.dts[i]! / src.video.timescale / retime.speed, 9);
+      const a = SOURCE.subarray(src.video.offsets[i]!, src.video.offsets[i]! + src.video.sizes[i]!);
+      const b = out.subarray(v.offsets[i]!, v.offsets[i]! + v.sizes[i]!);
+      if (a.length !== b.length || a.some((x, k) => x !== b[k])) throw new Error(`第 ${i} 帧画面和原文件不一样`);
+    }
+    // 编辑列表：跳过的开头（B 帧的显示偏移）也按倍速换算
+    expect(v.editStart / v.timescale).toBeCloseTo(src.video.editStart / src.video.timescale / retime.speed, 9);
+    // 时间表一律写成 64 位的版本（时长乘细分倍数后可能放不进 32 位）
+    expect(boxVersion(out, 'mdhd', again.top.ftyp.length)).toBe(1);
+    expect(boxVersion(out, 'elst', again.top.ftyp.length)).toBe(1);
+    // 新音轨、片子的时长都是新文件的
+    expect(again.src.audio.movieDuration / again.src.movie.timescale).toBeCloseTo(16 / retime.speed, 2);
+  });
+  it('慢放 0.8 倍：20 秒；画面和声音的块仍按新时间交错', async () => {
+    const { again } = await retimed(0.8);
+    expect(again.src.durationSec).toBeCloseTo(20, 2);
+    const v = again.src.video;
+    expect(v.dts[239]! / v.timescale).toBeCloseTo(((239 / 15) * 1) / 0.8, 3);
+    // 块按新时间排：测试里交进去的声音只有 16 秒，所以新时间 16 秒以后的画面块都排在最后一块声音后面，之前的和声音交错
+    const lastAudio = Math.max(...again.src.audio.chunks.map((c) => c.offset));
+    const at = (c: (typeof v.chunks)[number]) => v.dts[c.firstSample]! / v.timescale;
+    expect(v.chunks.filter((c) => at(c) > 16.6).every((c) => c.offset > lastAudio)).toBe(true);
+    expect(v.chunks.filter((c) => at(c) < 15).every((c) => c.offset < lastAudio)).toBe(true);
+    expect(v.chunks.some((c) => at(c) > 16.6)).toBe(true);
   });
 });
 

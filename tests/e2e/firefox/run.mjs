@@ -744,6 +744,69 @@ try {
     ffQuickRec && ffQuickRec.quickRate === undefined && dubS?.quickRate === undefined && Math.abs(dubS.dubTime - dubS.videoTime) < 0.5,
     `Firefox：切回手动对齐，中文位置回到 视频位置 − 偏移（视频 ${Number(dubS?.videoTime).toFixed(2)} · 中文 ${Number(dubS?.dubTime).toFixed(2)}）`,
   );
+  // 加快英文（DECISIONS §87）：Firefox 里一样——点建议的英文倍速，页面里视频（英文原声）按它快放、中文原速；整体变速两边一起快；切回手动后视频回到 1 倍
+  const ffEngWant = Number((dubS.videoDuration / dubS.dubDuration).toFixed(6));
+  await b.waitFor(`!!document.querySelector('[data-testid=dub-english-apply]')`, { what: '加快英文的按钮' });
+  await tap('[data-testid=dub-english-apply]');
+  let ffEngRec = await ffDubRec();
+  for (let i = 0; i < 40 && ffEngRec?.englishRate === undefined; i++) {
+    await sleep(150);
+    ffEngRec = await ffDubRec();
+  }
+  await b.waitFor(`(document.querySelector('[data-testid=dub-gap-value]')?.textContent ?? '').trim() === '0.0 秒'`, { what: '加快英文后还差 0.0 秒' });
+  await b.switchTo(dubPage);
+  await b.exec(`document.querySelector('video').currentTime = 20; document.querySelector('video').play(); return true;`);
+  await b.switchTo(handles.panel);
+  dubS = await dubState();
+  for (let i = 0; i < 40 && !(dubS?.englishRate === ffEngWant && dubS.playing && Math.abs(dubS.dubTime - dubS.videoTime / ffEngWant) < 0.5); i++) {
+    await sleep(150);
+    dubS = await dubState();
+  }
+  await sleep(1000);
+  const ffE1 = { s: await dubState(), at: Date.now() };
+  await sleep(2500);
+  const ffE2 = { s: await dubState(), at: Date.now() };
+  const ffWall = (ffE2.at - ffE1.at) / 1000;
+  await b.switchTo(dubPage);
+  const ffEngRate = await b.exec(`return document.querySelector('video').playbackRate;`);
+  await b.switchTo(handles.panel);
+  check(
+    ffEngRec?.englishRate === ffEngWant &&
+      Math.abs(ffEngRate - ffEngWant) < 0.002 &&
+      Math.abs(ffE2.s.dubTime - ffE2.s.videoTime / ffEngWant) < 0.5 &&
+      Math.abs((ffE2.s.videoTime - ffE1.s.videoTime) / ffWall - ffEngWant) < 0.15 &&
+      Math.abs((ffE2.s.dubTime - ffE1.s.dubTime) / ffWall - 1) < 0.12 &&
+      String(ffE2.s.status).includes('加快英文'),
+    `Firefox：加快英文 ${ffEngWant.toFixed(4)}——页面里视频的倍速 ${Number(ffEngRate).toFixed(4)}，中文原速（这 ${ffWall.toFixed(1)} 秒英文走 ${((ffE2.s.videoTime - ffE1.s.videoTime) / ffWall).toFixed(2)} 倍、中文 ${((ffE2.s.dubTime - ffE1.s.dubTime) / ffWall).toFixed(2)} 倍），"还差"是 0`,
+  );
+  await tap('[data-testid=dub-speed-preset][data-rate="1.5"]');
+  let ffOverRate = 0;
+  for (let i = 0; i < 40 && Math.abs(ffOverRate - 1.5 * ffEngWant) > 0.002; i++) {
+    await sleep(150);
+    await b.switchTo(dubPage);
+    ffOverRate = await b.exec(`return document.querySelector('video').playbackRate;`);
+    await b.switchTo(handles.panel);
+  }
+  check(Math.abs(ffOverRate - 1.5 * ffEngWant) < 0.002 && (await ffDubRec())?.overallRate === 1.5, `Firefox：整体 1.5 倍——视频 ${Number(ffOverRate).toFixed(3)} 倍（1.5 × ${ffEngWant.toFixed(4)}）`);
+  await tap('[data-testid=dub-speed-preset][data-rate="1"]');
+  await tap('[data-testid=dub-quick-off]');
+  let ffBackRate = 0;
+  for (let i = 0; i < 40 && ffBackRate !== 1; i++) {
+    await sleep(150);
+    await b.switchTo(dubPage);
+    ffBackRate = await b.exec(`return document.querySelector('video').playbackRate;`);
+    await b.switchTo(handles.panel);
+  }
+  ffEngRec = await ffDubRec();
+  for (let i = 0; i < 40 && (ffEngRec?.englishRate !== undefined || ffEngRec?.overallRate !== undefined); i++) {
+    await sleep(150);
+    ffEngRec = await ffDubRec();
+  }
+  check(ffBackRate === 1 && ffEngRec?.englishRate === undefined && ffEngRec?.overallRate === undefined, 'Firefox：整体倍速调回 1×、切回手动对齐后，视频回到 1 倍');
+  await b.switchTo(dubPage);
+  await b.exec(`document.querySelector('video').pause(); return true;`);
+  await b.switchTo(handles.panel);
+  for (let i = 0; i < 20 && (await dubState())?.playing; i++) await sleep(150);
   // 视频控制键（DECISIONS §85）：这时视频停着。前进 30 秒 → 视频跳过去、仍停着，配音的位置跟过去；点"播放"接着放
   // 先把视频放到一个确定的地方（0:10，停着）：后面看字幕要落在中文的 92 秒以内
   await b.switchTo(dubPage);

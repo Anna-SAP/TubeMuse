@@ -3,6 +3,8 @@
 //   · 中文放在哪里：用对齐图那一套（core/dub-align.ts 的 dubAlignment，它是照着跟随规则 dubStep 摊开的）：
 //     开头的偏移、每个对齐点、先说完就停下等画面、说得慢就在下一个对齐点跳过去；快速对齐时整段按倍速放。
 //   · 快速对齐的变速：变速不变调（浏览器播放时用的也是这一类算法——按波形相似度找拼接点再叠加，WSOLA）。
+//   · 加快英文、整体变速（DECISIONS §87）：画面按倍速放（只改时间表，见 core/mp4-remux.ts），原声用同一种算法变速；
+//     中文在输出里的位置 = 它在视频里的位置 ÷ 画面倍速，中文自己的速度 = 对应关系 × 画面倍速（加快英文、不整体变速时正好是 1：原样不动）。
 //     算出来的波形和浏览器实时播的不会逐个样本相同，但速度、音高、对上的位置一样。
 //   · 混音：原声 × 80% + 中文 × 100%，过同一条软限幅曲线（和片段录制的双语混音同一个公式，DECISIONS §76）。
 // 这里只有算法：流式的重采样、流式的变速、每一段中文放在输出的哪几个样本上、逐块混音。解码、编码在 services/dub-export.ts。
@@ -340,22 +342,29 @@ export interface RenderPiece {
   /** 中文的哪一段（秒） */
   d0: number;
   d1: number;
-  /** 视频每走 1 秒，中文走 rate 秒（1 = 正常速度；快速对齐时是那个倍速） */
+  /** 输出每走 1 秒，中文走 rate 秒（1 = 原样不动；快速对齐时是那个倍速；画面变速时再乘画面的倍速） */
   rate: number;
 }
 
-/** 把对齐摊开的结果换成输出采样率下的样本范围；按时间排好，互不重叠 */
-export function renderPieces(al: DubAlignment, outRate: number): RenderPiece[] {
-  const total = Math.round(al.videoDuration * outRate);
+/** 中文的速度离 1 这么近时就当作原速（不经过变速算法）：画面倍速换算时间单位留下的百万分之一级的误差，不值得为它把中文过一遍变速 */
+const SAME_RATE = 1e-5;
+
+/**
+ * 把对齐摊开的结果换成输出采样率下的样本范围；按时间排好，互不重叠。
+ * speed：画面（英文）的倍速（加快英文、整体变速，DECISIONS §87）——视频的 v 秒在输出的 v ÷ speed 秒
+ */
+export function renderPieces(al: DubAlignment, outRate: number, speed = 1): RenderPiece[] {
+  const total = Math.round((al.videoDuration / speed) * outRate);
   const out: RenderPiece[] = [];
   let floor = 0;
   for (const p of [...al.pieces].sort((a, b) => a.v0 - b.v0)) {
-    const outStart = Math.max(floor, Math.min(total, Math.round(p.v0 * outRate)));
-    const outEnd = Math.max(outStart, Math.min(total, Math.round(p.v1 * outRate)));
+    const outStart = Math.max(floor, Math.min(total, Math.round((p.v0 / speed) * outRate)));
+    const outEnd = Math.max(outStart, Math.min(total, Math.round((p.v1 / speed) * outRate)));
     if (outEnd <= outStart) continue;
-    const rate = p.rate ?? 1;
+    const exact = (p.rate ?? 1) * speed;
+    const rate = Math.abs(exact - 1) < SAME_RATE ? 1 : exact;
     // 开头被前一段占掉了一点（四舍五入）时，中文也相应往后挪
-    const d0 = p.d0 + (outStart / outRate - p.v0) * rate;
+    const d0 = p.d0 + (outStart / outRate - p.v0 / speed) * exact;
     out.push({ outStart, outEnd, d0: Math.max(0, d0), d1: p.d1, rate });
     floor = outEnd;
   }

@@ -5,7 +5,20 @@
 // 只是把已有的规则画出来：不改跟随的做法，不做、也不暗示逐句对齐。
 
 import { DUB } from '../config/defaults';
-import { dubSegmentAt, formatClockSec, formatSeconds, rateExactText, rateText, rateWord, type DubMap, type DubSegment, type QuickAlignSuggestion } from './dub';
+import {
+  dubRateMode,
+  dubSegmentAt,
+  englishModeName,
+  formatClockSec,
+  formatSeconds,
+  rateExactText,
+  rateText,
+  rateWord,
+  type DubMap,
+  type DubRates,
+  type DubSegment,
+  type QuickAlignSuggestion,
+} from './dub';
 
 /** 中文的 [d0, d1] 在视频的 [v0, v1] 放（一段里中文按正常速度放，所以两边一样长；快速对齐的那一段按 rate 变速，两边不一样长） */
 export interface DubPiece {
@@ -50,8 +63,10 @@ export interface DubAlignment {
   pieces: DubPiece[];
   holds: DubHold[];
   skips: DubSkip[];
-  /** 快速对齐开着时的倍速（这时只有一段，开头的偏移和对齐点不用） */
+  /** 按倍速对齐时中文位置 ÷ 视频位置（快速对齐、加快英文都有；这时只有一段，开头的偏移和对齐点不用） */
   quickRate?: number;
+  /** 加快英文（DECISIONS §87）开着时英文的倍速（= 1 ÷ quickRate）：对应关系一样，说法不一样 */
+  englishRate?: number;
 }
 
 const EPS = 0.01;
@@ -60,7 +75,7 @@ const EPS = 0.01;
  * 快速对齐（DECISIONS §82）：中文整段按 rate 放，一段到底。倍速正好是"中文时长 ÷ 视频时长"时两边同时结束；
  * 对不上时（设好倍速之后换了文件）：中文先放完，后面只有原声（after-end）；或者视频放完时中文还剩一截（tail）
  */
-function quickAlignment(rate: number, V: number, D: number | undefined): DubAlignment {
+function quickAlignment(rate: number, V: number, D: number | undefined, englishRate?: number): DubAlignment {
   const holds: DubHold[] = [];
   const skips: DubSkip[] = [];
   // 中文放完时视频走到哪里
@@ -70,7 +85,7 @@ function quickAlignment(rate: number, V: number, D: number | undefined): DubAlig
   const pieces: DubPiece[] = v1 > EPS ? [{ segment: -1, offset: 0, v0: 0, v1, d0: 0, d1, rate }] : [];
   if (v1 < V - EPS) holds.push({ segment: -1, kind: 'after-end', v0: v1, v1: V });
   if (D !== undefined && D > d1 + EPS) skips.push({ segment: -1, kind: 'tail', d0: d1, d1: D });
-  return { videoDuration: V, ...(D !== undefined ? { dubDuration: D } : {}), pieces, holds, skips, quickRate: rate };
+  return { videoDuration: V, ...(D !== undefined ? { dubDuration: D } : {}), pieces, holds, skips, quickRate: rate, ...(englishRate !== undefined ? { englishRate } : {}) };
 }
 
 /**
@@ -80,7 +95,7 @@ function quickAlignment(rate: number, V: number, D: number | undefined): DubAlig
 export function dubAlignment(map: DubMap, videoDuration: number, dubDuration?: number): DubAlignment {
   const V = Math.max(0, videoDuration);
   const D = dubDuration !== undefined && Number.isFinite(dubDuration) && dubDuration > 0 ? dubDuration : undefined;
-  if (map.quickRate !== undefined) return quickAlignment(map.quickRate, V, D);
+  if (map.quickRate !== undefined) return quickAlignment(map.quickRate, V, D, map.englishRate);
   const pieces: DubPiece[] = [];
   const holds: DubHold[] = [];
   const skips: DubSkip[] = [];
@@ -163,12 +178,21 @@ const segmentName = (index: number) => (index < 0 ? '开头那段' : `第 ${inde
 /** 快速对齐，中文 0.84× 慢放 */
 export const quickLabel = (rate: number): string => `快速对齐，中文 ${rateText(rate)} ${rateWord(rate)}`;
 
-/** 此刻：两边各在哪里、差多少 */
-export function alignNowText(plan: DubPlan, t: number, quickRate?: number): string {
+/** 加快英文，英文 1.09× 快放 */
+export const englishLabel = (rate: number): string => `${englishModeName(rate)}，英文 ${rateText(rate)} ${rateWord(rate)}`;
+
+/** 按倍速对齐时的说法（快速对齐 / 加快英文）；手动对齐时 undefined */
+export function rateLabel(r: DubRates): string | undefined {
+  const mode = dubRateMode(r);
+  return mode === 'english' ? englishLabel(r.englishRate!) : mode === 'quick' ? quickLabel(r.quickRate!) : undefined;
+}
+
+/** 此刻：两边各在哪里、差多少（rates：按倍速对齐时的倍速） */
+export function alignNowText(plan: DubPlan, t: number, rates: DubRates = {}): string {
   const at = `此刻：视频 ${clock(t)}`;
   switch (plan.kind) {
     case 'playing':
-      return `${at} ↔ 中文 ${clock(plan.dub)}，${quickRate !== undefined ? quickLabel(quickRate) : gapText(plan.segment.offset)}`;
+      return `${at} ↔ 中文 ${clock(plan.dub)}，${rateLabel(rates) ?? gapText(plan.segment.offset)}`;
     case 'wait':
       return `${at}，中文这一段已经说完、停在 ${clock(plan.dub)} 等画面（只有原声），视频到 ${clock(plan.until ?? t)} 的对齐点再接着放`;
     case 'before-start':
@@ -202,8 +226,10 @@ export interface DubRemaining {
   lag: number;
   /** 还差 = total − lag：0 = 全部对完（中文和视频同时结束），负 = 抵过头了 */
   remaining: number;
-  /** 快速对齐开着时的倍速：这时 lag 是"变速匀到整段抵掉的"，不随播放变 */
+  /** 按倍速对齐时（快速对齐、加快英文）中文位置 ÷ 视频位置：这时 lag 是"变速匀到整段抵掉的"，不随播放变 */
   quickRate?: number;
+  /** 加快英文开着时英文的倍速 */
+  englishRate?: number;
 }
 
 /**
@@ -222,7 +248,7 @@ export function dubRemainingAt(al: DubAlignment, plan: DubPlan, t: number): DubR
   const total = al.videoDuration - D;
   if (al.quickRate !== undefined) {
     const remaining = al.videoDuration - D / al.quickRate;
-    return { total, lag: total - remaining, remaining, quickRate: al.quickRate };
+    return { total, lag: total - remaining, remaining, quickRate: al.quickRate, ...(al.englishRate !== undefined ? { englishRate: al.englishRate } : {}) };
   }
   const tail = silentTail(al);
   const lag = tail && (plan.kind === 'after-end' || plan.kind === 'ended') ? tail.v0 - D : dubGapAt(plan, t);
@@ -253,7 +279,7 @@ export function remainingKind(r: DubRemaining): 'left' | 'done' | 'over' {
  * 中文停着时为什么在变；对完了 / 抵过头了时先说结论
  */
 export function remainingNoteText(al: DubAlignment, plan: DubPlan, t: number, r: DubRemaining): string {
-  if (r.quickRate !== undefined) return quickRemainingNote(al, plan, t, r, r.quickRate);
+  if (r.quickRate !== undefined) return r.englishRate !== undefined ? englishRemainingNote(al, plan, t, r, r.englishRate) : quickRemainingNote(al, plan, t, r, r.quickRate);
   const D = al.dubDuration ?? 0;
   const lagPart = r.lag >= 0 ? `− 此刻中文滞后 ${secondsText(r.lag)}` : `+ 此刻中文超前 ${secondsText(-r.lag)}`;
   const formula = `= 全片时长差 ${secondsText(r.total)}（英文 ${clockTenths(al.videoDuration)} − 中文 ${clockTenths(D)}）${lagPart}`;
@@ -292,6 +318,31 @@ export function quickFormulaText(s: Pick<QuickAlignSuggestion, 'rate' | 'dubSec'
   return `中文 ${clockTenths(s.dubSec)} ÷ 英文 ${clockTenths(s.videoSec)} = ${rateExactText(s.rate)}（约 ${s.rate.toFixed(2)}）`;
 }
 
+/** 加快英文的建议倍速是怎么算出来的：英文 1:27:15.3 ÷ 中文 1:19:50.7 = 1.0928（约 1.09） */
+export function englishFormulaText(s: Pick<QuickAlignSuggestion, 'rate' | 'dubSec' | 'videoSec'>): string {
+  return `英文 ${clockTenths(s.videoSec)} ÷ 中文 ${clockTenths(s.dubSec)} = ${rateExactText(s.rate)}（约 ${s.rate.toFixed(2)}）`;
+}
+
+/** 加快英文开着时读数下面那一行（DECISIONS §87）：和快速对齐一样，只是变速的是英文 */
+function englishRemainingNote(al: DubAlignment, plan: DubPlan, t: number, r: DubRemaining, k: number): string {
+  const D = al.dubDuration ?? 0;
+  const V = al.videoDuration;
+  const how = `${englishModeName(k)}：英文原声按 ${rateExactText(k)}× ${rateWord(k)}、中文原速`;
+  const durations = `英文 ${clockTenths(V)} ÷ 中文 ${clockTenths(D)}`;
+  const redo = `按现在的时长（${durations}）应是 ${rateExactText(V / D)}×，点上面的建议倍速重新对齐`;
+  const endsAt = D * k;
+  const kind = remainingKind(r);
+  const head =
+    kind === 'done'
+      ? `${how}（${durations}），全片时长差 ${secondsText(r.total)}匀到整段，中文和视频同时结束`
+      : kind === 'left'
+        ? `${how}，中文在视频 ${clock(endsAt)} 就放完了，最后 ${secondsText(r.remaining)}（视频时间）只有原声——${redo}`
+        : `${how}，视频放完时中文还有 ${secondsText(-r.remaining / k)}没放到——${redo}`;
+  const where =
+    plan.kind === 'playing' ? `视频 ${clock(t)} ↔ 中文 ${clock(plan.dub)}` : plan.kind === 'ended' ? '视频放完了' : `中文在视频 ${clock(endsAt)} 已经放完，后面只有原声`;
+  return `${head} · ${where}`;
+}
+
 /** 快速对齐开着时读数下面那一行：时长差是怎么被变速匀掉的；倍速和现在的时长对不上时说差在哪、怎么办 */
 function quickRemainingNote(al: DubAlignment, plan: DubPlan, t: number, r: DubRemaining, rate: number): string {
   const D = al.dubDuration ?? 0;
@@ -311,10 +362,11 @@ function quickRemainingNote(al: DubAlignment, plan: DubPlan, t: number, r: DubRe
   return `${head} · ${where}`;
 }
 
-/** 快速对齐开着时全片的说法 */
+/** 按倍速对齐时全片的说法（快速对齐 / 加快英文） */
 function quickOverallText(al: DubAlignment, rate: number, D: number): string {
   const V = al.videoDuration;
-  const how = `快速对齐：中文整段按 ${rateExactText(rate)}× ${rateWord(rate)}`;
+  const k = al.englishRate;
+  const how = k !== undefined ? `${englishModeName(k)}：英文原声整段按 ${rateExactText(k)}× ${rateWord(k)}、中文原速` : `快速对齐：中文整段按 ${rateExactText(rate)}× ${rateWord(rate)}`;
   const tail = silentTail(al);
   const unplayed = al.skips.find((s) => s.kind === 'tail');
   const redo = '倍速和现在的时长对不上（设好之后换过文件？），点上面的建议倍速重新对齐。';
@@ -354,7 +406,7 @@ export function alignOverallText(al: DubAlignment): string | undefined {
 export function describeVideoAt(al: DubAlignment, v: number): string {
   if (v < 0 || v > al.videoDuration) return '';
   const p = al.pieces.find((x) => v >= x.v0 && v < x.v1);
-  if (p?.rate !== undefined) return `视频 ${clock(v)} ↔ 中文 ${clock(p.d0 + (v - p.v0) * p.rate)}（${quickLabel(p.rate)}）`;
+  if (p?.rate !== undefined) return `视频 ${clock(v)} ↔ 中文 ${clock(p.d0 + (v - p.v0) * p.rate)}（${rateLabel(al) ?? quickLabel(p.rate)}）`;
   if (p) return `视频 ${clock(v)} ↔ 中文 ${clock(p.d0 + (v - p.v0))}（${segmentName(p.segment)}，${gapText(p.offset)}）`;
   const h = al.holds.find((x) => v >= x.v0 && v < x.v1);
   if (!h) return `视频 ${clock(v)}`;
@@ -370,7 +422,7 @@ export function describeDubAt(al: DubAlignment, d: number): string {
   if (hits.length) {
     const [first, ...again] = hits;
     const at = (p: DubPiece) => clock(p.v0 + (d - p.d0) / (p.rate ?? 1));
-    if (first!.rate !== undefined) return `中文 ${clock(d)} → 在视频 ${at(first!)} 放（${quickLabel(first!.rate)}）`;
+    if (first!.rate !== undefined) return `中文 ${clock(d)} → 在视频 ${at(first!)} 放（${rateLabel(al) ?? quickLabel(first!.rate)}）`;
     return `中文 ${clock(d)} → 在视频 ${at(first!)} 放（${segmentName(first!.segment)}）${again.length ? `；又在视频 ${again.map(at).join('、')} 重放（对齐点前后颠倒）` : ''}`;
   }
   const s = al.skips.find((x) => d >= x.d0 && d < x.d1);

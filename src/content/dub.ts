@@ -14,12 +14,16 @@
 // 6. 视频控制键（用户 2026-11-18 要求，DECISIONS §85）：侧边栏「配音」页的"暂停 / 前进 / 后退"让这个脚本对 <video> 调 pause() / play()、
 //    改 currentTime（和你自己按空格、方向键一样；不点页面上的按钮、不模拟按键）。广告期间不跳。跳完、停下之后配音照现在的对齐跟上。
 // 7. 配音字幕（DECISIONS §86）：这个脚本不画字幕，只把"配音此刻放到哪了"交给同一个隔离环境里的字幕脚本（content/dub-subtitles.ts）。
+// 8. 加快英文、整体变速（用户 2026-11-18 要求，DECISIONS §87）：配音开着、不是广告时，把 <video> 的倍速设成"你在 YouTube 里选的倍速 ×
+//    加快英文的倍速 × 整体倍速"（浏览器默认变速不变调），中文照常跟着视频走（<audio> 的速度 = 视频此刻的倍速 × 对应关系）。
+//    直接改 <video> 的 playbackRate，不碰 YouTube 的设置；关闭、换视频、广告、离开页面时恢复你的倍速。YouTube 一再改回去时停手并说明。
 
 import { DEFAULT_SETTINGS, DUB } from '../config/defaults';
 import { base64ToBytes } from '../core/clips';
 import {
   DUB_MSG,
   DUB_PORT,
+  VideoRateKeeper,
   VolumeDuck,
   clampDelay,
   cleanVideoTitle,
@@ -30,6 +34,7 @@ import {
   dubStep,
   parseDubControl,
   sanitizeDubIndex,
+  videoRateFactor,
   withSegmentOffset,
   type DubControlReply,
   type DubIndex,
@@ -88,6 +93,9 @@ const duck = new VolumeDuck(DUB.originalVolume);
 let duckVideo: HTMLVideoElement | null = null;
 /** 我们在听它事件的那个 <video> */
 let listenVideo: HTMLVideoElement | null = null;
+/** 加快英文、整体变速（DECISIONS §87）：我们在管它倍速的那个 <video> */
+const rates = new VideoRateKeeper();
+let rateVideo: HTMLVideoElement | null = null;
 
 let timer: ReturnType<typeof setInterval> | undefined;
 let scheduled = false;
@@ -123,9 +131,15 @@ function record(): DubRecord | undefined {
 /** 跟随用的对齐信息：存下的开头偏移与对齐点，拖动中的那一段换成实时值 */
 function mapOf(rec: DubRecord): DubMap {
   const map = dubMapOf(rec);
-  // 快速对齐开着时（DECISIONS §82）全程按倍速走，没有哪一段的偏移可拖
+  // 快速对齐、加快英文开着时（DECISIONS §82、§87）全程按倍速走，没有哪一段的偏移可拖
   return liveOffset?.videoId === rec.videoId && map.quickRate === undefined ? withSegmentOffset(map, liveOffset.index, liveOffset.offset) : map;
 }
+
+/** 按倍速对齐（快速对齐或加快英文）开着：没有分段、没有偏移可调、不加对齐点 */
+const rateAligned = (rec: DubRecord): boolean => rec.quickRate !== undefined || rec.englishRate !== undefined;
+
+/** 视频的倍速要在你的倍速上再乘多少（加快英文 × 整体倍速） */
+const wantFactor = (rec: DubRecord): number => videoRateFactor(rec, rec.overallRate);
 
 // ── 音频 ──
 
@@ -285,6 +299,40 @@ function applyVolume(v: HTMLVideoElement | null, want: boolean): void {
   duck.wrote(t);
 }
 
+// ── 视频的倍速（DECISIONS §87）──
+
+function applyRate(v: HTMLVideoElement | null, factor: number): void {
+  if (v !== rateVideo) {
+    // 播放器换了 <video>：旧的恢复，新的从头认倍速
+    restoreRate();
+    rates.reset();
+    rateVideo = v;
+  }
+  if (!v) return;
+  rates.sync(v.playbackRate, Date.now());
+  const t = rates.target(factor);
+  if (t === undefined) return;
+  try {
+    if (Math.abs(v.playbackRate - t) > DUB.videoRate.eps) v.playbackRate = t;
+    rates.wrote(t);
+  } catch {
+    // 浏览器不认这个倍速（范围已经夹过，不该发生）：不动
+  }
+}
+
+function restoreRate(): void {
+  if (!rateVideo || !rates.boosted) return;
+  rates.sync(rateVideo.playbackRate, Date.now());
+  const t = rates.target(1);
+  if (t === undefined) return;
+  try {
+    rateVideo.playbackRate = t;
+    rates.wrote(t);
+  } catch {
+    // 不动
+  }
+}
+
 function restoreVolume(): void {
   if (!duckVideo || !duck.ducked) return;
   duck.sync(duckVideo.volume, Date.now());
@@ -307,6 +355,9 @@ function switchVideo(vid: string | null): void {
   restoreVolume();
   duck.reset();
   duckVideo = null;
+  restoreRate();
+  rates.reset();
+  rateVideo = null;
 }
 
 function onVideoEvent(): void {
@@ -348,6 +399,8 @@ function tick(): void {
   const v = videoEl();
   watchVideo(v);
   const engaged = active && !!rec && !!loaded?.ready && !!v;
+  // 先定视频的倍速（加快英文、整体变速），再让中文按视频此刻的倍速跟上；广告不加速（不替你缩短广告）
+  applyRate(v, engaged && !adShowing() ? wantFactor(rec!) : 1);
   if (engaged) follow(v!, loaded!.audio, mapOf(rec!));
   applyVolume(v, engaged && !adShowing());
   broadcast();
@@ -360,7 +413,12 @@ function tabState(): DubTabState {
   const map = rec ? mapOf(rec) : undefined;
   const at = v && Number.isFinite(v.currentTime) && !adShowing() ? v.currentTime : 0;
   const segment = map ? dubSegmentAt(map, at) : undefined;
-  const quickRate = map?.quickRate;
+  // 对应关系的倍速（快速对齐、加快英文都有）；对外报的是哪一种
+  const mapRate = map?.quickRate;
+  const quickRate = rec?.quickRate;
+  const englishRate = rec?.quickRate === undefined ? rec?.englishRate : undefined;
+  const factor = rec ? wantFactor(rec) : 1;
+  const rateBlocked = active && rates.blocked && Math.abs(factor - 1) > 1e-9;
   let phase: DubPhase;
   let status: string;
   if (!settings.enabled) {
@@ -386,9 +444,13 @@ function tabState(): DubTabState {
     status =
       autoplayBlocked && reason === 'playing'
         ? '浏览器拦下了配音的声音：在 YouTube 页面上点一下（例如暂停再播放），配音就会跟上'
-        : reason
-          ? dubReasonText(reason, segment ?? { offset: 0 }, quickRate)
-          : '配音已就绪';
+        : rateBlocked && reason === 'playing'
+          ? `YouTube 一直把视频的倍速改回 ${rates.userRate ?? 1}×，没能${englishRate !== undefined ? '加快英文' : '整体变速'}：${
+              englishRate !== undefined ? `中文改按 ${(1 / englishRate).toFixed(2)}× 慢放跟着视频（对齐不变）` : '两边按原来的速度放'
+            }。关掉再开启配音会再试一次`
+          : reason
+            ? dubReasonText(reason, segment ?? { offset: 0 }, { ...(quickRate !== undefined ? { quickRate } : {}), ...(englishRate !== undefined ? { englishRate } : {}), ...(rec?.overallRate !== undefined ? { overallRate: rec.overallRate } : {}) })
+            : '配音已就绪';
   }
   const audio = loaded?.ready ? loaded.audio : undefined;
   const title = videoId ? cleanVideoTitle(document.title) : '';
@@ -397,9 +459,11 @@ function tabState(): DubTabState {
     enabled: settings.enabled,
     available: !!rec,
     ...(rec && map && segment
-      ? { fileName: rec.fileName, delaySec: segment.offset, segment: { ...segment, count: map.anchors.length }, target: quickRate !== undefined ? at * quickRate : at - segment.offset }
+      ? { fileName: rec.fileName, delaySec: segment.offset, segment: { ...segment, count: map.anchors.length }, target: mapRate !== undefined ? at * mapRate : at - segment.offset }
       : {}),
     ...(quickRate !== undefined ? { quickRate } : {}),
+    ...(englishRate !== undefined ? { englishRate } : {}),
+    ...(rec?.overallRate !== undefined ? { overallRate: rec.overallRate } : {}),
     active,
     phase,
     status,
@@ -413,6 +477,9 @@ function tabState(): DubTabState {
       : {}),
     ...(audio ? { dubTime: audio.currentTime, ...(Number.isFinite(audio.duration) ? { dubDuration: audio.duration } : {}) } : {}),
     ...(v && active ? { volume: { user: duck.userVolume ?? v.volume, now: v.volume, ducked: duck.ducked, blocked: duck.blocked, muted: v.muted } } : {}),
+    ...(v && active
+      ? { speed: { user: rates.userRate ?? v.playbackRate, now: v.playbackRate, want: factor, boosted: rates.boosted, blocked: rates.blocked, pitch: v.preservesPitch !== false } }
+      : {}),
     ...(error && active ? { error } : {}),
   };
 }
@@ -422,11 +489,12 @@ function broadcast(): void {
   const s = tabState();
   // 播放位置一直在变：不为它推送（侧边栏每秒问一次）
   const { videoTime: _vt, dubTime: _dt, target: _tg, ...stable } = s;
-  // 快速对齐开着时"此刻视频位置 − 中文位置"随播放连续变，也不为它推送
+  // 快速对齐、加快英文开着时"此刻视频位置 − 中文位置"随播放连续变，也不为它推送
   const key = JSON.stringify({
     ...stable,
-    ...(s.quickRate !== undefined ? { delaySec: 0, segment: undefined } : {}),
+    ...(s.quickRate !== undefined || s.englishRate !== undefined ? { delaySec: 0, segment: undefined } : {}),
     ...(s.volume ? { volume: { ...s.volume, now: Math.round(s.volume.now * 100) } } : {}),
+    ...(s.speed ? { speed: { ...s.speed, now: Math.round(s.speed.now * 1000) } } : {}),
   });
   try {
     if (key !== lastState) {
@@ -452,6 +520,7 @@ function shutdown(): void {
   ready = false;
   unload();
   restoreVolume();
+  restoreRate();
   watchVideo(null);
 }
 
@@ -506,8 +575,9 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
         wantOn.add(rec.videoId);
         error = undefined;
         autoplayBlocked = false;
-        // 上次被 YouTube 挡住了降音量：重新开启时再试一次
+        // 上次被 YouTube 挡住了降音量 / 改倍速：重新开启时再试一次
         if (!duck.ducked) duck.reset();
+        if (!rates.boosted) rates.reset();
       } else wantOn.delete(rec.videoId);
       tick();
     }
@@ -519,7 +589,7 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
     const rec = record();
     const index = typeof msg.segment === 'number' && Number.isInteger(msg.segment) ? msg.segment : -1;
     const v = videoEl();
-    if (rec && rec.quickRate === undefined && msg.videoId === rec.videoId && index >= -1 && index < (rec.anchors?.length ?? 0)) {
+    if (rec && !rateAligned(rec) && msg.videoId === rec.videoId && index >= -1 && index < (rec.anchors?.length ?? 0)) {
       const offset = typeof msg.dubAt === 'number' && Number.isFinite(msg.dubAt) && v ? v.currentTime - msg.dubAt : typeof msg.offset === 'number' ? msg.offset : undefined;
       if (offset !== undefined && Number.isFinite(offset)) {
         liveOffset = { videoId: rec.videoId, index, offset: clampDelay(offset) };
@@ -534,8 +604,8 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (msg?.type === DUB_MSG.mark) {
     const rec = record();
     const v = videoEl();
-    // 快速对齐开着时不加对齐点（那时的"中文位置"是按倍速算的，切回手动后对不上）
-    if (!rec || rec.quickRate !== undefined || !v || adShowing() || !Number.isFinite(v.currentTime)) {
+    // 快速对齐、加快英文开着时不加对齐点（那时的"中文位置"是按倍速算的，切回手动后对不上）
+    if (!rec || rateAligned(rec) || !v || adShowing() || !Number.isFinite(v.currentTime)) {
       sendResponse(undefined);
       return false;
     }
@@ -605,6 +675,7 @@ publishDubMix({
 window.addEventListener('pagehide', () => {
   if (loaded && !loaded.audio.paused) loaded.audio.pause();
   restoreVolume();
+  restoreRate();
   if (lastBadge && alive()) {
     try {
       void chrome.runtime.sendMessage({ type: DUB_MSG.badge, available: false, active: false }).catch(() => undefined);

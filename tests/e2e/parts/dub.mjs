@@ -573,6 +573,194 @@ export async function dub(t) {
   r = await waitStored((x) => x.quickRate === undefined, '再切回手动对齐');
   check(JSON.stringify(r) === JSON.stringify(manualBefore), '切回可以撤销（重新开快速对齐），再切回仍和原来一样');
   await waitState((x) => x.quickRate === undefined, '页面里回到手动对齐');
+
+  console.log('\n[中文配音：加快英文（DECISIONS §87）——中文原速，英文原声连同画面整段按"视频时长 ÷ 中文时长"快放；整体变速——两边一起变快、对齐不变]');
+  const vrate = () => page.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).playbackRate);
+  const engWant = Number((durs.videoDuration / durs.dubDuration).toFixed(6));
+  const engLabel = `${engWant.toFixed(2)}×`;
+  const engBtn = panel.getByTestId('dub-english-apply');
+  await engBtn.waitFor({ timeout: 5000 });
+  const engSuggest = await quickBox();
+  check(
+    ((await engBtn.textContent()) ?? '').trim() === engLabel &&
+      engSuggest.includes('加快英文或者中文原速，建议英文快放到') &&
+      (await mapText('dub-english-formula')).includes(`英文 2:00.0 ÷ 中文 1:32.0 = ${engWant.toFixed(4)}（约 ${engWant.toFixed(2)}）`) &&
+      (await mapText('dub-english-note')).includes('中文保持原来的语速'),
+    `快速对齐下面给出第三种：加快英文，建议英文快放到 ${engLabel} = 英文时长 ÷ 中文时长（${(await mapText('dub-english-formula')).trim()}）`,
+  );
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 30;
+    void v.play();
+  });
+  await waitState((x) => x.playing && x.videoTime > 30.3 && x.videoTime < 40, '加快英文之前回到 0:30 放着');
+  await engBtn.click();
+  r = await waitStored((x) => x.englishRate === engWant, '存下加快英文的倍速');
+  check(r.quickRate === undefined && r.delaySec === manualBefore.delaySec && JSON.stringify(r.anchors) === JSON.stringify(manualBefore.anchors), `点了之后按视频存下英文的倍速 ${r.englishRate}（精确值），手动的偏移和对齐点原样留着`);
+  gapNow = await waitMapText('dub-gap-value', (x) => x.trim() === '0.0 秒', '加快英文后还差 0.0 秒');
+  const engNote = await mapText('dub-gap-note');
+  check(
+    (await panel.getByTestId('dub-gap').getAttribute('data-kind')) === 'done' &&
+      (await mapText('dub-gap')).includes('加快英文：全片时长差由英文变速匀到整段；0 = 全部对完') &&
+      engNote.includes(`加快英文：英文原声按 ${engWant.toFixed(4)}× 快放、中文原速（英文 2:00.0 ÷ 中文 1:32.0），全片时长差 ${total.toFixed(1)} 秒匀到整段，中文和视频同时结束`),
+    `"还差多少没对上"同样直接是 ${gapNow}：${engNote}`,
+  );
+  s = await waitState((x) => x.englishRate === engWant && x.playing && x.status.includes(`加快英文，英文原声按 ${engLabel} 快放、中文原速`), '页面里英文快放、中文原速');
+  check(Math.abs((await vrate()) - engWant) < 0.002 && s.speed?.boosted && Math.abs(s.speed.want - engWant) < 1e-6, `YouTube 页面里视频（英文原声）的倍速被设成 ${(await vrate()).toFixed(4)}（= ${engWant.toFixed(4)}）`);
+  await page.waitForTimeout(1200);
+  const e1 = { s: await dubState(), at: Date.now() };
+  await page.waitForTimeout(2500);
+  const e2 = { s: await dubState(), at: Date.now() };
+  const wall = (e2.at - e1.at) / 1000;
+  const enSpeed = (e2.s.videoTime - e1.s.videoTime) / wall;
+  const zhSpeed = (e2.s.dubTime - e1.s.dubTime) / wall;
+  check(
+    Math.abs(e2.s.dubTime - e2.s.videoTime / engWant) < 0.4 && Math.abs(enSpeed - engWant) < 0.12 && Math.abs(zhSpeed - 1) < 0.1,
+    `中文位置 = 视频位置 ÷ ${engWant.toFixed(4)}（视频 ${e2.s.videoTime.toFixed(2)} · 中文 ${e2.s.dubTime.toFixed(2)}）；这 ${wall.toFixed(1)} 秒里英文走了 ${enSpeed.toFixed(2)} 倍、中文 ${zhSpeed.toFixed(2)} 倍（原速）`,
+  );
+  check(near(await mapText('dub-gap-value'), 0), `播放推进，读数一直是 0（${await mapText('dub-gap-value')}）`);
+  const engOn = await quickBox();
+  check(
+    (await panel.getByTestId('dub-quick').getAttribute('data-mode')) === 'english' &&
+      engOn.includes('加快英文已开') &&
+      engOn.includes(`英文原声整段按 ${engLabel}（精确 ${engWant.toFixed(4)}）快放，中文原速，音调不变`) &&
+      engOn.includes('切回手动对齐') &&
+      engOn.includes('开头偏移和 1 个对齐点都留着') &&
+      engOn.includes(`也可以改成快速对齐（英文原速）：中文慢放到 ${quickLabel}`) &&
+      !/逐句|逐词/.test(engOn),
+    `面板照快速对齐那块写：已开、倍速、切回手动、留着的东西，还能直接换成快速对齐：${engOn.slice(0, 70)}…`,
+  );
+  check(
+    ((await panel.getByTestId('dub-segment').textContent()) ?? '').includes(`加快英文，全程一段（英文 ${engLabel} 快放，中文原速）`) &&
+      (await mapText('dub-speed-now')).includes(`英文 ${Number(engWant.toFixed(2))}×（画面跟着） · 中文 1×（加快英文 ${engLabel}）`) &&
+      (await mapText('dub-status')).includes('加快英文') &&
+      (await mapText('dub-duration')).includes(`加快英文开着：英文原声整段按 ${engLabel} 快放、中文原速`) &&
+      (await panel.getByTestId('dub-anchor-add').count()) === 0 &&
+      ((await panel.getByTestId('dub-kept').textContent()) ?? '').includes('加快英文期间不用'),
+    `"现在在"、状态、倍速、时长各行都跟着变；手动的控件收起来：${await mapText('dub-speed-now')}`,
+  );
+  overall = await mapText('dub-map-overall');
+  check(
+    (await panel.getByTestId('dub-map').getAttribute('data-mode')) === 'english' &&
+      overall.includes(`加快英文：英文原声整段按 ${engWant.toFixed(4)}× 快放、中文原速，和视频同时开始、同时结束`) &&
+      (await mapText('dub-map-now-gap')) === `英文 ${engLabel} 快放` &&
+      (await mapText('dub-map')).includes(`附近（英文按 ${engLabel} 压短画、中文原样画`) &&
+      (await mapText('dub-map-hover')).includes('加快英文：英文整段变速、中文原速，一段到底') &&
+      (await panel.getByTestId('dub-map-anchor').count()) === 0,
+    `对齐图：一段到底，"附近"里英文按倍速压短画、中文原样画；播放头旁写英文的倍速：${overall.slice(0, 60)}…`,
+  );
+  {
+    // 指着图上同一处：英文 v ↔ 中文 v ÷ 倍速（横轴是中文的时间）
+    await detail.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await page.waitForTimeout(200);
+    const ebox = /** @type {{ x: number, y: number, width: number, height: number }} */ (await detail.boundingBox());
+    const epx = (ebox.width - 36) / 120;
+    const ecx = ebox.x + 30 + (ebox.width - 36) / 2;
+    await panel.mouse.move(ecx - 5 * epx, ebox.y + 26);
+    const hv = await waitMapText('dub-map-hover', (x) => x.startsWith('视频 ') && x.includes('加快英文'), '加快英文时指着英文');
+    await panel.mouse.move(ecx - 5 * epx, ebox.y + 90);
+    const hz = await waitMapText('dub-map-hover', (x) => x.startsWith('中文 ') && x.includes('加快英文'), '加快英文时指着中文');
+    const clockSec = (/** @type {string} */ c) => c.split(':').reduce((n, p) => n * 60 + Number(p), 0);
+    const mv = /视频 ([\d:]+) ↔ 中文 ([\d:]+)/.exec(hv);
+    const mz = /中文 ([\d:]+) → 在视频 ([\d:]+) 放/.exec(hz);
+    check(
+      !!mv && !!mz && Math.abs(clockSec(mv[1]) - clockSec(mv[2]) * engWant) <= 1.5 && Math.abs(clockSec(mz[2]) - clockSec(mz[1]) * engWant) <= 1.5 && Math.abs(clockSec(mv[2]) - clockSec(mz[1])) <= 1.5,
+      `指着图上同一处：英文那条说"${hv}"，中文那条说"${hz}"——上下对着的是同时听到的`,
+    );
+    await panel.mouse.move(ebox.x + 5, ebox.y - 30);
+  }
+  await panel.getByTestId('dub-align').screenshot({ path: join(shots, '75b-dub-english-on.png') });
+  const fullAboutEng = await mapText('dub-full-about');
+  check(
+    fullAboutEng.includes(`英文原声按加快英文的 ${engLabel} 快放（音调不变），中文按原速叠上去`) && fullAboutEng.includes(`整片快到 ${engLabel}`) && fullAboutEng.includes('不重新编码'),
+    `"保存完整双语视频"的说明：画面不重新编码、跟着英文快放，中文原速：${fullAboutEng.slice(0, 90)}…`,
+  );
+  // 你在 YouTube 播放器里改倍速（这里直接改 <video>，和 YouTube 的倍速菜单做的一样）：记成你的倍速，再乘上去
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).playbackRate = 1.5));
+  for (let i = 0; i < 30 && Math.abs((await vrate()) - 1.5 * engWant) > 0.002; i++) await page.waitForTimeout(100);
+  s = await waitState((x) => x.speed?.user === 1.5, 'YouTube 里选了 1.5 倍');
+  check(Math.abs((await vrate()) - 1.5 * engWant) < 0.002 && (await mapText('dub-speed-now')).includes('YouTube 里选的 1.5×'), `你在 YouTube 里选 1.5 倍：英文 = 1.5 × ${engWant.toFixed(4)} = ${(await vrate()).toFixed(3)}，中文跟着 1.5 倍`);
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).playbackRate = 1));
+  for (let i = 0; i < 30 && Math.abs((await vrate()) - engWant) > 0.002; i++) await page.waitForTimeout(100);
+  check(Math.abs((await vrate()) - engWant) < 0.002, '改回 1 倍：英文回到加快英文的倍速');
+  // 广告：不加速（不替你缩短广告），原样恢复；广告完了接着加快
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.add('ad-showing'));
+  await waitState((x) => x.status.includes('广告'), '加快英文时放广告');
+  for (let i = 0; i < 30 && (await vrate()) !== 1; i++) await page.waitForTimeout(100);
+  check((await vrate()) === 1, '广告期间视频回到你的倍速（不加速广告）');
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ad-showing'));
+  await waitState((x) => x.playing && x.englishRate === engWant, '广告完了');
+  for (let i = 0; i < 30 && Math.abs((await vrate()) - engWant) > 0.002; i++) await page.waitForTimeout(100);
+  check(Math.abs((await vrate()) - engWant) < 0.002, '广告完了：英文接着加快');
+  // 关掉配音：视频回到你的倍速；再开启：接着加快
+  await panel.getByTestId('dub-toggle').click();
+  await waitState((x) => !x.active, '关掉配音');
+  for (let i = 0; i < 30 && (await vrate()) !== 1; i++) await page.waitForTimeout(100);
+  check((await vrate()) === 1, '关掉配音：视频的倍速恢复成你的 1 倍');
+  await panel.getByTestId('dub-toggle').click();
+  await waitState((x) => x.active && x.playing, '重新开启配音');
+  for (let i = 0; i < 30 && Math.abs((await vrate()) - engWant) > 0.002; i++) await page.waitForTimeout(100);
+  check(Math.abs((await vrate()) - engWant) < 0.002, '重新开启：英文接着加快');
+
+  // 整体变速：两边一起快 1.25 倍，对齐不变
+  check((await mapText('dub-speed')).includes('整体变速') && (await mapText('dub-speed-value')).trim() === '1×', '对齐卡片下面有"整体变速"，现在是 1×');
+  await panel.locator('[data-testid="dub-speed-preset"][data-rate="1.25"]').click();
+  r = await waitStored((x) => x.overallRate === 1.25, '存下整体倍速 1.25');
+  check(r.englishRate === engWant && JSON.stringify(r.anchors) === JSON.stringify(manualBefore.anchors), '整体倍速按视频存下，加快英文和对齐点都还在');
+  for (let i = 0; i < 30 && Math.abs((await vrate()) - 1.25 * engWant) > 0.002; i++) await page.waitForTimeout(100);
+  s = await waitState((x) => x.overallRate === 1.25 && x.playing && x.status.includes('（整体 1.25×）'), '整体 1.25 倍放着');
+  await page.waitForTimeout(1000);
+  const o1 = { s: await dubState(), at: Date.now() };
+  await page.waitForTimeout(2500);
+  const o2 = { s: await dubState(), at: Date.now() };
+  const owall = (o2.at - o1.at) / 1000;
+  check(
+    Math.abs((await vrate()) - 1.25 * engWant) < 0.002 &&
+      Math.abs((o2.s.dubTime - o1.s.dubTime) / owall - 1.25) < 0.12 &&
+      Math.abs(o2.s.dubTime - o2.s.videoTime / engWant) < 0.4 &&
+      near(await mapText('dub-gap-value'), 0),
+    `整体 1.25 倍：英文 ${(await vrate()).toFixed(3)} 倍、中文 ${((o2.s.dubTime - o1.s.dubTime) / owall).toFixed(2)} 倍，中文位置仍 = 视频 ÷ ${engWant.toFixed(4)}，还差仍是 0`,
+  );
+  check(
+    (await mapText('dub-speed-value')).trim() === '1.25×' &&
+      (await mapText('dub-speed-note')).includes('已经对好的关系不变') &&
+      (await mapText('dub-speed-now')).includes('· 中文 1.25×（加快英文') &&
+      (await mapText('dub-full-about')).includes('整体倍速 1.25× 也一起写进去') &&
+      ((await panel.getByTestId('dub-item').filter({ hasText: '（当前视频）' }).textContent()) ?? '').includes('整体 1.25×'),
+    `倍速一行、"保存完整双语视频"、已关联列表都写上整体倍速：${await mapText('dub-speed-now')}`,
+  );
+  await panel.getByTestId('dub-speed-up').click();
+  await waitStored((x) => x.overallRate === 1.3, '整体倍速 + 0.05');
+  await panel.getByTestId('dub-speed-down').click();
+  await waitStored((x) => x.overallRate === 1.25, '整体倍速 − 0.05');
+  // 换成快速对齐：英文回到原速（× 整体倍速），中文慢放；整体倍速还在
+  await panel.getByTestId('dub-quick-apply').click();
+  r = await waitStored((x) => x.quickRate === quickWant && x.englishRate === undefined, '从加快英文直接换成快速对齐');
+  for (let i = 0; i < 30 && Math.abs((await vrate()) - 1.25) > 0.002; i++) await page.waitForTimeout(100);
+  s = await waitState((x) => x.quickRate === quickWant && x.playing, '快速对齐 × 整体 1.25 放着');
+  await page.waitForTimeout(1500);
+  s = await dubState();
+  check(
+    r.overallRate === 1.25 && Math.abs((await vrate()) - 1.25) < 0.002 && Math.abs(s.dubTime - s.videoTime * quickWant) < 0.4 && s.status.includes('快速对齐') && s.status.includes('（整体 1.25×）'),
+    `换成快速对齐：英文 ${(await vrate()).toFixed(3)} 倍（只有整体倍速），中文照快速对齐跟着（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`,
+  );
+  // 切回手动 + 整体倍速：手动对齐也能整体变速
+  await panel.getByTestId('dub-quick-off').click();
+  await waitStored((x) => x.quickRate === undefined && x.englishRate === undefined && x.overallRate === 1.25, '切回手动、整体倍速留着');
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 75;
+  });
+  s = await waitState((x) => x.playing && x.videoTime > 76 && x.quickRate === undefined && x.englishRate === undefined, '手动对齐 × 整体 1.25 放着');
+  await page.waitForTimeout(1500);
+  s = await dubState();
+  check(Math.abs((await vrate()) - 1.25) < 0.002 && Math.abs(s.videoTime + 10 - s.dubTime) < 0.45 && s.status.includes('配音播放中，跟着视频走（整体 1.25×）'), `手动对齐也能整体变速：视频 1.25 倍，中文照对齐点跟着（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
+  await panel.locator('[data-testid="dub-speed-preset"][data-rate="1"]').click();
+  r = await waitStored((x) => x.overallRate === undefined, '整体倍速调回 1×');
+  for (let i = 0; i < 30 && (await vrate()) !== 1; i++) await page.waitForTimeout(100);
+  check(JSON.stringify(r) === JSON.stringify(manualBefore) && (await vrate()) === 1 && (await panel.getByTestId('dub-speed-now').count()) === 0, '调回 1×：存储和原来一模一样，视频回到 1 倍，倍速一行收起');
+  await page.screenshot({ path: join(shots, '75c-dub-english-page.png') });
+
   await panel.getByTestId('dub-anchor-remove').click();
   await waitStored((x) => !x.anchors, '再删除');
   await page.evaluate(() => {

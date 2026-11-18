@@ -166,8 +166,8 @@ describe('快速对齐：跟随', () => {
   });
 
   it('状态的说法：写明是快速对齐和倍速', () => {
-    expect(dubReasonText('playing', { offset: 0 }, RATE)).toBe('配音播放中：快速对齐，中文按 0.84× 慢放跟着视频走');
-    expect(dubReasonText('paused', { offset: 0 }, RATE)).toBe('视频暂停，配音跟着暂停');
+    expect(dubReasonText('playing', { offset: 0 }, { quickRate: RATE })).toBe('配音播放中：快速对齐，中文按 0.84× 慢放跟着视频走');
+    expect(dubReasonText('paused', { offset: 0 }, { quickRate: RATE })).toBe('视频暂停，配音跟着暂停');
     expect(dubReasonText('playing', { offset: 0 })).toBe('配音播放中，跟着视频走');
   });
 
@@ -226,10 +226,10 @@ describe('快速对齐：还差多少没对上直接是 0', () => {
     expect(overall).toContain('切回手动对齐点');
     expect(overall).not.toMatch(/逐句|逐词/);
     const t = 939;
-    expect(alignNowText(dubPlanAt(al, QUICK, t), t, RATE)).toBe('此刻：视频 15:39 ↔ 中文 13:05，快速对齐，中文 0.84× 慢放');
+    expect(alignNowText(dubPlanAt(al, QUICK, t), t, { quickRate: RATE })).toBe('此刻：视频 15:39 ↔ 中文 13:05，快速对齐，中文 0.84× 慢放');
     expect(describeVideoAt(al, 600)).toBe('视频 10:00 ↔ 中文 8:21（快速对齐，中文 0.84× 慢放）');
     expect(describeDubAt(al, 600 * RATE)).toBe('中文 8:21 → 在视频 10:00 放（快速对齐，中文 0.84× 慢放）');
-    const note = durationNote(D, V, RATE)!;
+    const note = durationNote(D, V, { quickRate: RATE })!;
     expect(note).toContain('中文 14:38 · 原视频 17:31，中文短 2 分 53 秒');
     expect(note).toContain('快速对齐开着：中文整段按 0.84× 慢放');
     expect(note).not.toMatch(/逐句|逐词/);

@@ -8,9 +8,11 @@ import {
   checkDubFile,
   clampDelay,
   dubMapOf,
+  englishAlignSuggestion,
   isDubPortRequest,
   probeM4a,
   quickAlignSuggestion,
+  sanitizeOverallRate,
   sanitizeQuickRate,
   withAnchor,
   withSegmentOffset,
@@ -68,6 +70,9 @@ export async function attachDub(ctx: AppContext, input: AttachInput): Promise<Du
     // 新的倍速超出能用的范围时回到手动对齐；算不出来（读不到时长）时先留着旧的，界面上会如实显示还差多少
     const quick = old?.quickRate !== undefined ? quickAlignSuggestion(probe.durationSec, videoDurationSec) : undefined;
     const quickRate = old?.quickRate === undefined ? undefined : quick ? (quick.ok ? quick.rate : undefined) : old.quickRate;
+    // 加快英文（DECISIONS §87）同理：英文的倍速按新文件的时长重新算
+    const english = old?.englishRate !== undefined ? englishAlignSuggestion(probe.durationSec, videoDurationSec) : undefined;
+    const englishRate = old?.englishRate === undefined ? undefined : english ? (english.ok ? english.rate : undefined) : old.englishRate;
     const rec: DubRecord = {
       videoId: input.videoId,
       fileId,
@@ -78,6 +83,9 @@ export async function attachDub(ctx: AppContext, input: AttachInput): Promise<Du
       // 同一个视频换一版配音：偏移和对齐点多半还能用，保留（界面上说明，不对再删）
       ...(old?.anchors?.length ? { anchors: old.anchors } : {}),
       ...(quickRate !== undefined ? { quickRate } : {}),
+      ...(englishRate !== undefined ? { englishRate } : {}),
+      // 整体倍速（DECISIONS §87）是你听的快慢，和文件无关：保留
+      ...(old?.overallRate !== undefined ? { overallRate: old.overallRate } : {}),
       // 字幕也保留（DECISIONS §86）：同一段话换一版录音，字幕多半还对得上；对不上由你换一份
       ...(old?.subs ? { subs: old.subs } : {}),
       addedAt: ctx.now(),
@@ -158,20 +166,56 @@ export async function removeDubAnchor(ctx: AppContext, videoId: string, k: numbe
   });
 }
 
+/** 按倍速对齐的哪一种：快速对齐（中文变速）/ 加快英文（英文变速，DECISIONS §87） */
+export type DubRateAlign = { kind: 'quick' | 'english'; rate: number };
+
 /**
- * 快速对齐（DECISIONS §82）：给倍速 = 开（中文整段按这个倍速放）；undefined = 切回手动对齐。
+ * 按倍速对齐：给 { kind, rate } = 开这一种（另一种同时关掉，两种只会开一种）；undefined = 切回手动对齐。
  * 开头的偏移和对齐点始终原样留着。倍速不在能用的范围里时不存（返回 false）
  */
-export async function setDubQuickRate(ctx: AppContext, videoId: string, rate: number | undefined): Promise<boolean> {
-  const quick = rate === undefined ? undefined : sanitizeQuickRate(rate);
-  if (rate !== undefined && quick === undefined) return false;
+export async function setDubRateAlign(ctx: AppContext, videoId: string, align: DubRateAlign | undefined): Promise<boolean> {
+  const rate = align === undefined ? undefined : sanitizeQuickRate(align.rate);
+  if (align !== undefined && rate === undefined) return false;
   let done = false;
   await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
     const rec = index[videoId];
     if (!rec) return index;
     done = true;
-    const { quickRate: _old, ...rest } = rec;
-    return { ...index, [videoId]: quick === undefined ? rest : { ...rest, quickRate: quick } };
+    const { quickRate: _q, englishRate: _e, ...rest } = rec;
+    if (!align || rate === undefined) return { ...index, [videoId]: rest };
+    return { ...index, [videoId]: align.kind === 'quick' ? { ...rest, quickRate: rate } : { ...rest, englishRate: rate } };
+  });
+  return done;
+}
+
+/**
+ * 快速对齐（DECISIONS §82）：给倍速 = 开（中文整段按这个倍速放）；undefined = 切回手动对齐。
+ * 开头的偏移和对齐点始终原样留着。倍速不在能用的范围里时不存（返回 false）
+ */
+export async function setDubQuickRate(ctx: AppContext, videoId: string, rate: number | undefined): Promise<boolean> {
+  return setDubRateAlign(ctx, videoId, rate === undefined ? undefined : { kind: 'quick', rate });
+}
+
+/** 加快英文（DECISIONS §87）：给倍速 = 开（英文原声整段按这个倍速放、中文原速）；undefined = 切回手动对齐 */
+export async function setDubEnglishRate(ctx: AppContext, videoId: string, rate: number | undefined): Promise<boolean> {
+  return setDubRateAlign(ctx, videoId, rate === undefined ? undefined : { kind: 'english', rate });
+}
+
+/**
+ * 整体倍速（DECISIONS §87）：对齐之后两边一起变快 / 变慢，对齐不变。1 = 不变速（去掉这一项）。
+ * 不在范围里时不存（返回 false）
+ */
+export async function setDubOverallRate(ctx: AppContext, videoId: string, rate: number): Promise<boolean> {
+  const r = Number.isFinite(rate) ? Number(rate.toFixed(2)) : NaN;
+  const overall = sanitizeOverallRate(r);
+  if (overall === undefined && r !== 1) return false;
+  let done = false;
+  await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
+    const rec = index[videoId];
+    if (!rec) return index;
+    done = true;
+    const { overallRate: _old, ...rest } = rec;
+    return { ...index, [videoId]: overall === undefined ? rest : { ...rest, overallRate: overall } };
   });
   return done;
 }

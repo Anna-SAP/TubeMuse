@@ -49,10 +49,12 @@ export interface ExportJob {
   subtitles?: JobSubtitles;
   /** need-subs：为什么没找到（或你刚选的字幕文件哪里不对） */
   subtitlesProblem?: string;
-  /** 已经混好多少秒 */
+  /** 已经混好多少秒（新文件的时间） */
   doneSec: number;
+  /** 新文件一共多长（画面变速时和原视频不一样长，DECISIONS §87）；开始混之前没有 */
+  totalSec?: number;
   startedAt: number;
-  result?: Pick<ExportResult, 'bytes' | 'durationSec' | 'audioLabel' | 'audioCodec' | 'aacFailed' | 'elapsedMs' | 'pieces'> & {
+  result?: Pick<ExportResult, 'bytes' | 'durationSec' | 'sourceSec' | 'speed' | 'dubSpeed' | 'audioLabel' | 'audioCodec' | 'aacFailed' | 'elapsedMs' | 'pieces'> & {
     fileName: string;
     savedAt: number;
     /** 写进视频的字幕（没带时没有这一项） */
@@ -184,13 +186,15 @@ async function run(): Promise<void> {
       probe: h.probe,
       dub,
       map: dubMapOf(h.rec),
+      // 整体倍速（DECISIONS §87）一起写进去：和开着配音时听到、看到的一样
+      ...(h.rec.overallRate !== undefined ? { overallRate: h.rec.overallRate } : {}),
       ...(subs ? { subtitles: { cues: subs.cues, language: subs.language, name: subs.name } } : {}),
       signal: abort.signal,
       onProgress: (p) => {
         // 一秒一秒地报太碎：每推进 1% 左右更新一次界面
         if (job?.startedAt === mine && (p.done - shown >= p.total / 100 || p.done >= p.total)) {
           shown = p.done;
-          patch({ doneSec: p.done });
+          patch({ doneSec: p.done, totalSec: p.total });
         }
       },
     });
@@ -205,6 +209,9 @@ async function run(): Promise<void> {
       result: {
         bytes: result.bytes,
         durationSec: result.durationSec,
+        sourceSec: result.sourceSec,
+        speed: result.speed,
+        dubSpeed: result.dubSpeed,
         audioLabel: result.audioLabel,
         audioCodec: result.audioCodec,
         ...(result.aacFailed ? { aacFailed: result.aacFailed } : {}),

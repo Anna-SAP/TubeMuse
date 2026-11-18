@@ -6,12 +6,14 @@
 //   左右拖下面的中文 = 调这一段的偏移（和"中文位置"滑块一样：拖动时实时生效，松手后存下）。
 // 只画跟随本来的规则（core/dub-align.ts，和 dubStep 逐点对照过），不做、也不暗示逐句对齐。
 // 「对齐」区顶部的读数（DubGapReadout，DECISIONS §78、§79）和图用同一个播放头（useDubAlignNow），大字写"还差多少秒没对上"。
+// 按倍速对齐时（快速对齐 §82、加快英文 §87）一段到底；「附近」的横轴是"听的时间"：快速对齐时英文按原样画、中文按倍速拉长，
+// 加快英文时中文按原样画、英文按倍速压短——竖着对上的都是同时听到的。
 
 import type { ComponentChildren, RefObject } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { DUB } from '../../config/defaults';
 import { cssZoomOf } from '../shared/css-zoom';
-import { clampDelay, formatClockSec, formatSeconds, rateText, rateWord, type DubMap } from '../../core/dub';
+import { clampDelay, englishModeName, formatClockSec, formatSeconds, rateText, rateWord, type DubMap } from '../../core/dub';
 import {
   alignNowText,
   alignOverallText,
@@ -133,7 +135,11 @@ export function DubGapReadout({ now }: { now: AlignNow }) {
   return (
     <div class={`dub-gap ${kind}`} data-testid="dub-gap" data-kind={kind} data-plan={plan?.kind ?? 'none'}>
       <div class="dub-gap-label">
-        {al?.quickRate !== undefined ? '还差多少没对上（快速对齐：全片时长差由变速匀到整段；0 = 全部对完）' : '还差多少没对上（全片时长差 − 此刻中文滞后；0 = 全部对完）'}
+        {al?.englishRate !== undefined
+          ? `还差多少没对上（${englishModeName(al.englishRate)}：全片时长差由英文变速匀到整段；0 = 全部对完）`
+          : al?.quickRate !== undefined
+            ? '还差多少没对上（快速对齐：全片时长差由变速匀到整段；0 = 全部对完）'
+            : '还差多少没对上（全片时长差 − 此刻中文滞后；0 = 全部对完）'}
       </div>
       <div class="dub-gap-value" data-testid="dub-gap-value">
         {r ? secondsText(r.remaining) : '—'}
@@ -190,6 +196,8 @@ function Overview({ al, map, plan, t, width, windowSec, id }: { al: DubAlignment
   const x = (sec: number) => GUTTER + sec * s;
   const enB = O.enY + O.barH;
   const zhEnd = D ?? Math.max(0, ...al.pieces.map((p) => p.d1));
+  // 框出「附近」那一段：它的横轴是听的时间，加快英文时一屏对着视频的 窗口 × 英文倍速 秒
+  const half = (al.englishRate !== undefined && al.quickRate !== undefined ? windowSec / al.quickRate : windowSec) / 2;
   return (
     <svg class="dub-map-svg" width={width} height={O.h} data-testid="dub-map-overview" aria-hidden="true">
       <defs>
@@ -223,7 +231,7 @@ function Overview({ al, map, plan, t, width, windowSec, id }: { al: DubAlignment
         <line class="dub-map-anchor-tick" data-testid="dub-map-overview-anchor" x1={x(a.video)} y1={O.enY - 2} x2={x(a.video)} y2={enB} />
       ))}
       {t !== undefined && (
-        <rect class="dub-map-window" x={x(Math.max(0, t - windowSec / 2))} y={O.enY - 3} width={Math.max(2, (Math.min(al.videoDuration, t + windowSec / 2) - Math.max(0, t - windowSec / 2)) * s)} height={O.barH + 6} />
+        <rect class="dub-map-window" x={x(Math.max(0, t - half))} y={O.enY - 3} width={Math.max(2, (Math.min(al.videoDuration, t + half) - Math.max(0, t - half)) * s)} height={O.barH + 6} />
       )}
       {t !== undefined && plan && (
         <g class="dub-map-ph">
@@ -260,16 +268,24 @@ function Nearby(props: {
   const t = props.t ?? 0;
   const plotW = width - GUTTER - RIGHT;
   const s = plotW / windowSec;
-  const start = t - windowSec / 2;
-  // 快速对齐（DECISIONS §82）：下面的中文不是错开画，而是按倍速拉长（或压短）画——中文的 d 秒画在视频的 d ÷ 倍速 秒正下方
+  // 快速对齐（DECISIONS §82）：下面的中文不是错开画，而是按倍速拉长（或压短）画——中文的 d 秒画在视频的 d ÷ 倍速 秒正下方。
+  // 加快英文（DECISIONS §87）反过来：中文原速，按原样画；上面的英文按倍速压短（或拉长）画——横轴是听的时间（= 中文的时间）
   const quick = al.quickRate;
+  const english = al.englishRate;
+  /** 视频 1 秒在横轴上占几秒：加快英文时 = 1 ÷ 英文倍速，别的时候 1 */
+  const enScale = english !== undefined && quick !== undefined ? quick : 1;
+  const start = t * enScale - windowSec / 2;
   const shift = plan && quick === undefined ? plan.segment.offset : 0;
-  const xt = (v: number) => GUTTER + (v - start) * s;
-  const xb = (d: number) => (quick !== undefined ? xt(d / quick) : GUTTER + (d + shift - start) * s);
+  const xt = (v: number) => GUTTER + (v * enScale - start) * s;
+  const xb = (d: number) => (english !== undefined ? GUTTER + (d - start) * s : quick !== undefined ? xt(d / quick) : GUTTER + (d + shift - start) * s);
   /** 窗口左边缘对着中文的哪里、中文每秒多少像素 */
-  const dubStart = quick !== undefined ? start * quick : start - shift;
-  const dubSpan = quick !== undefined ? windowSec * quick : windowSec;
-  const dubStep = quick !== undefined ? mapTickStep(s / quick) : undefined;
+  const dubStart = english !== undefined ? start : quick !== undefined ? start * quick : start - shift;
+  const dubSpan = english !== undefined ? windowSec : quick !== undefined ? windowSec * quick : windowSec;
+  const dubStep = english !== undefined ? undefined : quick !== undefined ? mapTickStep(s / quick) : undefined;
+  /** 英文的刻度：窗口对着视频的哪一段、每秒多少像素 */
+  const enStart = start / enScale;
+  const enSpan = windowSec / enScale;
+  const enStep = enScale !== 1 ? mapTickStep(s * enScale) : undefined;
   const V = al.videoDuration;
   const D = al.dubDuration;
   const enB = N.enY + N.barH;
@@ -355,7 +371,7 @@ function Nearby(props: {
       </text>
       <g clip-path={`url(#${id}-clip)`}>
         {/* 刻度：上面是视频的时间，下面是中文的时间 */}
-        {ticks(start, start + windowSec, V).map((k) => (
+        {ticks(enStart, enStart + enSpan, V, enStep).map((k) => (
           <>
             <line class="dub-map-tick" x1={xt(k)} y1={N.enY - 3} x2={xt(k)} y2={N.enY} />
             {Math.abs(xt(k) - centerX) > 30 && fits(xt(k), 12) && (
@@ -375,18 +391,18 @@ function Nearby(props: {
             )}
           </>
         ))}
-        <rect class="dub-map-bar en" x={xt(0)} y={N.enY} width={V * s} height={N.barH} />
+        <rect class="dub-map-bar en" x={xt(0)} y={N.enY} width={xt(V) - xt(0)} height={N.barH} />
         <rect class={`dub-map-bar zh${D === undefined ? ' open' : ''}`} x={xb(0)} y={N.zhY} width={xb(D ?? Math.max(0, ...al.pieces.map((p) => p.d1))) - xb(0)} height={N.barH} />
         {al.pieces
           .filter((p) => seen(xt(p.v0), xt(p.v1)) || seen(xb(p.d0), xb(p.d1)))
           .map((p) => {
             const cur = plan && p.segment === plan.segment.index;
             const mid = (xt(p.v0) + xt(p.v1) + xb(p.d0) + xb(p.d1)) / 4;
-            const wide = (p.v1 - p.v0) * s >= DUB.map.labelMinPx;
+            const wide = xt(p.v1) - xt(p.v0) >= DUB.map.labelMinPx;
             return (
               <>
                 <polygon class={`dub-map-rib ${parity(p.segment)}${cur ? ' cur' : ''}`} points={`${xt(p.v0)},${enB} ${xt(p.v1)},${enB} ${xb(p.d1)},${N.zhY} ${xb(p.d0)},${N.zhY}`} />
-                <rect class="dub-map-en-on" x={xt(p.v0)} y={N.enY} width={(p.v1 - p.v0) * s} height={N.barH} />
+                <rect class="dub-map-en-on" x={xt(p.v0)} y={N.enY} width={xt(p.v1) - xt(p.v0)} height={N.barH} />
                 <rect class={`dub-map-zh-on ${parity(p.segment)}${cur ? ' cur' : ''}`} x={xb(p.d0)} y={N.zhY} width={xb(p.d1) - xb(p.d0)} height={N.barH} />
                 {wide && !cur && fits(mid, 24) && (
                   <text class="dub-map-rib-lbl" data-testid="dub-map-gap" x={mid} y={RIB_MID + 4} text-anchor="middle">
@@ -400,8 +416,8 @@ function Nearby(props: {
           .filter((h) => seen(xt(h.v0), xt(h.v1)))
           .map((h) => (
             <>
-              <rect data-testid="dub-map-detail-hold" data-kind={h.kind} fill={holdFill(id, h.kind)} x={xt(h.v0)} y={N.enY} width={(h.v1 - h.v0) * s} height={N.barH} />
-              {(h.v1 - h.v0) * s >= DUB.map.labelMinPx && (
+              <rect data-testid="dub-map-detail-hold" data-kind={h.kind} fill={holdFill(id, h.kind)} x={xt(h.v0)} y={N.enY} width={xt(h.v1) - xt(h.v0)} height={N.barH} />
+              {xt(h.v1) - xt(h.v0) >= DUB.map.labelMinPx && (
                 <text class="dub-map-in-lbl" x={(Math.max(xt(h.v0), GUTTER) + Math.min(xt(h.v1), GUTTER + plotW)) / 2} y={N.enY + 15} text-anchor="middle">
                   {h.kind === 'wait' ? `原声 ${formatSeconds(h.v1 - h.v0)}` : h.kind === 'before-start' ? '中文未开始' : '中文已放完'}
                 </text>
@@ -443,7 +459,13 @@ function Nearby(props: {
             <line class={`link${plan.kind === 'playing' ? '' : ' held'}`} x1={centerX} y1={enB} x2={dubX} y2={N.zhY} />
             <line x1={dubX} y1={N.zhY} x2={dubX} y2={zhB + 3} />
             <text class="dub-map-rib-lbl cur" data-testid="dub-map-now-gap" x={centerX + 7} y={enB + 11}>
-              {plan.kind === 'playing' ? (quick !== undefined ? `${rateText(quick)} ${rateWord(quick)}` : signed(plan.segment.offset)) : plan.kind === 'wait' ? '中文停下等' : plan.kind === 'before-start' ? '中文未开始' : plan.kind === 'after-end' ? '中文已放完' : ''}
+              {plan.kind === 'playing'
+                ? english !== undefined
+                  ? `英文 ${rateText(english)} ${rateWord(english)}`
+                  : quick !== undefined
+                    ? `${rateText(quick)} ${rateWord(quick)}`
+                    : signed(plan.segment.offset)
+                : plan.kind === 'wait' ? '中文停下等' : plan.kind === 'before-start' ? '中文未开始' : plan.kind === 'after-end' ? '中文已放完' : ''}
             </text>
             <rect class="chip" x={centerX - 22} y={0} width={44} height={12} rx={3} />
             <text class="chip-lbl" x={centerX} y={9} text-anchor="middle">
@@ -481,16 +503,30 @@ export function DubAlignMap(props: DubAlignMapProps) {
   const overall = alignOverallText(al);
   const totals = alignTotals(al);
   const quick = al.quickRate;
-  // 快速对齐开着时全程按倍速走，没有哪一段的偏移可拖
+  const english = al.englishRate;
+  // 快速对齐、加快英文开着时全程按倍速走，没有哪一段的偏移可拖
   const canDrag = quick === undefined && !!props.onCommit && !!plan && plan.segment.index === props.segment && plan.kind !== 'ended';
   const plotW = width - GUTTER - RIGHT;
   let hoverText: string | undefined;
   if (hover && at !== undefined && hover.x >= GUTTER && hover.x <= GUTTER + plotW) {
-    const sec = (hover.x - GUTTER) / (plotW / zoom) + at - zoom / 2;
-    hoverText = hover.y < RIB_MID ? describeVideoAt(al, sec) : describeDubAt(al, quick !== undefined ? sec * quick : sec - (plan?.segment.offset ?? 0));
+    // 指着的地方在横轴（听的时间）上是哪一刻；加快英文时横轴是中文的时间
+    const enScale = english !== undefined && quick !== undefined ? quick : 1;
+    const L = (hover.x - GUTTER) / (plotW / zoom) + at * enScale - zoom / 2;
+    hoverText =
+      hover.y < RIB_MID
+        ? describeVideoAt(al, L / enScale)
+        : describeDubAt(al, english !== undefined ? L : quick !== undefined ? L * quick : L - (plan?.segment.offset ?? 0));
   }
   return (
-    <div class="dub-map" data-testid="dub-map" data-quick={quick !== undefined ? 'on' : 'off'} ref={box} role="group" aria-label={plan && at !== undefined ? alignNowText(plan, at, quick) : '对齐图'}>
+    <div
+      class="dub-map"
+      data-testid="dub-map"
+      data-quick={quick !== undefined ? 'on' : 'off'}
+      data-mode={english !== undefined ? 'english' : quick !== undefined ? 'quick' : 'manual'}
+      ref={box}
+      role="group"
+      aria-label={plan && at !== undefined ? alignNowText(plan, at, al) : '对齐图'}
+    >
       <div class="row dub-map-head">
         <strong>对齐图</strong>
         <span class="muted small">
@@ -506,9 +542,11 @@ export function DubAlignMap(props: DubAlignMapProps) {
       <Overview al={al} map={props.map} {...(plan ? { plan } : {})} {...(at !== undefined ? { t: at } : {})} width={width} windowSec={zoom} id={`${id}o`} />
       <div class="row dub-map-sub">
         <span class="muted small">
-          {quick !== undefined
-            ? `附近（中文按 ${rateText(quick)} ${quick < 1 ? '拉长' : '压短'}画，竖着对上的是同时听到的）`
-            : '附近（中文按这一段的偏移错开画，竖着对上的是同时听到的）'}
+          {english !== undefined
+            ? `附近（英文按 ${rateText(english)} ${english > 1 ? '压短' : '拉长'}画、中文原样画，竖着对上的是同时听到的）`
+            : quick !== undefined
+              ? `附近（中文按 ${rateText(quick)} ${quick < 1 ? '拉长' : '压短'}画，竖着对上的是同时听到的）`
+              : '附近（中文按这一段的偏移错开画，竖着对上的是同时听到的）'}
         </span>
         <span class="dub-map-zoom" role="group" aria-label="附近显示多长">
           {DUB.map.zoomsSec.map((z) => (
@@ -536,7 +574,11 @@ export function DubAlignMap(props: DubAlignMapProps) {
         {hoverText || (
           <>
             <span class="dub-map-key rib" />
-            {quick !== undefined ? '色带：同时听到的两处（快速对齐：中文整段变速，一段到底）' : '色带：同时听到的两处，上面写着那一段中文比画面晚 / 早多少'}
+            {english !== undefined
+              ? `色带：同时听到的两处（${englishModeName(english)}：英文整段变速、中文原速，一段到底）`
+              : quick !== undefined
+                ? '色带：同时听到的两处（快速对齐：中文整段变速，一段到底）'
+                : '色带：同时听到的两处，上面写着那一段中文比画面晚 / 早多少'}
             <span class="dub-map-key hold" />
             只有原声（中文还没开始 / 停下等画面{totals.waitSec >= 1 ? `，共 ${formatSeconds(totals.waitSec)}` : ''}）
             <span class="dub-map-key end" />
