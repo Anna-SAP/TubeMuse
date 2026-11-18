@@ -292,7 +292,7 @@ export function ClipsView() {
                     <input type="checkbox" data-testid="clip-burn" checked={settings.clips.burnSubtitles} onChange={(e) => setBurn(e.currentTarget.checked)} />
                     {state.shorts
                       ? '把字幕烧进画面（录的是 Shorts 播放器里当时显示的字幕：TubeMuse 多语字幕或 YouTube 原生字幕；自动字幕不在 Shorts 上显示；更费电脑）'
-                      : '把字幕烧进画面（录的是播放器里当时显示的字幕：TubeMuse 自动字幕或 YouTube 原生字幕；更费电脑）'}
+                      : '把字幕烧进画面（录的是播放器里当时显示的字幕：TubeMuse 自动字幕、配音字幕或 YouTube 原生字幕；更费电脑）'}
                   </label>
                 )}
                 {state.shorts && (

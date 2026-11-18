@@ -128,6 +128,7 @@ await esbuild.build({
     'content-email': join(root, 'src', 'content', 'email.ts'),
     'content-xyz': join(root, 'src', 'content', 'xyz.ts'),
     'content-dub': join(root, 'src', 'content', 'dub.ts'),
+    'content-dub-subs': join(root, 'src', 'content', 'dub-subtitles.ts'),
   },
   outdir,
   bundle: true,
@@ -222,6 +223,7 @@ const manifest = {
     { matches: EMAIL_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-email.js'], run_at: 'document_idle' },
     { matches: XYZ_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xyz.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-dub.js'], run_at: 'document_idle' },
+    { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-dub-subs.js'], run_at: 'document_idle' },
   ],
   commands: {
     'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕（在小宇宙单集页上开关这一集的字幕）' },
@@ -431,7 +433,8 @@ for (const bad of [
 if (origins.some((o) => /xiaoyuzhoufm\.com|image\.xyzcdn\.net/i.test(o))) fail('小宇宙网站与图片 CDN 不应出现在网络出口里：扩展只读 media.xyzcdn.net 上的音频。');
 
 // 中文配音（2026-11-13 新增，DECISIONS §74）：注入 YouTube 的配音脚本只播放你为这个视频选的本地音频（由后台从扩展的 IndexedDB 交来）、
-// 改 <video> 的音量（原声降 20%）。不得发任何网络请求、不得往页面插入元素或写 HTML（<audio> 不放进页面）、不得碰 Cookie / 页面存储、
+// 改 <video> 的音量（原声降 20%）；2026-11-18 起（DECISIONS §85）还在你点侧边栏的视频控制键时对 <video> 调 pause() / play()、改 currentTime
+// （不点页面上的按钮、不模拟按键）。不得发任何网络请求、不得往页面插入元素或写 HTML（<audio> 不放进页面）、不得碰 Cookie / 页面存储、
 // 不得点击或模拟事件、不得录音录屏或采集视频的声音、不得触发下载、不得直接写扩展存储、不得动态执行代码
 const dubScript = readFileSync(join(outdir, 'content-dub.js'), 'utf8');
 for (const bad of [
@@ -460,6 +463,33 @@ for (const bad of [
   /\.download\s*=/,
 ]) {
   if (bad.test(dubScript)) fail(`配音脚本里出现了不允许的操作（${bad}）：它只能播放你选的配音、跟随视频、调原声音量。`);
+}
+
+// 配音字幕（2026-11-18 新增，DECISIONS §86）：单独一个脚本，只在 YouTube 播放器里叠一层只读字幕（Shadow DOM，只用文字写入），
+// 文字是你自己给的、存在本机的配音字幕，位置由配音脚本在同一个隔离环境里交来。不得发任何网络请求、不得用 HTML 字符串写页面、
+// 不得碰 Cookie / 页面存储、不得点击或模拟事件、不得录音录屏或采集声音、不得碰播放器（不暂停、不跳转、不改音量）、
+// 不得发扩展消息（它只读扩展存储）、不得触发下载、不得直接写扩展存储、不得动态执行代码
+const dubSubsScript = readFileSync(join(outdir, 'content-dub-subs.js'), 'utf8');
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /innerHTML|outerHTML|insertAdjacent/,
+  /document\.cookie/,
+  /localStorage|sessionStorage|indexedDB/,
+  /\.click\(\)/,
+  /dispatchEvent\(/,
+  /getUserMedia|getDisplayMedia|captureStream/,
+  /\.play\(\)|\.pause\(\)|\.currentTime\s*=|\.volume\s*=|\.playbackRate\s*=/,
+  /sendMessage\(|runtime\.connect\(/,
+  /chrome\.storage\.local\.(set|remove|clear)\(/,
+  /\beval\(|new Function\(/,
+  /window\.open\(/,
+  /\.download\s*=/,
+]) {
+  if (bad.test(dubSubsScript)) fail(`配音字幕脚本里出现了不允许的操作（${bad}）：它只能读本机存着的配音字幕、在播放器里叠一层只读字幕。`);
 }
 
 // 「问 muse」（2026-11-11 新增，DECISIONS §60）：只生成一段文字，由你自己粘贴到 Muse。muse.ai 只由侧边栏在新标签页里打开：

@@ -744,6 +744,74 @@ try {
     ffQuickRec && ffQuickRec.quickRate === undefined && dubS?.quickRate === undefined && Math.abs(dubS.dubTime - dubS.videoTime) < 0.5,
     `Firefox：切回手动对齐，中文位置回到 视频位置 − 偏移（视频 ${Number(dubS?.videoTime).toFixed(2)} · 中文 ${Number(dubS?.dubTime).toFixed(2)}）`,
   );
+  // 视频控制键（DECISIONS §85）：这时视频停着。前进 30 秒 → 视频跳过去、仍停着，配音的位置跟过去；点"播放"接着放
+  // 先把视频放到一个确定的地方（0:10，停着）：后面看字幕要落在中文的 92 秒以内
+  await b.switchTo(dubPage);
+  await b.exec(`document.querySelector('video').currentTime = 10; return true;`);
+  await b.switchTo(handles.panel);
+  dubS = await dubState();
+  for (let i = 0; i < 40 && !(Math.abs(dubS.videoTime - 10) < 0.3 && Math.abs(dubS.dubTime - 10) < 0.5); i++) {
+    await sleep(150);
+    dubS = await dubState();
+  }
+  const ffBefore = dubS.videoTime;
+  await tap('[data-testid=dub-seek][data-by="30"]');
+  dubS = await dubState();
+  for (let i = 0; i < 40 && !(Math.abs(dubS.videoTime - (ffBefore + 30)) < 0.3 && Math.abs(dubS.dubTime - dubS.videoTime) < 0.5); i++) {
+    await sleep(150);
+    dubS = await dubState();
+  }
+  check(
+    Math.abs(dubS.videoTime - (ffBefore + 30)) < 0.3 && Math.abs(dubS.dubTime - dubS.videoTime) < 0.5 && dubS.playing === false,
+    `Firefox：视频控制键"30 秒 »"——视频 ${Number(ffBefore).toFixed(2)} → ${Number(dubS.videoTime).toFixed(2)} 秒，仍停着，配音跟到 ${Number(dubS.dubTime).toFixed(2)} 秒`,
+  );
+  await tap('[data-testid=dub-play]');
+  dubS = await dubState();
+  for (let i = 0; i < 40 && !dubS?.playing; i++) {
+    await sleep(150);
+    dubS = await dubState();
+  }
+  check(dubS?.playing === true && dubS.videoPlaying === true, 'Firefox：视频控制键"播放"——视频接着放，配音跟着放');
+  // 配音字幕（DECISIONS §86）：选一个中英双语的字幕文件 → 只留中文那几行 → 画面上显示配音此刻说到的那一句
+  await b.exec(
+    `const srt = Array.from({ length: 23 }, (_, i) => { const at = (s) => '00:' + String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0') + ',000'; return (i + 1) + '\\n' + at(i * 4) + ' --> ' + at(i * 4 + 4) + '\\n第 ' + i + ' 句中文配音\\nEnglish line ' + i + '\\n'; }).join('\\n');
+     const dt = new DataTransfer(); dt.items.add(new File([srt], '配音.zh-en.srt', { type: 'application/x-subrip' }));
+     const input = document.querySelector('[data-testid=dub-subs-file]'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true;`,
+  );
+  let ffSubsRec = await ffDubRec();
+  for (let i = 0; i < 40 && !ffSubsRec?.subs; i++) {
+    await sleep(150);
+    ffSubsRec = await ffDubRec();
+  }
+  check(ffSubsRec?.subs?.count === 23 && ffSubsRec.subs.lang === 'zh' && ffSubsRec.subs.reduced === true, `Firefox：选中英双语的字幕文件，只留中文那几行：${JSON.stringify(ffSubsRec?.subs)}`);
+  const ffOverlay = () =>
+    b.exec(
+      `const host = document.querySelector('#movie_player [data-tubemuse="dubsubs"]'); const wrap = host?.shadowRoot?.querySelector('.wrap'); const line = host?.shadowRoot?.querySelector('.line');
+       return wrap && line && !wrap.hidden ? { text: line.textContent, color: getComputedStyle(line).color } : null;`,
+    );
+  /** @type {any} */
+  let ffSub = null;
+  let ffSubOk = false;
+  for (let i = 0; i < 60 && !ffSubOk; i++) {
+    // 字幕层在视频页里读，配音的位置回侧边栏问（扩展接口只在扩展页面里有）：前后各问一次位置，字幕是这段时间里的某一句就算对
+    const st0 = await dubState();
+    await b.switchTo(dubPage);
+    ffSub = await ffOverlay();
+    await b.switchTo(handles.panel);
+    const st1 = await dubState();
+    const from = Math.floor((st0.dubTime - 0.4) / 4);
+    const to = Math.floor((st1.dubTime + 0.4) / 4);
+    ffSubOk = !!ffSub && Array.from({ length: to - from + 1 }, (_, k) => `第 ${from + k} 句中文配音`).includes(ffSub.text);
+    if (!ffSubOk) await sleep(150);
+  }
+  check(ffSubOk && ffSub.color === 'rgb(255, 255, 255)', `Firefox：配音字幕层叠在播放器里，显示配音此刻说到的那一句（"${ffSub?.text}"，默认白字）`);
+  await tap('[data-testid=dub-subs-show]');
+  await b.switchTo(dubPage);
+  await b.waitFor(`!document.querySelector('[data-tubemuse="dubsubs"]')`, { what: '去掉"显示"后字幕层拿掉' });
+  check(true, 'Firefox：去掉"显示配音字幕"的勾，字幕层从页面上拿掉');
+  await b.exec(`document.querySelector('video').pause(); return true;`);
+  await b.switchTo(handles.panel);
+  await tap('[data-testid=dub-subs-show]');
   await tap('[data-testid=dub-toggle]');
   await b.switchTo(dubPage);
   let ffBack = 0;
@@ -756,7 +824,10 @@ try {
   await tap('[data-testid=dub-remove]');
   await tap('[data-testid=dub-remove-yes]');
   await b.waitFor(`!!document.querySelector('[data-testid=dub-pick]')`, { what: '移除后回到选文件' });
-  check(JSON.stringify(await b.run(`return (await browser.storage.local.get('dubs')).dubs;`)) === '{}', 'Firefox：移除后对应关系清空');
+  check(
+    JSON.stringify(await b.run(`return (await browser.storage.local.get('dubs')).dubs;`)) === '{}' && (await b.run(`return 'dubSubs:dubVideo0001' in (await browser.storage.local.get(null));`)) === false,
+    'Firefox：移除后对应关系清空，这个配音的字幕也删掉',
+  );
   await closeTab(dubPage);
 
   console.log('\n[中文配音：保存完整双语视频（DECISIONS §83）——Firefox 里选原视频文件、离线合成、自动下载，不播放]');

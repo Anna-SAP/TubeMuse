@@ -18,10 +18,14 @@ import {
   type DubIndex,
   type DubPortReply,
   type DubRecord,
+  type DubSubsMeta,
 } from '../core/dub';
+import { prepareDubCues, rankXyzForDub, xyzCuesForDub, type DubSubsDoc, type PreparedDubSubs, type XyzSubsChoice } from '../core/dub-subs';
+import { SubtitleFileError, parseSubtitleFile, type SubCue } from '../core/subtitle-track';
+import type { XyzTranscript } from '../core/xyz';
 import type { AppContext } from './context';
 import type { DubAudioStore } from './dub-store';
-import { newId, stores } from './repo';
+import { dubSubsStore, newId, stores, xyzTranscriptStore } from './repo';
 
 function audioStore(ctx: AppContext): DubAudioStore {
   if (!ctx.dubAudio) throw new DubFileError('这个浏览器环境里没有 IndexedDB，存不了配音文件');
@@ -74,6 +78,8 @@ export async function attachDub(ctx: AppContext, input: AttachInput): Promise<Du
       // 同一个视频换一版配音：偏移和对齐点多半还能用，保留（界面上说明，不对再删）
       ...(old?.anchors?.length ? { anchors: old.anchors } : {}),
       ...(quickRate !== undefined ? { quickRate } : {}),
+      // 字幕也保留（DECISIONS §86）：同一段话换一版录音，字幕多半还对得上；对不上由你换一份
+      ...(old?.subs ? { subs: old.subs } : {}),
       addedAt: ctx.now(),
       ...(probe.durationSec ? { durationSec: probe.durationSec } : {}),
       ...(videoDurationSec ? { videoDurationSec } : {}),
@@ -94,6 +100,8 @@ export async function removeDub(ctx: AppContext, videoId: string): Promise<void>
     const { [videoId]: _gone, ...rest } = index;
     return rest;
   });
+  // 这个配音的字幕一并删掉（DECISIONS §86）
+  await ctx.kv.remove(dubSubsStore(videoId).key);
   if (fileId) await audioStore(ctx).delete(fileId);
 }
 
@@ -166,6 +174,89 @@ export async function setDubQuickRate(ctx: AppContext, videoId: string, rate: nu
     return { ...index, [videoId]: quick === undefined ? rest : { ...rest, quickRate: quick } };
   });
   return done;
+}
+
+// ── 配音字幕（DECISIONS §86）──
+
+export interface DubSubsSaved {
+  meta: DubSubsMeta;
+  prepared: PreparedDubSubs;
+}
+
+/**
+ * 给这个视频的配音存一份字幕：整理（排好、去重叠；双语的只留配音语言的那几行），字幕本身按视频分键存，
+ * 记录里只记它是哪来的、多少句。先存字幕、再记说明：页面里的字幕脚本看到说明时字幕已经在了。
+ * 一句都不剩时抛 SubtitleFileError；这个视频没有配音时返回 undefined
+ */
+export async function setDubSubtitles(ctx: AppContext, videoId: string, input: { name: string; cues: readonly SubCue[]; source: DubSubsMeta['source'] }): Promise<DubSubsSaved | undefined> {
+  const prepared = prepareDubCues(input.cues);
+  if (!prepared.cues.length) throw new SubtitleFileError('这份字幕里一句能显示的都没有');
+  if (!(await stores.dubs.read(ctx.kv))[videoId]) return undefined;
+  const doc: DubSubsDoc = { videoId, cues: prepared.cues };
+  await dubSubsStore(videoId).update(ctx.kv, ctx.locker, () => doc);
+  const meta: DubSubsMeta = {
+    name: input.name.trim().slice(0, DUB.fileNameMaxChars) || '字幕',
+    count: prepared.cues.length,
+    lang: prepared.lang,
+    source: input.source,
+    ...(prepared.reduced ? { reduced: true } : {}),
+    addedAt: ctx.now(),
+  };
+  let saved = false;
+  await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
+    const rec = index[videoId];
+    if (!rec) return index;
+    saved = true;
+    return { ...index, [videoId]: { ...rec, subs: meta } };
+  });
+  if (!saved) {
+    // 存字幕的工夫里这个配音被移除了：字幕不留
+    await ctx.kv.remove(dubSubsStore(videoId).key);
+    return undefined;
+  }
+  return { meta, prepared };
+}
+
+/** 读你选的字幕文件（.srt / .vtt）存成这个配音的字幕 */
+export async function setDubSubtitleFile(ctx: AppContext, videoId: string, file: Blob, fileName: string): Promise<DubSubsSaved | undefined> {
+  if (file.size > DUB.export.maxSubtitleFileBytes) {
+    throw new SubtitleFileError('这个字幕文件太大了', `字幕文件一般只有几十 KB；最大 ${DUB.export.maxSubtitleFileBytes / 1024 / 1024} MB。是不是选成了音频或视频文件？`);
+  }
+  return setDubSubtitles(ctx, videoId, { name: fileName, cues: parseSubtitleFile(await file.text()), source: 'file' });
+}
+
+/** 去掉这个配音的字幕：先去掉说明（页面里的字幕随即消失），再删字幕本身 */
+export async function removeDubSubtitles(ctx: AppContext, videoId: string): Promise<void> {
+  await stores.dubs.update(ctx.kv, ctx.locker, (index) => {
+    const rec = index[videoId];
+    if (!rec?.subs) return index;
+    const { subs: _gone, ...rest } = rec;
+    return { ...index, [videoId]: rest };
+  });
+  await ctx.kv.remove(dubSubsStore(videoId).key);
+}
+
+/** 这个配音存着的字幕；没有（或存储里的坏了）时 null */
+export async function readDubSubtitles(ctx: AppContext, videoId: string): Promise<DubSubsDoc | null> {
+  return dubSubsStore(videoId).read(ctx.kv);
+}
+
+async function xyzTranscripts(ctx: AppContext): Promise<XyzTranscript[]> {
+  const eids = Object.keys(await stores.xyzTranscriptIndex.read(ctx.kv));
+  const all = await Promise.all(eids.map((eid) => xyzTranscriptStore(eid).read(ctx.kv)));
+  return all.filter((t): t is XyzTranscript => !!t && Array.isArray(t.cues));
+}
+
+/** 小宇宙里已经生成、存在本机的字幕（只读本机存储，不联网、不花钱）：看起来就是这个配音的那一集排前面 */
+export async function listXyzSubsForDub(ctx: AppContext, rec: Pick<DubRecord, 'fileName' | 'durationSec'>): Promise<XyzSubsChoice[]> {
+  return rankXyzForDub(await xyzTranscripts(ctx), { fileName: rec.fileName, ...(rec.durationSec ? { durationSec: rec.durationSec } : {}) });
+}
+
+/** 把小宇宙里那一集已经生成的字幕存成这个配音的字幕（抄一份此刻的：之后那一集又生成了新的，要再点一次） */
+export async function copyXyzSubsForDub(ctx: AppContext, videoId: string, eid: string): Promise<DubSubsSaved | undefined> {
+  const t = await xyzTranscriptStore(eid).read(ctx.kv);
+  if (!t?.cues?.length) throw new SubtitleFileError('小宇宙里这一集的字幕不见了', '回到小宇宙那一集的页面，在「小宇宙」页重新生成字幕。');
+  return setDubSubtitles(ctx, videoId, { name: t.title || eid, cues: xyzCuesForDub(t.cues), source: 'xyz' });
 }
 
 /** 本机存储的核对：没人用的音频（例如关联写到一半浏览器关了）删掉；对应关系还在、音频却没了的列出来 */

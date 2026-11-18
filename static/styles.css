@@ -1987,6 +1987,131 @@ a.db-title:hover {
   padding-top: 8px;
   border-top: 1px solid var(--border);
 }
+/* 视频控制键（DECISIONS §85）：对齐图的图例下面一排——后退、暂停 / 播放、前进 */
+.dub-transport {
+  margin: 8px 0 6px;
+}
+.dub-transport p {
+  margin: 4px 0 0;
+}
+.dub-transport-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+.dub-transport-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.dub-transport-group .btn,
+.dub-transport-play {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.btn.dub-transport-play {
+  min-width: 52px;
+  font-weight: 600;
+}
+.dub-transport-at {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* 配音字幕（DECISIONS §86）：要不要显示、这个配音的字幕、此刻这一句、样式 */
+.dub-subs {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.dub-subs p {
+  margin: 4px 0;
+}
+.dub-subs-meta .muted,
+.dub-subs-meta .warn-text {
+  margin-left: 4px;
+}
+.dub-subs-now {
+  padding: 4px 8px;
+  border-left: 3px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.dub-subs-now[data-showing='true'] {
+  border-left-color: var(--ok);
+}
+.dub-subs-xyz-list {
+  flex-basis: 100%;
+}
+.dub-subs-xyz-list select {
+  max-width: 100%;
+  min-width: 0;
+  flex: 1 1 180px;
+}
+.dub-subs-style {
+  margin-top: 6px;
+}
+.dub-subs-style summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+/* 预览：一块像视频画面的深色底，字幕在底部（和播放器里同一套样式） */
+.dub-subs-preview {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 84px;
+  margin: 6px 0;
+  padding: 10px 8px;
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, #2c3e50 0%, #4a6a5c 45%, #b9a27a 100%);
+  overflow: hidden;
+}
+.dub-subs-preview-line {
+  max-width: 100%;
+  box-sizing: border-box;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  padding: 0.08em 0.45em;
+  border-radius: 0.2em;
+}
+.dub-subs-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+  margin: 6px 0;
+}
+.dub-subs-grid label {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 76px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.dub-subs-grid select,
+.dub-subs-grid input[type='range'] {
+  width: 100%;
+  min-width: 0;
+}
+.dub-subs-grid select {
+  grid-column: 2 / 4;
+}
+.dub-subs-grid input[type='color'] {
+  width: 44px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+}
+.dub-subs-num {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 /* 保存完整双语视频（DECISIONS §83） */
 .dub-full {
   margin-top: 10px;
