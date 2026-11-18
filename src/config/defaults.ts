@@ -1040,12 +1040,24 @@ export const DUB = {
   map: { zoomsSec: [30, 120, 600], defaultZoomSec: 120, extrapolateMaxSec: 1.5, minTickPx: 56, labelMinPx: 44 },
   /**
    * 快速对齐（DECISIONS §82，用户 2026-11-16 要求）：中文整段按"中文时长 ÷ 视频时长"的倍速放，和视频同时开始、同时结束。
+   * 加快英文（DECISIONS §87，用户 2026-11-18 要求）用同一组范围与精度：中文原速，英文原声（连同画面）整段按"视频时长 ÷ 中文时长"的倍速放。
    * minRate / maxRate：建议倍速只在这个范围内才提供——再慢 / 再快，变速不变调的声音失真得厉害（这时说明原因，仍用手动对齐点）；
    * decimals：存下的倍速保留几位小数（6 位：一小时的视频上误差不到 4 毫秒）；
    * sameSec：两边时长差不到这么多秒时不用变速；
    * staleRate：开着的倍速和按现在的时长算出的建议差过这么多（设好之后换过文件），就给出新的建议
    */
   quick: { minRate: 0.5, maxRate: 2, decimals: 6, sameSec: 0.5, staleRate: 0.0005 },
+  /**
+   * 整体变速（用户 2026-11-18 要求，见 DECISIONS §87）：对齐之后两条音轨一起加速 / 减速，对齐关系不变。
+   * presets：一排按键；step：−/+ 每次改多少；min / max：范围（再慢 / 再快，变速不变调的声音失真得厉害，和快速对齐同一个理由）
+   */
+  overall: { presets: [0.75, 1, 1.25, 1.5, 1.75, 2], step: 0.05, min: 0.5, max: 2 },
+  /**
+   * 改 <video> 的倍速（加快英文、整体变速，DECISIONS §87）：只在配音开着、不是广告时改，关闭、换视频、离开页面时恢复你的倍速。
+   * eps：比较的容差；YouTube 在 revertWindowMs 内把倍速改回去 maxReverts 次：判定它不让改，停手并说明，不跟它来回抢；
+   * min / max：HTML 规定 <video> 能设的倍速范围（超出时浏览器报错）
+   */
+  videoRate: { eps: 0.001, maxReverts: 5, revertWindowMs: 3_000, min: 0.0625, max: 16 },
   /**
    * 视频控制键（用户 2026-11-18 要求，见 DECISIONS §85）：「配音」页对齐图下面的一排按键，控制 YouTube 页面里的视频。
    * backSec / forwardSec：后退、前进各有哪几档（秒，用户指定）；maxSeekSec：一次最多跳多远（收到别的数不理）

@@ -4,6 +4,8 @@
 // 原声轨换成混好的那一条新音轨（原声 80% + 中文配音，由 services/dub-export.ts 解码、混音、编码）。
 // 新文件的内容用"几段原文件 + 几段新字节"来描述，由调用方拼成 Blob：原视频几百 MB 也不用读进内存。
 // 只认普通的（不分片的）MP4；分片 MP4、WebM / MKV、MOV 说清楚并给出转换办法，不硬来。
+// 画面变速（加快英文、整体变速，DECISIONS §87）：帧的数据仍然原样照搬，只把画面轨的时间表（每帧显示多久、显示顺序的偏移、
+// 编辑列表、时长）按倍速缩放——不解码、不重新编码，出来的视频按那个倍速放。
 
 export type FileRead = (start: number, end: number) => Promise<Uint8Array>;
 
@@ -706,19 +708,147 @@ function textTrak(t: TextTrackInput, id: number, movieTimescale: number, movieDu
   return box('trak', fullBox('tkhd', 0, 3, tkhd.done()), mdia);
 }
 
-/** 画面轨原样照搬：只把分块位置表换成新的（一律写成 64 位的 co64），去掉指向别的轨的引用（tref） */
-function videoTrak(moov: Uint8Array, t: Mp4Track, chunkOffsets: Float64Array): Uint8Array {
+// ── 画面变速（DECISIONS §87）：只改时间表 ──
+
+/** 画面按什么倍速放、时间单位怎么换 */
+export interface VideoRetime {
+  /** 实际的倍速：新时间单位 ÷（原时间单位 × mult），精确到约百万分之一。声音、中文、字幕都按它算，和画面严丝合缝 */
+  speed: number;
+  /** 媒体时间的每个单位细分成几份（原来的时间单位太粗时，倍速写不准） */
+  mult: number;
+  /** 画面轨新的时间单位（每秒多少个单位） */
+  timescale: number;
+}
+
+const U32_MAX = 0xffffffff;
+
+/**
+ * 画面按 want 倍速放要怎么改时间单位：把每个时间值乘 mult（细分到每秒约一百万个单位），再把时间单位设成"原来的 × mult × 倍速"。
+ * 每帧的时长都不用四舍五入，所以整片不会越放越偏。want 是 1 时不用改（undefined）
+ */
+export function planRetime(t: Pick<Mp4Track, 'timescale' | 'dts' | 'count' | 'mediaDuration'>, want: number): VideoRetime | undefined {
+  if (!Number.isFinite(want) || want <= 0) throw new Mp4Error(`画面的倍速不对（${want}）`);
+  if (Math.abs(want - 1) < 1e-9) return undefined;
+  let maxDelta = t.count ? Math.max(0, t.mediaDuration - t.dts[t.count - 1]!) : 0;
+  for (let i = 1; i < t.count; i++) maxDelta = Math.max(maxDelta, t.dts[i]! - t.dts[i - 1]!);
+  let mult = Math.max(1, Math.ceil(1e6 / t.timescale));
+  // 乘完之后每帧的时长、时间单位都要放得进 32 位
+  while (mult > 1 && (maxDelta * mult > U32_MAX || t.timescale * mult * Math.max(1, want) > U32_MAX)) mult = Math.floor(mult / 2);
+  const timescale = Math.round(t.timescale * mult * want);
+  if (timescale < 1 || timescale > U32_MAX) throw new Mp4Error('画面的时间单位换不过来，没法按这个倍速写');
+  return { speed: timescale / (t.timescale * mult), mult, timescale };
+}
+
+/** 一个带版本号的盒子的版本号和标志 */
+const versionFlags = (b: Uint8Array, x: Box) => ({ version: b[x.body]!, flags: (b[x.body + 1]! << 16) | (b[x.body + 2]! << 8) | b[x.body + 3]! });
+
+function i64(b: Uint8Array, o: number): number {
+  const hi = i32(b, o);
+  return hi * 2 ** 32 + u32(b, o + 4);
+}
+
+/** 有符号 64 位写法（-1 写成全 1） */
+function writeI64(w: Writer, v: number): Writer {
+  if (v >= 0) return w.u64(v);
+  const hi = Math.floor(v / 2 ** 32);
+  const lo = v - hi * 2 ** 32;
+  return w.u32(hi >>> 0).u32(lo >>> 0);
+}
+
+/** 画面轨里和时间有关的盒子：按倍速改写（帧的数据、帧的顺序、关键帧表都不动）；undefined = 原样照抄 */
+function retimeBox(moov: Uint8Array, c: Box, r: VideoRetime): Uint8Array | undefined {
+  const { version, flags } = versionFlags(moov, c);
+  const o = c.body + 4;
+  const bad = (what: string) => new Mp4Error(`画面的${what}按这个倍速写不下`, '换一个倍速再试；或者把整体倍速调回 1×。');
+  switch (c.type) {
+    case 'tkhd': {
+      // 这条轨在片子里占多久（片子的时间单位）：除以倍速
+      const out = moov.slice(c.start, c.end);
+      const at = c.body - c.start + (version === 1 ? 28 : 20);
+      const old = version === 1 ? u64(moov, c.body + 28) : u32(moov, c.body + 20);
+      const v = Math.round(old / r.speed);
+      if (version === 1) {
+        out.set(new Writer().u64(v).done(), at);
+      } else {
+        if (v > U32_MAX) throw bad('时长');
+        out.set(new Writer().u32(v).done(), at);
+      }
+      return out;
+    }
+    case 'mdhd': {
+      // 新的时间单位；时长乘 mult（一律写成 64 位的版本 1）
+      const created = version === 1 ? u64(moov, o) : u32(moov, o);
+      const modified = version === 1 ? u64(moov, o + 8) : u32(moov, o + 4);
+      const duration = version === 1 ? u64(moov, o + 20) : u32(moov, o + 12);
+      const lang = u16(moov, o + (version === 1 ? 28 : 16));
+      return fullBox('mdhd', 1, flags, new Writer().u64(created).u64(modified).u32(r.timescale).u64(duration * r.mult).u16(lang).u16(0).done());
+    }
+    case 'stts': {
+      // 每帧显示多久：乘 mult
+      const n = u32(moov, o);
+      const w = new Writer().u32(n);
+      for (let i = 0; i < n; i++) {
+        const delta = u32(moov, o + 8 + i * 8) * r.mult;
+        if (delta > U32_MAX) throw bad('帧时长');
+        w.u32(u32(moov, o + 4 + i * 8)).u32(delta);
+      }
+      return fullBox('stts', version, flags, w.done());
+    }
+    case 'ctts': {
+      // 显示顺序和解码顺序差多少（有 B 帧时）：乘 mult
+      const n = u32(moov, o);
+      const w = new Writer().u32(n);
+      for (let i = 0; i < n; i++) {
+        const raw = version === 1 ? i32(moov, o + 8 + i * 8) : u32(moov, o + 8 + i * 8);
+        const v = raw * r.mult;
+        if (version === 1 ? v < -(2 ** 31) || v >= 2 ** 31 : v > U32_MAX) throw bad('显示顺序偏移');
+        w.u32(u32(moov, o + 4 + i * 8)).u32(v >>> 0);
+      }
+      return fullBox('ctts', version, flags, w.done());
+    }
+    case 'cslg': {
+      // 显示时间的范围（可选的盒子）：乘 mult；放不下时去掉它（播放器自己能算出来）
+      const vals = Array.from({ length: 5 }, (_, i) => (version === 1 ? i64(moov, o + i * 8) : i32(moov, o + i * 4)) * r.mult);
+      if (vals.some((v) => !Number.isSafeInteger(v))) return new Uint8Array(0);
+      const w = new Writer();
+      for (const v of vals) writeI64(w, v);
+      return fullBox('cslg', 1, flags, w.done());
+    }
+    case 'elst': {
+      // 编辑列表：每段在片子里占多久（片子的时间单位）除以倍速；从媒体的哪里开始（媒体时间单位）乘 mult。一律写成 64 位的版本 1
+      const n = u32(moov, o);
+      const w = new Writer().u32(n);
+      for (let i = 0; i < n; i++) {
+        const at = o + 4 + i * (version === 1 ? 20 : 12);
+        const segment = version === 1 ? u64(moov, at) : u32(moov, at);
+        const mediaTime = version === 1 ? i64(moov, at + 8) : i32(moov, at + 4);
+        const rate = u32(moov, at + (version === 1 ? 16 : 8));
+        w.u64(Math.round(segment / r.speed));
+        writeI64(w, mediaTime < 0 ? -1 : mediaTime * r.mult).u32(rate);
+      }
+      return fullBox('elst', 1, flags, w.done());
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * 画面轨原样照搬：只把分块位置表换成新的（一律写成 64 位的 co64），去掉指向别的轨的引用（tref）。
+ * 给了 retime 时再把时间表按倍速改写（DECISIONS §87）：帧的数据和顺序不动
+ */
+function videoTrak(moov: Uint8Array, t: Mp4Track, chunkOffsets: Float64Array, retime?: VideoRetime): Uint8Array {
   const co64 = new Writer().u32(chunkOffsets.length);
   for (const o of chunkOffsets) co64.u64(o);
   const replaced = fullBox('co64', 0, 0, co64.done());
-  const containers = new Set(['trak', 'mdia', 'minf', 'stbl']);
+  const containers = new Set(['trak', 'mdia', 'minf', 'stbl', ...(retime ? ['edts'] : [])]);
   const rebuild = (b: Box): Uint8Array => {
     const parts: Uint8Array[] = [];
     for (const c of boxes(moov, b.body, b.end)) {
       if (b.type === 'trak' && c.type === 'tref') continue;
       if (b.type === 'stbl' && (c.type === 'stco' || c.type === 'co64')) parts.push(replaced);
       else if (containers.has(c.type)) parts.push(rebuild(c));
-      else parts.push(moov.subarray(c.start, c.end));
+      else parts.push((retime && retimeBox(moov, c, retime)) || moov.subarray(c.start, c.end));
     }
     return box(b.type, ...parts);
   };
@@ -751,13 +881,16 @@ const AUDIO_CHUNK_SEC = 0.5;
  * 排出新文件：ftyp + moov（索引在前，打开就能放）+ mdat（画面的块原样照搬，和新音轨的块按时间交错）。
  * 画面的数据用"原文件的第几个字节到第几个字节"表示，不读进内存
  */
-export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' | 'durationSec'>, audio: EncodedAudio, text?: TextTrackInput): RemuxPlan {
+export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' | 'durationSec'>, audio: EncodedAudio, text?: TextTrackInput, retime?: VideoRetime): RemuxPlan {
   const { movie, video } = src;
   if (!audio.frames.length) throw new Mp4Error('新音轨是空的，没法写文件');
   const timescale = audio.codec === 'opus' ? 48000 : audio.sampleRate;
   const perChunk = Math.max(1, Math.round((AUDIO_CHUNK_SEC * timescale) / audio.frameSamples));
   const lay: AudioLayout = { timescale, perChunk, chunkCount: Math.ceil(audio.frames.length / perChunk) };
-  const movieDuration = Math.round(src.durationSec * movie.timescale);
+  // 画面变速时（DECISIONS §87）新文件短一些（或长一些）：时长、各块的时间都按倍速换算；新音轨和字幕交进来时已经是新文件的时间
+  const speed = retime?.speed ?? 1;
+  const durationSec = src.durationSec / speed;
+  const movieDuration = Math.round(durationSec * movie.timescale);
 
   // 各条轨的块按开始时间排（同一时刻画面在前，其次声音，再是字幕）
   interface Item {
@@ -768,7 +901,7 @@ export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' |
     size: number;
   }
   const items: Item[] = [];
-  video.chunks.forEach((c, i) => items.push({ at: (video.dts[c.firstSample] ?? 0) / video.timescale, kind: 0, index: i, size: c.size }));
+  video.chunks.forEach((c, i) => items.push({ at: (video.dts[c.firstSample] ?? 0) / video.timescale / speed, kind: 0, index: i, size: c.size }));
   const audioChunks: Uint8Array<ArrayBuffer>[] = [];
   for (let c = 0; c < lay.chunkCount; c++) {
     const frames = audio.frames.slice(c * perChunk, (c + 1) * perChunk);
@@ -811,7 +944,7 @@ export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' |
     return box(
       'moov',
       mvhdFor(top.moov, movieDuration, audioId + (textChunks.length ? 2 : 1)),
-      videoTrak(top.moov, video, videoOffsets),
+      videoTrak(top.moov, video, videoOffsets, retime),
       audioTrak(audio, lay, audioId, movie.timescale, movieDuration, audioOffsets),
       ...(text && textChunks.length ? [textTrak(text, audioId + 1, movie.timescale, movieDuration, video, textOffsets)] : []),
       ...(udta ? [top.moov.subarray(udta.start, udta.end)] : []),
@@ -837,7 +970,7 @@ export function buildRemux(top: Mp4Top, src: Pick<Mp4Source, 'movie' | 'video' |
     if (last.kind === 'file' && last.end === c.offset) last.end = c.offset + c.size;
     else parts.push({ kind: 'file', start: c.offset, end: c.offset + c.size });
   }
-  return { parts, size: headSize + dataSize, durationSec: src.durationSec };
+  return { parts, size: headSize + dataSize, durationSec };
 }
 
 /** 把排好的各段拼成字节（测试用；真正导出时由调用方拼成 Blob，画面那几段直接引用原文件） */

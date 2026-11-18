@@ -4,6 +4,9 @@
 // 一段里中文按正常速度放，中文先说完就停下等画面，中文说得慢就在下一个对齐点跳过去。
 // 快速对齐（§82，用户 2026-11-16 要求）：不想一个个加对齐点时，中文整段按"中文时长 ÷ 视频时长"的倍速放，和视频同时开始、同时结束；
 // 开头的偏移和对齐点留着不用，随时切回手动。
+// 加快英文（§87，用户 2026-11-18 要求）：方向相反——中文按原速放，英文原声（连同画面）整段按"视频时长 ÷ 中文时长"的倍速放；
+// 两边的对应关系和快速对齐一模一样（中文位置 = 视频位置 × 中文时长 ÷ 视频时长），只是变速的是英文。
+// 整体变速（§87）：对齐之后两条一起加速 / 减速（视频的倍速再乘上它，中文跟着视频走），对应关系不变。
 // 播放与降音量在 content/dub.ts（YouTube 播放页）；音频文件在扩展自己的 IndexedDB（services/dub-store.ts），由后台分块交给页面里的脚本。
 
 import { DUB } from '../config/defaults';
@@ -58,6 +61,13 @@ export interface DubRecord {
    * 去掉这一项 = 切回手动对齐，偏移和对齐点照旧生效
    */
   quickRate?: number;
+  /**
+   * 加快英文（§87）：有这一项 = 开着，英文原声（YouTube 页面里的视频，连同画面）整段按这个倍速放、中文按原速放，
+   * 对应关系和快速对齐一样（中文位置 = 视频位置 ÷ 这个倍速）；开头的偏移和对齐点同样留着不用。和 quickRate 只会有一个
+   */
+  englishRate?: number;
+  /** 整体倍速（§87）：对齐之后两边一起变快 / 变慢（视频的倍速再乘上它，中文跟着视频走）。不写 = 1 */
+  overallRate?: number;
   /** 配音字幕（§86）：这个配音有字幕时记着它是哪来的、有多少句；字幕本身按视频分键存放（dubSubsStore） */
   subs?: DubSubsMeta;
   addedAt: number;
@@ -103,11 +113,29 @@ export interface DubAnchor {
   dub: number;
 }
 
-/** 跟随用的对齐信息：开头的偏移 + 对齐点；快速对齐开着时只看 quickRate（偏移和对齐点留着不用） */
+/**
+ * 跟随用的对齐信息：开头的偏移 + 对齐点；按倍速对齐时只看 quickRate（偏移和对齐点留着不用）。
+ * quickRate = 中文位置 ÷ 视频位置：快速对齐时是中文的倍速；加快英文时（englishRate 有值）是 1 ÷ 英文的倍速——两种对应关系一样，只是变速的那一边不同
+ */
 export interface DubMap {
   delaySec: number;
   anchors: readonly DubAnchor[];
   quickRate?: number;
+  /** 加快英文（§87）开着时英文的倍速（这时 quickRate = 1 ÷ 它） */
+  englishRate?: number;
+}
+
+/** 按倍速对齐的两种：快速对齐（中文变速）/ 加快英文（英文变速）；manual = 偏移和对齐点 */
+export type DubRateMode = 'manual' | 'quick' | 'english';
+
+/** 两种按倍速对齐的倍速（记录、对齐信息、摊开的结果都有这两项） */
+export interface DubRates {
+  quickRate?: number;
+  englishRate?: number;
+}
+
+export function dubRateMode(m: DubRates): DubRateMode {
+  return m.englishRate !== undefined ? 'english' : m.quickRate !== undefined ? 'quick' : 'manual';
 }
 
 /** 视频 ID → 配音 */
@@ -159,6 +187,11 @@ export function sanitizeDubIndex(v: unknown): DubIndex {
     if (anchors.length) rec.anchors = anchors;
     const quick = sanitizeQuickRate(r.quickRate);
     if (quick !== undefined) rec.quickRate = quick;
+    // 两种按倍速对齐只会开一种（存储被手改出两项时按先有的快速对齐算）
+    const english = quick === undefined ? sanitizeQuickRate(r.englishRate) : undefined;
+    if (english !== undefined) rec.englishRate = english;
+    const overall = sanitizeOverallRate(r.overallRate);
+    if (overall !== undefined) rec.overallRate = overall;
     const subs = sanitizeDubSubsMeta(r.subs);
     if (subs) rec.subs = subs;
     out[key] = rec;
@@ -190,8 +223,12 @@ export function withAnchor(anchors: readonly DubAnchor[], a: DubAnchor): DubAnch
   return [...anchors.filter((x) => Math.abs(x.video - next.video) >= DUB.anchorMergeSec), next].sort((x, y) => x.video - y.video);
 }
 
-export function dubMapOf(rec: Pick<DubRecord, 'delaySec' | 'anchors' | 'quickRate'>): DubMap {
-  return { delaySec: rec.delaySec, anchors: rec.anchors ?? [], ...(rec.quickRate !== undefined ? { quickRate: rec.quickRate } : {}) };
+export function dubMapOf(rec: Pick<DubRecord, 'delaySec' | 'anchors' | 'quickRate' | 'englishRate'>): DubMap {
+  const base = { delaySec: rec.delaySec, anchors: rec.anchors ?? [] };
+  if (rec.quickRate !== undefined) return { ...base, quickRate: rec.quickRate };
+  // 加快英文：对应关系和快速对齐一样（中文位置 = 视频位置 ÷ 英文倍速），跟随、对齐图、"还差多少"都按 quickRate 算
+  if (rec.englishRate !== undefined) return { ...base, quickRate: 1 / rec.englishRate, englishRate: rec.englishRate };
+  return base;
 }
 
 // ── 快速对齐（§82）──
@@ -203,7 +240,7 @@ export function sanitizeQuickRate(x: unknown): number | undefined {
   return r >= DUB.quick.minRate && r <= DUB.quick.maxRate ? r : undefined;
 }
 
-/** 建议的倍速：中文时长 ÷ 视频时长。ok = 在能用的范围里；不能用时 why 说原因 */
+/** 建议的倍速：快速对齐是中文时长 ÷ 视频时长，加快英文是视频时长 ÷ 中文时长。ok = 在能用的范围里；不能用时 why 说原因 */
 export interface QuickAlignSuggestion {
   rate: number;
   dubSec: number;
@@ -228,6 +265,53 @@ export function quickAlignSuggestion(dubSec: number | undefined, videoSec: numbe
   }
   return { ...base, ok: true };
 }
+
+/**
+ * 加快英文（§87）的建议倍速 = 视频时长 ÷ 中文时长（例：1:27:15.3 ÷ 1:19:50.7 = 1.0928）：英文原声整段按它放、中文原速，正好同时结束。
+ * 范围和快速对齐一样（0.5–2）：两者互为倒数，一个能用另一个也能用
+ */
+export function englishAlignSuggestion(dubSec: number | undefined, videoSec: number | undefined): QuickAlignSuggestion | undefined {
+  if (!dubSec || !videoSec || !Number.isFinite(dubSec) || !Number.isFinite(videoSec) || dubSec <= 0 || videoSec <= 0) return undefined;
+  const rate = Number((videoSec / dubSec).toFixed(DUB.quick.decimals));
+  const base = { rate, dubSec, videoSec };
+  if (rate > DUB.quick.maxRate) {
+    return { ...base, ok: false, why: `英文要快到 ${rateText(rate)} 才能和中文同时结束：高于 ${rateText(DUB.quick.maxRate)} 听不清，不提供加快英文，用手动对齐点。` };
+  }
+  if (rate < DUB.quick.minRate) {
+    return { ...base, ok: false, why: `英文要慢到 ${rateText(rate)} 才能和中文同时结束：低于 ${rateText(DUB.quick.minRate)} 声音失真得厉害，不提供，用手动对齐点。` };
+  }
+  return { ...base, ok: true };
+}
+
+/** 加快英文这种对齐叫什么：英文要快放时"加快英文"，中文比原视频还长、英文要慢放时"放慢英文" */
+export const englishModeName = (rate: number): string => (rate < 0.99995 ? '放慢英文' : '加快英文');
+
+// ── 整体变速（§87）──
+
+/** 整体倍速：只认范围内的有限数，按 0.01 取整；1（不变速）和别的一律当作没设 */
+export function sanitizeOverallRate(x: unknown): number | undefined {
+  if (typeof x !== 'number' || !Number.isFinite(x)) return undefined;
+  const r = Number(x.toFixed(2));
+  return r >= DUB.overall.min && r <= DUB.overall.max && r !== 1 ? r : undefined;
+}
+
+/**
+ * 两条音轨各按什么倍速放（不含你在 YouTube 播放器里选的倍速，那个再乘上去）：
+ * 手动对齐两边都是整体倍速；快速对齐中文再乘它的倍速；加快英文英文（连同画面）再乘英文的倍速
+ */
+export function trackRates(m: DubRates, overallRate?: number): { en: number; zh: number } {
+  const s = overallRate ?? 1;
+  const mode = dubRateMode(m);
+  if (mode === 'english') return { en: s * m.englishRate!, zh: s };
+  if (mode === 'quick') return { en: s, zh: s * m.quickRate! };
+  return { en: s, zh: s };
+}
+
+/** 视频（英文原声）的倍速要在你选的倍速上再乘多少：加快英文的倍速 × 整体倍速 */
+export const videoRateFactor = (m: DubRates, overallRate?: number): number => trackRates(m, overallRate).en;
+
+/** 1.25× 这种倍速的写法：去掉多余的 0（1×、1.5×、1.25×） */
+export const speedText = (rate: number): string => `${Number(rate.toFixed(2))}×`;
 
 /** 倍速的写法：0.84×（两位小数，给人看的"约"数） */
 export const rateText = (rate: number): string => `${rate.toFixed(2)}×`;
@@ -550,15 +634,26 @@ export interface DubControlReply {
 /** 控制键的说法：« 30 秒、5 秒 » */
 export const seekLabel = (by: number): string => (by < 0 ? `« ${-by} 秒` : `${by} 秒 »`);
 
-/** 跟随状态的说法（segment：视频此刻所在的那一段；quickRate：快速对齐开着时的倍速） */
-export function dubReasonText(reason: DubReason, segment: Pick<DubSegment, 'offset' | 'nextVideo'>, quickRate?: number): string {
-  if (quickRate !== undefined) {
-    if (reason === 'playing') return `配音播放中：快速对齐，中文按 ${rateText(quickRate)} ${rateWord(quickRate)}跟着视频走`;
+/** 整体倍速（§87）不是 1 时加在状态后面："（整体 1.25×）" */
+const overallSuffix = (overallRate?: number) => (overallRate !== undefined && Math.abs(overallRate - 1) > 1e-9 ? `（整体 ${speedText(overallRate)}）` : '');
+
+/** 跟随状态的说法（segment：视频此刻所在的那一段；rates：按倍速对齐时的倍速与整体倍速） */
+export function dubReasonText(reason: DubReason, segment: Pick<DubSegment, 'offset' | 'nextVideo'>, rates: DubRates & { overallRate?: number } = {}): string {
+  const mode = dubRateMode(rates);
+  const overall = overallSuffix(rates.overallRate);
+  if (mode === 'english') {
+    const k = rates.englishRate!;
+    if (reason === 'playing') return `配音播放中：${englishModeName(k)}，英文原声按 ${rateText(k)} ${rateWord(k)}、中文原速跟着走${overall}`;
+    if (reason === 'after-end') return '中文已经放完了';
+  }
+  if (mode === 'quick') {
+    const q = rates.quickRate!;
+    if (reason === 'playing') return `配音播放中：快速对齐，中文按 ${rateText(q)} ${rateWord(q)}跟着视频走${overall}`;
     if (reason === 'after-end') return '中文已经放完了';
   }
   switch (reason) {
     case 'playing':
-      return '配音播放中，跟着视频走';
+      return `配音播放中，跟着视频走${overall}`;
     case 'paused':
       return '视频暂停，配音跟着暂停';
     case 'seeking':
@@ -656,6 +751,80 @@ export class VolumeDuck {
   }
 }
 
+// ── 视频的倍速（§87）──
+
+/**
+ * 加快英文、整体变速开着时把 <video> 的倍速设成"你的倍速 × 要乘的倍数"，关掉时恢复。和 VolumeDuck 一个做法：
+ * 不经过 YouTube 的倍速设置，直接改 <video> 的 playbackRate，所以要分清"我们改的"和"你（或 YouTube）改的"——后者记成你的新倍速，再按它乘。
+ * YouTube 一再把倍速改回原值时（来回抢），停手并说明，不跟它抢
+ */
+export class VideoRateKeeper {
+  /** 你的倍速（YouTube 播放器里选的，不是我们写进去的那个） */
+  private base: number | undefined;
+  /** 我们最近一次写进去的倍速；没在乘时为空 */
+  private written: number | undefined;
+  private reverts: number[] = [];
+  private blockedFlag = false;
+
+  constructor(private readonly eps: number = DUB.videoRate.eps) {}
+
+  /** 看一眼视频现在的倍速：不是我们写的，就是你（或 YouTube）改的，记成你的新倍速 */
+  sync(rate: number, now: number): void {
+    if (!Number.isFinite(rate) || rate <= 0) return;
+    if (this.written !== undefined) {
+      if (Math.abs(rate - this.written) <= this.eps) return;
+      // 乘着的时候被改回了原值：多半是 YouTube 自己恢复它记着的倍速
+      if (this.base !== undefined && Math.abs(rate - this.base) <= this.eps) {
+        this.reverts = [...this.reverts.filter((t) => now - t < DUB.videoRate.revertWindowMs), now];
+        if (this.reverts.length >= DUB.videoRate.maxReverts) this.blockedFlag = true;
+      }
+      this.written = undefined;
+    }
+    this.base = rate;
+  }
+
+  /**
+   * 此刻要把视频倍速设成多少（undefined = 不动）。factor：要乘的倍数（配音没开、广告时传 1 = 恢复）。
+   * 返回值写进视频后要调 wrote()
+   */
+  target(factor: number): number | undefined {
+    if (this.base === undefined) return undefined;
+    if (Math.abs(factor - 1) > 1e-9 && !this.blockedFlag) {
+      const t = Math.max(DUB.videoRate.min, Math.min(DUB.videoRate.max, this.base * factor));
+      return this.written !== undefined && Math.abs(this.written - t) <= this.eps ? undefined : t;
+    }
+    // 不乘（或被挡住）：之前乘过就恢复
+    return this.written !== undefined ? this.base : undefined;
+  }
+
+  /** 已把倍速设成了 value */
+  wrote(value: number): void {
+    this.written = this.base !== undefined && Math.abs(value - this.base) <= this.eps ? undefined : value;
+  }
+
+  /** 现在是不是乘着 */
+  get boosted(): boolean {
+    return this.written !== undefined;
+  }
+
+  get blocked(): boolean {
+    return this.blockedFlag;
+  }
+
+  /** 你的倍速 */
+  get userRate(): number | undefined {
+    return this.base;
+  }
+
+  /** 换视频、重新开启：重新开始（之前被挡住的也再试一次） */
+  reset(): void {
+    this.base = undefined;
+    this.written = undefined;
+    this.reverts = [];
+    this.blockedFlag = false;
+  }
+}
+
 // ── 说法 ──
 
 /** 1:04:02、3:05、0:42 */
@@ -700,14 +869,19 @@ export function segmentOffsetText(segment: Pick<DubSegment, 'index' | 'offset'>)
  * 两者长度的对比。差得不多时如实说"对齐开头后越往后可能差得越多"，不承诺逐句对齐。
  * 例：中文 1:04:02、原视频 1:03:49 → 中文长 13 秒。
  */
-export function durationNote(dubSec: number | undefined, videoSec: number | undefined, quickRate?: number): string | undefined {
+export function durationNote(dubSec: number | undefined, videoSec: number | undefined, rates: DubRates = {}): string | undefined {
   if (!dubSec || !videoSec) return undefined;
   const diff = Math.round(dubSec - videoSec);
   const both = `中文 ${formatClockSec(dubSec)} · 原视频 ${formatClockSec(videoSec)}`;
   if (Math.abs(diff) < 1) return `${both}：长度一样。`;
   const longer = diff > 0 ? `中文长 ${formatSeconds(diff)}` : `中文短 ${formatSeconds(diff)}`;
-  if (quickRate !== undefined) return `${both}，${longer}。快速对齐开着：中文整段按 ${rateText(quickRate)} ${rateWord(quickRate)}，把这段时长差匀到全片。`;
-  return `${both}，${longer}。两段是分别录的，语速和停顿不一样（中文还可能删掉了一些段落）：对齐开头后越往后差得越多——用下面的"快速对齐"让中文整段变速放满全片，或者在对不上的地方加对齐点，从那里起单独调。`;
+  const mode = dubRateMode(rates);
+  if (mode === 'quick') return `${both}，${longer}。快速对齐开着：中文整段按 ${rateText(rates.quickRate!)} ${rateWord(rates.quickRate!)}，把这段时长差匀到全片。`;
+  if (mode === 'english') {
+    const k = rates.englishRate!;
+    return `${both}，${longer}。${englishModeName(k)}开着：英文原声整段按 ${rateText(k)} ${rateWord(k)}、中文原速，把这段时长差匀到全片。`;
+  }
+  return `${both}，${longer}。两段是分别录的，语速和停顿不一样（中文还可能删掉了一些段落）：对齐开头后越往后差得越多——用下面的"快速对齐"让中文整段变速放满全片（或"${diff < 0 ? '加快' : '放慢'}英文"：中文原速，英文整段变速），或者在对不上的地方加对齐点，从那里起单独调。`;
 }
 
 // ── 配音脚本的状态（交给侧边栏）──
@@ -751,8 +925,17 @@ export interface DubTabState {
   target?: number;
   /** 快速对齐（§82）开着时的倍速 */
   quickRate?: number;
+  /** 加快英文（§87）开着时英文的倍速 */
+  englishRate?: number;
+  /** 整体倍速（§87；1 时不写） */
+  overallRate?: number;
   /** 原声：你的音量、现在的音量、是不是降着、YouTube 是否把它改回去了 */
   volume?: { user: number; now: number; ducked: boolean; blocked: boolean; muted: boolean };
+  /**
+   * 视频（英文原声）的倍速（§87；配音开着时）：你在 YouTube 里选的、现在实际的、要乘上去的（加快英文 × 整体倍速）、
+   * 是不是正乘着、YouTube 是否一再把它改回去（这时停手）、浏览器是不是保持音调
+   */
+  speed?: { user: number; now: number; want: number; boosted: boolean; blocked: boolean; pitch: boolean };
   error?: { message: string; hint?: string };
 }
 

@@ -434,7 +434,7 @@ if (origins.some((o) => /xiaoyuzhoufm\.com|image\.xyzcdn\.net/i.test(o))) fail('
 
 // 中文配音（2026-11-13 新增，DECISIONS §74）：注入 YouTube 的配音脚本只播放你为这个视频选的本地音频（由后台从扩展的 IndexedDB 交来）、
 // 改 <video> 的音量（原声降 20%）；2026-11-18 起（DECISIONS §85）还在你点侧边栏的视频控制键时对 <video> 调 pause() / play()、改 currentTime
-// （不点页面上的按钮、不模拟按键）。不得发任何网络请求、不得往页面插入元素或写 HTML（<audio> 不放进页面）、不得碰 Cookie / 页面存储、
+// （不点页面上的按钮、不模拟按键），加快英文、整体变速开着时改 <video> 的 playbackRate（DECISIONS §87，关闭时恢复）。不得发任何网络请求、不得往页面插入元素或写 HTML（<audio> 不放进页面）、不得碰 Cookie / 页面存储、
 // 不得点击或模拟事件、不得录音录屏或采集视频的声音、不得触发下载、不得直接写扩展存储、不得动态执行代码
 const dubScript = readFileSync(join(outdir, 'content-dub.js'), 'utf8');
 for (const bad of [

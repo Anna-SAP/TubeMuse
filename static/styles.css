@@ -2274,6 +2274,46 @@ a.db-title:hover {
   font-variant-numeric: tabular-nums;
   color: var(--ok);
 }
+/* 加快英文（DECISIONS §87）：没开时排在快速对齐下面，中间一条细线；一种开着时，另一种在下面一行，可以直接换过去 */
+.dub-quick-head.dub-quick-second {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.dub-quick .dub-quick-alt {
+  margin-top: 6px;
+}
+/* 整体变速（DECISIONS §87）：一排倍速按键，当前的高亮 */
+.dub-speed {
+  margin: 6px 0 4px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.dub-speed-row {
+  align-items: center;
+  gap: 6px;
+}
+.dub-speed-value {
+  min-width: 3.2em;
+  text-align: center;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.dub-speed-presets {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.dub-speed-presets .btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+.dub-speed p {
+  margin: 4px 0 0;
+}
 .dub-kept {
   margin-top: 6px;
   font-size: 12px;

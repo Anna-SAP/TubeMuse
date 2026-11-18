@@ -32,6 +32,20 @@ const QUICK = [
   { at: 9.9, hz: 340 },
   { at: 13.9, hz: 360 },
 ];
+/**
+ * 加快英文 1.25 倍（DECISIONS §87）：画面和原声快 1.25 倍，新文件 12.8 秒；中文原速——它的 d 秒落在新文件的 d 秒，
+ * 所以第 k 段仍在 0.5 + 3k 到 2.3 + 3k 秒，音高不变；原声的 200 Hz 也还是 200 Hz（变速不变调）
+ */
+const ENGLISH_RATE = 1.25;
+const ENGLISH = [
+  { at: 1.4, hz: 300 },
+  { at: 4.4, hz: 320 },
+  { at: 7.4, hz: 340 },
+  { at: 10.4, hz: 360 },
+];
+/** 手动对齐 + 整体 0.8 倍（慢放）：新文件 20 秒，MANUAL 里的每个时刻都 ÷ 0.8 */
+const OVERALL_RATE = 0.8;
+const OVERALL = MANUAL.map((x) => ({ at: Number((x.at / OVERALL_RATE).toFixed(3)), hz: x.hz }));
 
 /** @param {import('../harness.mjs').Harness} t */
 export async function dubFull(t) {
@@ -124,7 +138,8 @@ export async function dubFull(t) {
   await patchRec({ videoDurationSec: DUB_FULL_VIDEO.seconds });
 
   /** 合成一次，取回下载的文件，在（仿）YouTube 页面里解出来量：画面、时长、原声、中文各段的位置 */
-  const exportOnce = async (/** @type {{ at: number, hz: number }[]} */ expect, testId = 'dub-full-pick') => {
+  /** speed：画面的倍速（加快英文、整体变速时新文件里的 t 秒是原文件的 t × speed 秒） */
+  const exportOnce = async (/** @type {{ at: number, hz: number }[]} */ expect, testId = 'dub-full-pick', speed = 1) => {
     const wallStart = Date.now();
     const [dl] = await Promise.all([panel.waitForEvent('download', { timeout: 60000 }), pick(SOURCE, testId)]);
     const wallMs = Date.now() - wallStart;
@@ -133,8 +148,9 @@ export async function dubFull(t) {
     const bytes = readFileSync(/** @type {string} */ (await dl.path()));
     const measured = /** @type {any} */ (
       await page.evaluate(
-        async ([outB64, srcB64, expectJson, toneHz]) => {
+        async ([outB64, srcB64, expectJson, toneHz, speedArg]) => {
           const expect = /** @type {{ at: number, hz: number }[]} */ (JSON.parse(/** @type {string} */ (expectJson)));
+          const sp = /** @type {number} */ (speedArg);
           const bytesOf = (/** @type {string} */ b64) => Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
           const out = bytesOf(/** @type {string} */ (outB64));
           // 画面：新文件和原文件各放进一个不放进页面的 <video>，跳到同一时刻，逐像素比
@@ -163,9 +179,10 @@ export async function dubFull(t) {
           const video = { duration: a.duration, width: a.videoWidth, height: a.videoHeight, same: /** @type {boolean[]} */ ([]), differ: /** @type {boolean[]} */ ([]) };
           /** @type {Uint8ClampedArray | undefined} */
           let previous;
-          for (const at of [0.5, 3.1, 8.0, 12.4, 15.8]) {
+          // 画面变速时比的是新文件的 t 秒和原文件的 t × 倍速 秒（都避开两帧交界的时刻）
+          for (const at of sp === 1 ? [0.5, 3.1, 8.0, 12.4, 15.8] : [0.55, 3.1, 7.9, 12.4]) {
             const x = await frame(a, at);
-            const y = await frame(b, at);
+            const y = await frame(b, at * sp);
             video.same.push(x.length === y.length && x.every((p, i) => p === y[i]));
             // 不同时刻的画面确实不一样（不是每次都比到同一张黑图）
             const before = previous;
@@ -205,7 +222,7 @@ export async function dubFull(t) {
             void ac.close();
           }
         },
-        [bytes.toString('base64'), sourceB64, JSON.stringify(expect), DUB_FULL_VIDEO.toneHz],
+        [bytes.toString('base64'), sourceB64, JSON.stringify(expect), DUB_FULL_VIDEO.toneHz, speed],
       )
     );
     return { name, bytes, wallMs, measured, done: (await text('dub-export-done')).replace(/\s+/g, ' ') };
@@ -257,6 +274,50 @@ export async function dubFull(t) {
   check(Math.abs(a2.onset - 0.5 / QUICK_RATE) < 0.04 && Math.abs(a2.tone / DUB_FULL_VIDEO.toneAmp - 0.8) < 0.05, `慢放后第一段音在 ${a2.onset.toFixed(3)} 秒响起（该在 ${(0.5 / QUICK_RATE).toFixed(3)} 秒）；原声仍是 80%（${a2.tone.toFixed(3)}）`);
   check(quick.done.includes('中文 1 段') && quick.measured.video.same.every(Boolean), `一段到底；画面仍和原文件逐像素相同：${quick.done}`);
   await patchRec({ quickRate: null });
+
+  console.log('\n[保存完整双语视频：加快英文（DECISIONS §87）——画面不重新编码、跟着英文快 1.25 倍，原声变速不变调，中文原样不动]');
+  await panel.getByTestId('dub-export').getByRole('button', { name: '收起', exact: true }).click();
+  await patchRec({ englishRate: ENGLISH_RATE });
+  for (let i = 0; i < 30 && !(await text('dub-full-about')).includes('加快英文'); i++) await page.waitForTimeout(100);
+  const engAbout = (await text('dub-full-about')).replace(/\s+/g, ' ');
+  check(
+    engAbout.includes('英文原声按加快英文的 1.25× 快放（音调不变），中文按原速叠上去') && engAbout.includes('不重新编码') && engAbout.includes('整片快到 1.25×'),
+    `说明跟着变：画面不重新编码、按 1.25 倍放，英文快放，中文原速：${engAbout.slice(0, 90)}…`,
+  );
+  const eng = await exportOnce(ENGLISH, 'dub-full-pick', ENGLISH_RATE);
+  const ev = eng.measured.video;
+  const ea = eng.measured.audio;
+  check(Math.abs(ev.duration - 16 / ENGLISH_RATE) < 0.1 && Math.abs(ea.duration - 16 / ENGLISH_RATE) < 0.12, `新文件 ${ev.duration.toFixed(2)} 秒 = 16 ÷ 1.25（声音 ${ea.duration.toFixed(2)} 秒）`);
+  check(
+    ev.same.length === 4 && ev.same.every(Boolean) && ev.differ.every(Boolean),
+    '画面没有重新编码：新文件 0.55 / 3.1 / 7.9 / 12.4 秒的画面和原文件 × 1.25 那一刻的画面逐像素相同',
+  );
+  check(
+    ea.hits.length === ENGLISH.length && ea.hits.every((/** @type {any} */ h) => h.amp > 0.2 && h.others < h.amp / 4) && Math.abs(ea.onset - 0.5) < 0.03,
+    `中文原样不动：第一段音仍在 ${ea.onset.toFixed(3)} 秒响起（该在 0.500），各段按原来的时间、原来的音高：${ea.hits.map((/** @type {any} */ h) => `${h.at}s 是 ${h.hz}Hz（${h.amp.toFixed(2)}）`).join('；')}`,
+  );
+  check(Math.abs(ea.tone / DUB_FULL_VIDEO.toneAmp - 0.8) < 0.06, `原声快放 1.25 倍后仍是 200 Hz（音调不变）、仍按 80%：振幅 ${ea.tone.toFixed(3)}`);
+  check(
+    eng.done.includes('全片 0:13（原视频 0:16 按 1.25× 快放）') && eng.done.includes('画面原样照搬（不重新编码') && eng.done.includes('英文 1.25×、中文 1×，音调不变'),
+    `界面写明新文件多长、怎么变的速：${eng.done}`,
+  );
+
+  console.log('\n[保存完整双语视频：整体变速（DECISIONS §87）——手动对齐 + 整体 0.8 倍，两条声音和画面一起慢放，对齐不变]');
+  await panel.getByTestId('dub-export').getByRole('button', { name: '收起', exact: true }).click();
+  await patchRec({ englishRate: null, overallRate: OVERALL_RATE });
+  for (let i = 0; i < 30 && !(await text('dub-full-about')).includes('整体倍速'); i++) await page.waitForTimeout(100);
+  check((await text('dub-full-about')).replace(/\s+/g, ' ').includes('整体倍速 0.8× 也一起写进去'), '说明写明整体倍速也写进去、要原速先调回 1×');
+  const slow = await exportOnce(OVERALL, 'dub-full-pick', OVERALL_RATE);
+  const sv = slow.measured.video;
+  const sa = slow.measured.audio;
+  check(Math.abs(sv.duration - 20) < 0.1 && sv.same.every(Boolean) && sv.same.length === 4, `整体 0.8 倍：新文件 ${sv.duration.toFixed(2)} 秒，画面逐像素对得上原文件 × 0.8 那一刻`);
+  check(
+    sa.hits.every((/** @type {any} */ h) => h.amp > 0.2 && h.others < h.amp / 4) && Math.abs(sa.onset - 0.5 / OVERALL_RATE) < 0.04 && Math.abs(sa.tone / DUB_FULL_VIDEO.toneAmp - 0.8) < 0.06,
+    `中文各段（含视频 8 秒处的对齐点）都在原来的时刻 ÷ 0.8，音高不变；第一段音在 ${sa.onset.toFixed(3)} 秒（该在 0.625）；原声 200 Hz 仍按 80%（${sa.tone.toFixed(3)}）`,
+  );
+  check(slow.done.includes('全片 0:20（原视频 0:16 按 0.80× 慢放）') && slow.done.includes('英文 0.8×、中文 0.8×'), `界面写明：${slow.done}`);
+  await patchRec({ overallRate: null });
+  for (let i = 0; i < 30 && (await text('dub-full-about')).includes('整体倍速'); i++) await page.waitForTimeout(100);
 
   console.log('\n[保存完整双语视频：不在 YouTube 页面上也能做——"已关联的视频"里直接选]');
   await panel.getByTestId('dub-export').getByRole('button', { name: '收起', exact: true }).click();
