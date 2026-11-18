@@ -194,7 +194,7 @@ export const DEFAULT_SETTINGS = {
   /** 视频片段录制（用户 2026-11-01 批准的红线变更，见 DECISIONS §36）：只在你从侧边栏或快捷键开始后录制 */
   clips: {
     enabled: true,
-    /** 把播放器里当时显示的字幕（TubeMuse 自动字幕或 YouTube 原生字幕）画进片段 */
+    /** 把播放器里当时显示的字幕（TubeMuse 自动字幕、多语字幕、配音字幕或 YouTube 原生字幕）画进片段 */
     burnSubtitles: false,
     /** 停止后直接存进浏览器的下载文件夹；关掉则停止后由你点"保存" */
     autoSave: true,
@@ -258,6 +258,28 @@ export const DEFAULT_SETTINGS = {
     prompt: true,
     /** 保存完整双语视频时带上原声字幕（英文原文），写成视频里一条可以开关的字幕轨（DECISIONS §84） */
     exportSubtitles: true,
+    /**
+     * 配音字幕（用户 2026-11-18 要求，见 DECISIONS §86）：配音开着、这个配音有字幕时，在视频画面底部显示配音此刻说到的那一句
+     * （按配音实际放到的位置，不按视频时间）。样式在侧边栏「配音」页调，对所有视频生效
+     */
+    subtitles: {
+      /** 显示配音字幕（每个配音的字幕要你自己选：字幕文件，或小宇宙里已经生成的那一集） */
+      show: true,
+      /** 字体：见 DUB_SUB_FONTS */
+      font: 'sans' as DubSubFont,
+      /** 字号倍数（基准随播放器高度变，和另两层字幕一样） */
+      scale: 1,
+      /** 文字颜色（#rrggbb） */
+      color: '#ffffff',
+      /** 背景色（#rrggbb）与不透明度（0 = 没有背景，1 = 不透明） */
+      background: '#080808',
+      backgroundOpacity: 0.72,
+      bold: false,
+      /** 文字描边（背景很淡或没有背景时看得清） */
+      outline: true,
+      /** 在默认位置（控制栏上方）之上再抬高多少：占播放器高度的百分比 */
+      raisePct: 0,
+    },
   },
   /** 侧边栏界面偏好 */
   ui: {
@@ -282,6 +304,16 @@ export const UI_ZOOM = {
   /** Ctrl + 滚轮：停了这么久（毫秒）之后，之前没攒够一档的零头作废 */
   wheelIdleMs: 250,
 } as const;
+
+/** 配音字幕可选的字体（代码 → 显示名与 CSS 字体族；都是系统里常见的字体，没有就落到同一类的默认字体，不加载网络字体） */
+export const DUB_SUB_FONTS = {
+  sans: { label: '黑体（默认）', css: '"YouTube Noto", Roboto, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif' },
+  serif: { label: '宋体', css: '"Songti SC", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif' },
+  kai: { label: '楷体', css: '"Kaiti SC", STKaiti, KaiTi, "AR PL UKai CN", "Noto Serif SC", serif' },
+  round: { label: '圆体', css: '"Yuanti SC", YouYuan, "Hiragino Maru Gothic ProN", "Noto Sans SC", "Microsoft YaHei", sans-serif' },
+  mono: { label: '等宽', css: 'ui-monospace, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK SC", "Microsoft YaHei", monospace' },
+} as const;
+export type DubSubFont = keyof typeof DUB_SUB_FONTS;
 
 export type SubtitleAsrEngine = 'browser' | 'openai';
 export type SubtitleTranslationEngine = 'local' | 'llm';
@@ -1014,6 +1046,33 @@ export const DUB = {
    * staleRate：开着的倍速和按现在的时长算出的建议差过这么多（设好之后换过文件），就给出新的建议
    */
   quick: { minRate: 0.5, maxRate: 2, decimals: 6, sameSec: 0.5, staleRate: 0.0005 },
+  /**
+   * 视频控制键（用户 2026-11-18 要求，见 DECISIONS §85）：「配音」页对齐图下面的一排按键，控制 YouTube 页面里的视频。
+   * backSec / forwardSec：后退、前进各有哪几档（秒，用户指定）；maxSeekSec：一次最多跳多远（收到别的数不理）
+   */
+  transport: { backSec: [5, 10, 30, 60], forwardSec: [5, 10, 15, 30, 60], maxSeekSec: 3600 },
+  /**
+   * 配音字幕（用户 2026-11-18 要求，见 DECISIONS §86）。
+   * lang：配音的语言（这个功能就是"中文配音"）——双语字幕文件里只显示这种语言的那几行；
+   * bilingualRatio：至少这么大比例的句子里同时有配音语言的行和别的语言的行，才当成双语文件；
+   * maxCues / maxCueChars：最多存多少句、一句最多多少字（超出的截掉并说明）；
+   * lingerSec：一句结束后再留多久（下一句开始了就换）；
+   * base：字号 = 播放器高度 × ratio，夹在 minPx–maxPx 之间，再乘你设的倍数（和另两层字幕同一个基准）；
+   * scale / raisePct：字号倍数、抬高百分比的范围与步长；lineMaxWidthRatio：一行最多占播放器宽度的多少；
+   * shortsBottomRatio：Shorts 的标题、进度条叠在画面底部，字幕放在它们上面（占高度的比例）
+   */
+  subs: {
+    lang: 'zh',
+    bilingualRatio: 0.5,
+    maxCues: 20_000,
+    maxCueChars: 400,
+    lingerSec: 0.25,
+    base: { ratio: 0.042, minPx: 13, maxPx: 38 },
+    scale: { min: 0.5, max: 3, step: 0.05 },
+    raisePct: { min: 0, max: 80, step: 1 },
+    lineMaxWidthRatio: 0.92,
+    shortsBottomRatio: 0.2,
+  },
 } as const;
 
 /** Anthropic 服务端拒答回退：'default' 在不支持的模型上等于不回退，安全。 */

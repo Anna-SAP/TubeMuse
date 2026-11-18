@@ -15,6 +15,7 @@ import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState,
 import { emptyXyzSaved, sanitizeXyzSaved, type XyzListen, type XyzSaved, type XyzSnapshotRecord, type XyzTranscript } from '../core/xyz';
 import type { Mp3Scan } from '../core/podcast-audio';
 import { sanitizeDubIndex, type DubIndex } from '../core/dub';
+import { dubSubsKey, sanitizeDubSubStyle, sanitizeDubSubsDoc, type DubSubsDoc } from '../core/dub-subs';
 import { normalizeZoom } from '../core/zoom';
 import type {
   Adjustment,
@@ -125,7 +126,7 @@ export function mergeSettings(stored: unknown): Settings {
     email: { ...d.email, ...(s.email as object) },
     muse: { ...d.muse, ...(s.muse as object) },
     xyz: { ...d.xyz, ...(s.xyz as object) },
-    dub: { ...d.dub, ...(s.dub as object) },
+    dub: { ...d.dub, ...(s.dub as object), subtitles: sanitizeDubSubStyle(s.dub?.subtitles) },
     ui: { ...d.ui, ...(s.ui as object), zoom: normalizeZoom(s.ui?.zoom) },
   } as Settings;
 }
@@ -239,6 +240,11 @@ export const stores = {
 /** 一个视频的字幕（按视频时间），回看时直接用、不再花钱。每个视频一个键：写入时不必把所有视频的字幕都重写一遍 */
 export function subtitleTrackStore(videoId: string): Store<SubtitleTrack | null> {
   return new Store<SubtitleTrack | null>(`subtitles:${videoId}`, () => null);
+}
+
+/** 一个配音的字幕（按配音自己的时间；DECISIONS §86）：每个视频一个键，调偏移、加对齐点时不必重写 */
+export function dubSubsStore(videoId: string): Store<DubSubsDoc | null> {
+  return new Store<DubSubsDoc | null>(dubSubsKey(videoId), () => null, (v) => sanitizeDubSubsDoc(v, videoId));
 }
 
 /** 一集小宇宙的字幕（按真实时间）：每集一个键 */

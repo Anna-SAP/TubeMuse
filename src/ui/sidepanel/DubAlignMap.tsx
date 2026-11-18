@@ -7,7 +7,7 @@
 // 只画跟随本来的规则（core/dub-align.ts，和 dubStep 逐点对照过），不做、也不暗示逐句对齐。
 // 「对齐」区顶部的读数（DubGapReadout，DECISIONS §78、§79）和图用同一个播放头（useDubAlignNow），大字写"还差多少秒没对上"。
 
-import type { RefObject } from 'preact';
+import type { ComponentChildren, RefObject } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { DUB } from '../../config/defaults';
 import { cssZoomOf } from '../shared/css-zoom';
@@ -57,6 +57,8 @@ export interface DubAlignMapProps {
   /** 拖下面的中文：拖动中（实时生效）/ 松手（存下） */
   onPreview?: (offset: number) => void;
   onCommit?: (offset: number) => void;
+  /** 图例下面的一行（视频控制键，DECISIONS §85）：对着图调对齐时不用离开这里 */
+  footer?: ComponentChildren;
 }
 
 /** 左边写"英文 / 中文"的那一栏、右边留白（像素） */
@@ -471,6 +473,7 @@ export function DubAlignMap(props: DubAlignMapProps) {
     return (
       <div class="dub-map" data-testid="dub-map">
         <p class="muted small">读到视频的时长后显示对齐图。</p>
+        {props.footer}
       </div>
     );
   }
@@ -544,6 +547,7 @@ export function DubAlignMap(props: DubAlignMapProps) {
           </>
         )}
       </p>
+      {props.footer}
     </div>
   );
 }

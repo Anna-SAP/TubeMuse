@@ -22,7 +22,7 @@ export async function exportAll(ctx: AppContext): Promise<ExportFile> {
     app: 'TubeMuse',
     formatVersion: 1,
     exportedAt: new Date(ctx.now()).toISOString(),
-    note: '本文件包含 TubeMuse 在本机保存的全部数据，但不含 API Key 与 YouTube 授权令牌；中文配音只导出视频与文件的对应关系和偏移（dubs），不含音频文件本身（那是你自己选的本地文件）。',
+    note: '本文件包含 TubeMuse 在本机保存的全部数据，但不含 API Key 与 YouTube 授权令牌；中文配音只导出视频与文件的对应关系和偏移（dubs），不含音频文件本身（那是你自己选的本地文件）；配音字幕的文字（dubSubs:…）在内。',
     data,
   };
 }

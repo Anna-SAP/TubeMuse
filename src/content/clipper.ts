@@ -564,7 +564,7 @@ function fail(message: string, hint?: string): void {
 
 // ── 画面 ──
 
-/** 播放器里当时显示的字幕：YouTube 原生字幕在上，其次 TubeMuse 多语字幕，TubeMuse 自动字幕（原文、译文）在下 */
+/** 播放器里当时显示的字幕：YouTube 原生字幕在上，其次 TubeMuse 的配音字幕、多语字幕，TubeMuse 自动字幕（原文、译文）在下 */
 function readBurnLines(): BurnLine[] {
   const player = playerEl();
   if (!player) return [];
@@ -577,6 +577,12 @@ function readBurnLines(): BurnLine[] {
       if (t) lines.push(t);
     }
     for (const text of lines) out.push({ text, tone: 'source' });
+  }
+  // 配音字幕（DECISIONS §86；同一扩展，shadow root 是 open）：配音此刻说到的那一句，文字颜色与播放器里一致；它叠在另两层上面
+  const dubLine = player.querySelector('[data-tubemuse="dubsubs"]')?.shadowRoot?.querySelector<HTMLElement>('.wrap:not([hidden]) .line');
+  if (dubLine) {
+    const color = dubLine.style.color;
+    for (const text of (dubLine.textContent ?? '').split('\n')) if (text.trim()) out.push({ text: text.trim(), tone: 'source', ...(color ? { color } : {}) });
   }
   // 多语字幕（同一扩展，shadow root 是 open）：一种语言一行，颜色与播放器里一致；它叠在自动字幕层上面
   const cc = player.querySelector('[data-tubemuse="multicc"]')?.shadowRoot?.querySelector<HTMLElement>('.wrap');

@@ -11,6 +11,9 @@
 // 4. 配音开启时原声降到你的音量的 80%（直接改 <video> 的音量，不碰 YouTube 的设置）；配音保持正常音量。
 //    关闭、换视频、离开页面、扩展被重新加载时把原声恢复成你的音量。
 // 5. 片段录制（DECISIONS §76）：配音开着时，把配音的 <audio> 交给同一个隔离环境里的录制脚本，录下的片段是双语混音。
+// 6. 视频控制键（用户 2026-11-18 要求，DECISIONS §85）：侧边栏「配音」页的"暂停 / 前进 / 后退"让这个脚本对 <video> 调 pause() / play()、
+//    改 currentTime（和你自己按空格、方向键一样；不点页面上的按钮、不模拟按键）。广告期间不跳。跳完、停下之后配音照现在的对齐跟上。
+// 7. 配音字幕（DECISIONS §86）：这个脚本不画字幕，只把"配音此刻放到哪了"交给同一个隔离环境里的字幕脚本（content/dub-subtitles.ts）。
 
 import { DEFAULT_SETTINGS, DUB } from '../config/defaults';
 import { base64ToBytes } from '../core/clips';
@@ -22,10 +25,13 @@ import {
   cleanVideoTitle,
   dubMapOf,
   dubReasonText,
+  dubSeekTarget,
   dubSegmentAt,
   dubStep,
+  parseDubControl,
   sanitizeDubIndex,
   withSegmentOffset,
+  type DubControlReply,
   type DubIndex,
   type DubMap,
   type DubMark,
@@ -36,6 +42,7 @@ import {
   type DubTabState,
 } from '../core/dub';
 import { publishDubMix } from '../core/dub-mix';
+import { publishDubPlayback } from '../core/dub-subs';
 import { playerRootId } from '../core/multicc-protocol';
 import { videoIdFromUrl } from '../core/watch';
 
@@ -398,9 +405,11 @@ function tabState(): DubTabState {
     status,
     ...(loading?.size ? { progress: Math.min(1, loading.received / loading.size) } : {}),
     playing: !!audio && !audio.paused && !playPending,
+    ...(phase === 'ready' && reason ? { reason } : {}),
+    ...(phase === 'ready' && autoplayBlocked ? { blocked: true } : {}),
     ...(title ? { title } : {}),
     ...(v && Number.isFinite(v.duration) && v.duration > 0 && !adShowing()
-      ? { videoTime: v.currentTime, videoDuration: v.duration, videoPlaying: !v.paused && !v.seeking && !v.ended, videoRate: v.playbackRate }
+      ? { videoTime: v.currentTime, videoDuration: v.duration, videoPlaying: !v.paused && !v.seeking && !v.ended, videoRate: v.playbackRate, videoPaused: v.paused || v.ended }
       : {}),
     ...(audio ? { dubTime: audio.currentTime, ...(Number.isFinite(audio.duration) ? { dubDuration: audio.duration } : {}) } : {}),
     ...(v && active ? { volume: { user: duck.userVolume ?? v.volume, now: v.volume, ducked: duck.ducked, blocked: duck.blocked, muted: v.muted } } : {}),
@@ -437,6 +446,7 @@ function broadcast(): void {
 /** 扩展被重新加载（这个脚本失效）：停下配音、恢复原声 */
 function shutdown(): void {
   publishDubMix(undefined);
+  publishDubPlayback(undefined);
   if (timer) clearInterval(timer);
   timer = undefined;
   ready = false;
@@ -482,6 +492,11 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   if (msg?.type === DUB_MSG.getState) {
     sendResponse(tabState());
     return false;
+  }
+  // 视频控制键（DECISIONS §85）：暂停 / 继续、前进 / 后退。配音不用另外管：视频的 pause / play / seeking 事件一到，跟随照现在的对齐重新算
+  if (msg?.type === DUB_MSG.control) {
+    void control(raw).then(sendResponse);
+    return true;
   }
   if (msg?.type === DUB_MSG.toggle) {
     const rec = record();
@@ -532,6 +547,48 @@ chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
     return false;
   }
   return false;
+});
+
+/** 视频控制键：对正在看的这个 <video> 暂停 / 继续、前进 / 后退。做不成时说原因，不假装做了 */
+async function control(raw: unknown): Promise<DubControlReply> {
+  const done = (problem?: string): DubControlReply => {
+    tick();
+    return { ok: !problem, ...(problem ? { problem } : {}), state: tabState() };
+  };
+  const c = parseDubControl(raw);
+  const v = videoEl();
+  if (!c) return done('没认出这个按键');
+  if (!v || !videoId) return done('这个页面上没有正在看的视频');
+  if (c.action === 'seek') {
+    // 广告和正片在同一个播放器里：广告期间不跳（不替你跳过广告）
+    if (adShowing()) return done('正在放广告：等广告放完再前进 / 后退');
+    if (!Number.isFinite(v.currentTime) || v.readyState < 1) return done('视频还没载入好');
+    v.currentTime = dubSeekTarget(v.currentTime, c.by, v.duration);
+    return done();
+  }
+  if (!v.paused && !v.ended) {
+    v.pause();
+    return done();
+  }
+  try {
+    await v.play();
+    return done();
+  } catch (e) {
+    return done(
+      (e as { name?: string } | undefined)?.name === 'NotAllowedError'
+        ? '浏览器不让扩展替你开始播放（这个页面还没被点过）：在 YouTube 页面上点一下播放'
+        : `没能开始播放：${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+// 配音字幕（DECISIONS §86）：配音开着、已载入时，把它实际放到的位置和跟随状态交给同一个隔离环境里的字幕脚本。
+// 字幕按这个位置找句子——不是按视频时间：中文会停下等画面、会跳、会变速
+publishDubPlayback(() => {
+  const rec = ready ? record() : undefined;
+  if (!rec || !wantOn.has(rec.videoId) || !loaded?.ready || loaded.fileId !== rec.fileId) return undefined;
+  const a = loaded.audio;
+  return { videoId: rec.videoId, time: a.currentTime, running: !a.paused && !playPending, blocked: autoplayBlocked, ...(reason ? { reason } : {}) };
 });
 
 // 片段录制（DECISIONS §76）：配音开着、已载入时，把这个 <audio> 和原声此刻的倍数交给同一个隔离环境里的录制脚本，

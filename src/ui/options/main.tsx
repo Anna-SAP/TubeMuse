@@ -844,6 +844,15 @@ function App() {
           保存完整双语视频时带上原声字幕（英文原文），写成视频里一条可以开关的字幕轨。字幕按这个顺序找：你选的字幕文件 → 原视频文件里嵌着的字幕 → 开着的 YouTube
           页面上这个视频自带的字幕（取的时候播放器的字幕可能闪一下）；都没有时会问你
         </label>
+        <label class="inline">
+          <input
+            type="checkbox"
+            data-testid="dub-subtitles-setting"
+            checked={settings.dub.subtitles.show}
+            onChange={(e) => updateSection('dub', { subtitles: { ...settings.dub.subtitles, show: e.currentTarget.checked } })}
+          />
+          配音开着时在视频画面底部显示配音的字幕（配音这段音频自己的字幕，要你在侧边栏"配音"页给它选：字幕文件，或小宇宙里已经生成的那一集；按配音实际放到的位置显示。字体、字号、颜色、背景、位置也在那里调）
+        </label>
       </Section>
 
       <Section title="网络出口" id="egress">

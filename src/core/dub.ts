@@ -24,6 +24,11 @@ export const DUB_MSG = {
   mark: 'tubemuse:dub:mark',
   /** 配音脚本 → 后台：工具栏图标上的"中" */
   badge: 'tubemuse:dub:badge',
+  /**
+   * 侧边栏 → 配音脚本：视频控制键（DECISIONS §85）。{ action: 'toggle-play' } 暂停 / 继续播放；
+   * { action: 'seek', by } 前进（正）或后退（负）by 秒。回复 DubControlReply
+   */
+  control: 'tubemuse:dub:control',
 } as const;
 
 /** 配音脚本 → 后台：要这个视频的配音音频（长连接，后台分块回传） */
@@ -53,7 +58,43 @@ export interface DubRecord {
    * 去掉这一项 = 切回手动对齐，偏移和对齐点照旧生效
    */
   quickRate?: number;
+  /** 配音字幕（§86）：这个配音有字幕时记着它是哪来的、有多少句；字幕本身按视频分键存放（dubSubsStore） */
+  subs?: DubSubsMeta;
   addedAt: number;
+}
+
+/** 配音字幕是什么语言：按文字认（中文、日文、韩文、拉丁字母——多半是英文），认不出时 other */
+export type DubSubLang = 'zh' | 'ja' | 'ko' | 'latin' | 'other';
+
+/** 一个配音的字幕的说明（字幕本身另存） */
+export interface DubSubsMeta {
+  /** 字幕文件名，或小宇宙那一集的标题 */
+  name: string;
+  /** 多少句 */
+  count: number;
+  lang: DubSubLang;
+  /** 哪来的：你选的字幕文件，或小宇宙里已经生成的那一集字幕 */
+  source: 'file' | 'xyz';
+  /** 双语字幕里只留了配音语言的那几行 */
+  reduced?: boolean;
+  addedAt: number;
+}
+
+const SUB_LANGS: readonly DubSubLang[] = ['zh', 'ja', 'ko', 'latin', 'other'];
+
+export function sanitizeDubSubsMeta(v: unknown): DubSubsMeta | undefined {
+  const m = v as Partial<DubSubsMeta> | undefined;
+  if (!m || typeof m !== 'object') return undefined;
+  const count = typeof m.count === 'number' && Number.isInteger(m.count) && m.count > 0 ? m.count : 0;
+  if (!count) return undefined;
+  return {
+    name: text(m.name, DUB.fileNameMaxChars) || '字幕',
+    count,
+    lang: SUB_LANGS.includes(m.lang as DubSubLang) ? (m.lang as DubSubLang) : 'other',
+    source: m.source === 'xyz' ? 'xyz' : 'file',
+    ...(m.reduced === true ? { reduced: true } : {}),
+    addedAt: typeof m.addedAt === 'number' && Number.isFinite(m.addedAt) ? m.addedAt : 0,
+  };
 }
 
 /** 对齐点：视频的这一刻对应中文的这一刻（秒） */
@@ -118,6 +159,8 @@ export function sanitizeDubIndex(v: unknown): DubIndex {
     if (anchors.length) rec.anchors = anchors;
     const quick = sanitizeQuickRate(r.quickRate);
     if (quick !== undefined) rec.quickRate = quick;
+    const subs = sanitizeDubSubsMeta(r.subs);
+    if (subs) rec.subs = subs;
     out[key] = rec;
   }
   return out;
@@ -476,6 +519,37 @@ function quickStep(v: DubVideoSample, a: DubAudioSample, map: DubMap, rate: numb
   return step;
 }
 
+// ── 视频控制键（§85）──
+
+/** 侧边栏 → 配音脚本：控制页面里的视频 */
+export type DubControl = { action: 'toggle-play' } | { action: 'seek'; by: number };
+
+/** 认出一条控制消息；跳转只认有限、不为 0、不超过 maxSeekSec 的秒数 */
+export function parseDubControl(x: unknown): DubControl | undefined {
+  const m = x as { action?: unknown; by?: unknown } | undefined;
+  if (m?.action === 'toggle-play') return { action: 'toggle-play' };
+  if (m?.action === 'seek' && typeof m.by === 'number' && Number.isFinite(m.by) && m.by !== 0 && Math.abs(m.by) <= DUB.transport.maxSeekSec) return { action: 'seek', by: m.by };
+  return undefined;
+}
+
+/** 从 currentTime 前进 / 后退 by 秒后落在哪里：不早于开头、不晚于结尾（读不到时长时只挡开头） */
+export function dubSeekTarget(currentTime: number, by: number, duration: number): number {
+  const t = (Number.isFinite(currentTime) ? currentTime : 0) + by;
+  const end = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
+  return Math.max(0, Math.min(end, t));
+}
+
+/** 配音脚本 → 侧边栏：控制键做了什么；没做成时 problem 说原因（界面上照实显示） */
+export interface DubControlReply {
+  ok: boolean;
+  problem?: string;
+  /** 做完之后的状态（位置是新的） */
+  state: DubTabState;
+}
+
+/** 控制键的说法：« 30 秒、5 秒 » */
+export const seekLabel = (by: number): string => (by < 0 ? `« ${-by} 秒` : `${by} 秒 »`);
+
 /** 跟随状态的说法（segment：视频此刻所在的那一段；quickRate：快速对齐开着时的倍速） */
 export function dubReasonText(reason: DubReason, segment: Pick<DubSegment, 'offset' | 'nextVideo'>, quickRate?: number): string {
   if (quickRate !== undefined) {
@@ -655,6 +729,9 @@ export interface DubTabState {
   progress?: number;
   /** 配音此刻在不在出声 */
   playing: boolean;
+  /** 跟随状态（配音已载入、检查过之后才有）与"浏览器拦下了配音出声"：侧边栏据此说配音字幕此刻显示不显示（DECISIONS §86） */
+  reason?: DubReason;
+  blocked?: boolean;
   /** 页面标题（关联时记下，列表里显示） */
   title?: string;
   videoTime?: number;
@@ -662,6 +739,8 @@ export interface DubTabState {
   /** 视频在不在放（不是暂停、跳转、放完、广告）与倍速：侧边栏的对齐图在两次读位置之间据此把播放头往前推（DECISIONS §77） */
   videoPlaying?: boolean;
   videoRate?: number;
+  /** 视频是不是停着（暂停或放完；跳转、缓冲途中不算停）：视频控制键上写"暂停"还是"播放"（DECISIONS §85） */
+  videoPaused?: boolean;
   dubTime?: number;
   dubDuration?: number;
   /** 视频此刻所在那一段的偏移（拖动"中文位置"时是实时值） */

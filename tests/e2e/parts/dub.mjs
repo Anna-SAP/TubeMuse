@@ -251,6 +251,8 @@ export async function dub(t) {
   check((await mapText('dub-map-now-gap')) === '+10.0 秒', '附近图上播放头旁写着这一段差多少');
   // 指着上面英文的 1:05（中文停下等画面的那 10 秒里）
   const detail = panel.getByTestId('dub-map-detail');
+  // 对齐图上面还有别的内容（配音字幕、保存完整双语视频）：先滚到屏幕中间（不被头部挡住），鼠标才指得到
+  await detail.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   const box = /** @type {{ x: number, y: number, width: number, height: number }} */ (await detail.boundingBox());
   const pxPerSec = (box.width - 36) / 120;
   const centerX = box.x + 30 + (box.width - 36) / 2;
@@ -301,6 +303,8 @@ export async function dub(t) {
       return { svg: svg.getBoundingClientRect().width, map: map.getBoundingClientRect().width, overflowX: document.documentElement.scrollWidth - innerWidth };
     });
     check(Math.abs(fit.svg - fit.map) < 2 * zf && fit.overflowX <= 0, `放大到 125%：对齐图跟着变大，仍然正好占满这一栏（图 ${fit.svg.toFixed(0)}px，栏 ${fit.map.toFixed(0)}px），没有横向滚动条`);
+    // 对齐图上面还有别的内容（配音字幕、保存完整双语视频）：先滚到屏幕中间（不被头部挡住），鼠标才指得到
+    await detail.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     const zbox = /** @type {{ x: number, y: number, width: number, height: number }} */ (await detail.boundingBox());
     const plot = zbox.width / zf - 36;
     const zPxPerSec = (plot / 120) * zf;
@@ -488,6 +492,8 @@ export async function dub(t) {
     // 先把图滚到视口中间：鼠标要指到图的下半条
     await detail.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     await page.waitForTimeout(200);
+    // 对齐图上面还有别的内容（配音字幕、保存完整双语视频）：先滚到屏幕中间（不被头部挡住），鼠标才指得到
+    await detail.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     const qbox = /** @type {{ x: number, y: number, width: number, height: number }} */ (await detail.boundingBox());
     const qpx = (qbox.width - 36) / 120;
     const qcx = qbox.x + 30 + (qbox.width - 36) / 2;
@@ -589,6 +595,472 @@ export async function dub(t) {
   check(Math.abs((await vol()) - 0.4) < 0.005, '广告结束：配音继续、原声再降');
   await panel.screenshot({ path: join(shots, '70-dub-panel.png'), fullPage: true });
 
+  console.log('\n[中文配音：视频控制键（DECISIONS §85）——对齐图的图例下面一排：暂停 / 播放，后退 5/10/30/60 秒，前进 5/10/15/30/60 秒；跳完、停下之后配音照现在的对齐跟上]');
+  const vt = () => page.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime);
+  const vPaused = () => page.evaluate(() => /** @type {HTMLVideoElement} */ (document.querySelector('video')).paused);
+  const seekBtn = (/** @type {number} */ by) => panel.locator(`[data-testid="dub-seek"][data-by="${by}"]`);
+  const playBtn = panel.getByTestId('dub-play');
+  await panel.getByTestId('dub-transport').waitFor({ timeout: 5000 });
+  const place = await panel.evaluate(() => {
+    const q = (/** @type {string} */ id) => document.querySelector(`[data-testid="${id}"]`);
+    const bar = /** @type {HTMLElement} */ (q('dub-transport'));
+    const after = (/** @type {Element | null} */ a, /** @type {Element | null} */ b) => !!a && !!b && !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    return {
+      inMap: !!bar.closest('[data-testid="dub-map"]'),
+      afterLegend: after(q('dub-map-hover'), bar),
+      afterNearby: after(q('dub-map-detail'), bar),
+      beforeManual: after(bar, q('dub-delay-value')),
+      keys: [...bar.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim()),
+      bys: [...bar.querySelectorAll('[data-testid="dub-seek"]')].map((b) => Number(b.getAttribute('data-by'))),
+    };
+  });
+  check(place.inMap && place.afterLegend && place.afterNearby && place.beforeManual, `控制键在「附近」时间轴和图例的下面、手动对齐那几行的上面：${JSON.stringify({ ...place, keys: undefined, bys: undefined })}`);
+  check(
+    JSON.stringify(place.bys) === JSON.stringify([-60, -30, -10, -5, 5, 10, 15, 30, 60]) && place.keys.join('|') === '« 60 秒|« 30 秒|« 10 秒|« 5 秒|暂停|5 秒 »|10 秒 »|15 秒 »|30 秒 »|60 秒 »',
+    `后退 60 / 30 / 10 / 5 秒，暂停，前进 5 / 10 / 15 / 30 / 60 秒：${place.keys.join(' ')}`,
+  );
+  // 暂停：视频停下，配音跟着停；按键变成"播放"
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 20;
+    void v.play();
+  });
+  await waitState((x) => x.playing && x.videoTime > 20.3 && x.videoTime < 30, '控制键之前：放着');
+  await playBtn.click();
+  s = await waitState((x) => !x.playing && x.videoPlaying === false && x.status.includes('视频暂停'), '点"暂停"后停下');
+  check((await vPaused()) && Math.abs(s.dubTime - s.videoTime) < 0.4, `点"暂停"：视频停在 ${s.videoTime.toFixed(2)} 秒，配音跟着停在 ${s.dubTime.toFixed(2)} 秒`);
+  for (let i = 0; i < 30 && ((await playBtn.textContent()) ?? '').trim() !== '播放'; i++) await page.waitForTimeout(100);
+  check(((await playBtn.textContent()) ?? '').trim() === '播放', '视频停着时这个键写"播放"');
+  // 停着的时候前进 30 秒：视频跳过去、仍然停着，配音的位置也对好（一放就是对的）
+  let before = await vt();
+  await seekBtn(30).click();
+  s = await waitState((x) => Math.abs(x.videoTime - (before + 30)) < 0.3 && Math.abs(x.dubTime - x.videoTime) < 0.4 && !x.playing, '停着时前进 30 秒');
+  check(await vPaused(), `停着时点"30 秒 »"：视频 ${before.toFixed(2)} → ${s.videoTime.toFixed(2)} 秒，仍然停着；配音也到了 ${s.dubTime.toFixed(2)} 秒`);
+  for (let i = 0; i < 30 && !((await panel.getByTestId('dub-transport-at').textContent()) ?? '').startsWith('0:5'); i++) await page.waitForTimeout(100);
+  check(((await panel.getByTestId('dub-transport-at').textContent()) ?? '').replace(/\s+/g, ' ').trim() === `0:${Math.round(s.videoTime)} / 2:00`, `按键旁边写着视频位置：${((await panel.getByTestId('dub-transport-at').textContent()) ?? '').trim()}`);
+  // 播放：接着放，配音跟上
+  await playBtn.click();
+  s = await waitState((x) => x.playing && x.videoPlaying === true, '点"播放"后放起来');
+  check(!(await vPaused()), '点"播放"：视频接着放，配音跟着放');
+  // 放着的时候后退 10 秒
+  before = await vt();
+  await seekBtn(-10).click();
+  s = await waitState((x) => x.playing && x.videoTime < before - 8 && x.videoTime > before - 10.5, '放着时后退 10 秒');
+  await page.waitForTimeout(700);
+  s = await dubState();
+  check(Math.abs(s.dubTime - s.videoTime) < 0.4 && s.playing, `放着时点"« 10 秒"：视频退到 ${s.videoTime.toFixed(2)} 秒接着放，配音跟过去（中文 ${s.dubTime.toFixed(2)}）`);
+  // 每一档都按一遍：跳的秒数和按键上写的一样
+  await playBtn.click();
+  await waitState((x) => x.videoPlaying === false, '停下来逐档按');
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 40));
+  await waitState((x) => Math.abs(x.videoTime - 40) < 0.2, '停在 0:40');
+  /** @type {string[]} */
+  const wrong = [];
+  for (const by of [5, 10, 15, 30, -5, -10, -30, 60, -60]) {
+    const from = await vt();
+    await seekBtn(by).click();
+    for (let i = 0; i < 30 && Math.abs((await vt()) - (from + by)) > 0.05; i++) await page.waitForTimeout(50);
+    if (Math.abs((await vt()) - (from + by)) > 0.05) wrong.push(`${by}: ${from} → ${await vt()}`);
+  }
+  check(wrong.length === 0 && Math.abs((await vt()) - 55) < 0.1, `九档各按一遍，跳的秒数和按键上写的一样（0:40 → +5 +10 +15 +30 −5 −10 −30 +60 −60 → ${(await vt()).toFixed(1)} 秒）${wrong.join('；')}`);
+  // 不早于开头、不晚于结尾
+  await seekBtn(60).click();
+  await seekBtn(60).click();
+  for (let i = 0; i < 30 && (await vt()) < 119.9; i++) await page.waitForTimeout(50);
+  const atEnd = await vt();
+  await seekBtn(-60).click();
+  await seekBtn(-60).click();
+  await seekBtn(-60).click();
+  for (let i = 0; i < 30 && (await vt()) > 0.05; i++) await page.waitForTimeout(50);
+  check(Math.abs(atEnd - DUB_VIDEO.seconds) < 0.1 && (await vt()) === 0, `跳过头时停在结尾（${atEnd.toFixed(1)} 秒）；退过头时停在开头（${await vt()} 秒）`);
+  // 有偏移时：跳完之后配音在"视频位置 − 偏移"
+  await panel.getByTestId('dub-delay-input').fill('2');
+  await panel.getByTestId('dub-delay-input').blur();
+  await waitStored((x) => x.delaySec === 2, '偏移 +2');
+  await seekBtn(30).click();
+  await seekBtn(15).click();
+  await playBtn.click();
+  s = await waitState((x) => x.playing && x.videoTime > 45.3 && Math.abs(x.videoTime - 2 - x.dubTime) < 0.4, '有偏移时跳完接着放');
+  check(s.delaySec === 2, `偏移 +2 秒时前进 45 秒再播放：配音在"视频 − 2"（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}）`);
+  // 快速对齐开着时：跳完之后配音在"视频位置 × 倍速"
+  await panel.getByTestId('dub-quick-apply').click();
+  await waitStored((x) => x.quickRate === quickWant, '控制键：开快速对齐');
+  await waitState((x) => x.quickRate === quickWant && x.playing, '快速对齐放着');
+  before = await vt();
+  await seekBtn(30).click();
+  s = await waitState((x) => x.playing && x.videoTime > before + 29 && Math.abs(x.videoTime * quickWant - x.dubTime) < 0.4, '快速对齐时前进 30 秒');
+  check(Math.abs(s.dubTime - s.videoTime) > 5, `快速对齐（${quickLabel}）开着时点"30 秒 »"：配音跟到"视频 × 倍速"（视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}），不是视频时间`);
+  await seekBtn(-60).click();
+  s = await waitState((x) => x.playing && x.videoTime < before - 20 && Math.abs(x.videoTime * quickWant - x.dubTime) < 0.4, '快速对齐时后退 60 秒');
+  check(true, `再点"« 60 秒"：视频 ${s.videoTime.toFixed(2)} · 中文 ${s.dubTime.toFixed(2)}，仍按倍速对着`);
+  await panel.getByTestId('dub-quick-off').click();
+  await waitStored((x) => x.quickRate === undefined, '控制键：切回手动对齐');
+  await panel.getByTestId('dub-delay-input').fill('0');
+  await panel.getByTestId('dub-delay-input').blur();
+  await waitStored((x) => x.delaySec === 0, '偏移归零');
+  await waitState((x) => x.quickRate === undefined && x.delaySec === 0 && x.playing, '回到不偏移');
+  // 广告期间不跳（不替你跳过广告）：按键停用；就算消息发到了，页面里的脚本也不跳，并说明原因
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.add('ad-showing'));
+  await waitState((x) => x.status.includes('广告'), '广告');
+  for (let i = 0; i < 30 && !(await seekBtn(30).isDisabled()); i++) await page.waitForTimeout(100);
+  before = await vt();
+  const adReply = /** @type {any} */ (await panel.evaluate((id) => /** @type {any} */ (globalThis).chrome.tabs.sendMessage(id, { type: 'tubemuse:dub:control', action: 'seek', by: 30 }), await tabOf()));
+  check((await seekBtn(30).isDisabled()) && adReply.ok === false && adReply.problem.includes('广告') && (await vt()) - before < 2, `广告期间前进 / 后退的键停用；直接发消息也不跳，并说明：${adReply.problem}`);
+  const badReply = /** @type {any} */ (await panel.evaluate((id) => /** @type {any} */ (globalThis).chrome.tabs.sendMessage(id, { type: 'tubemuse:dub:control', action: 'seek', by: 1e9 }), await tabOf()));
+  check(badReply.ok === false, `不像样的跳转（一次跳 10 亿秒）不理：${badReply.problem}`);
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ad-showing'));
+  await waitState((x) => x.playing, '广告结束');
+  check((await page.locator('audio').count()) === 0 && (await page.evaluate(() => document.querySelectorAll('[data-tubemuse]').length)) === 0, '控制键没有往页面里插任何元素');
+  await panel.getByTestId('dub-transport').scrollIntoViewIfNeeded();
+  await panel.screenshot({ path: join(shots, '71-dub-transport.png'), fullPage: true });
+
+  console.log('\n[中文配音：配音字幕（DECISIONS §86）——给配音选字幕，画面底部显示配音此刻说到的那一句（按配音放到的位置，不按视频时间）；调样式]');
+  // 仿真播放页的播放器没有尺寸：按真实播放器的样子给它一个（字幕层按播放器的大小排）
+  await page.addStyleTag({ content: '#movie_player{position:relative;width:640px;height:360px;background:#123}' });
+  /** 画面上的配音字幕层 */
+  const overlay = () =>
+    page.evaluate(() => {
+      const host = document.querySelector('#movie_player [data-tubemuse="dubsubs"]');
+      const wrap = /** @type {HTMLElement | null | undefined} */ (host?.shadowRoot?.querySelector('.wrap'));
+      const line = /** @type {HTMLElement | null | undefined} */ (host?.shadowRoot?.querySelector('.line'));
+      if (!host || !wrap || !line) return undefined;
+      const cs = getComputedStyle(line);
+      const player = /** @type {HTMLElement} */ (document.getElementById('movie_player')).getBoundingClientRect();
+      const box = line.getBoundingClientRect();
+      return {
+        hidden: wrap.hidden,
+        text: wrap.hidden ? '' : (line.textContent ?? ''),
+        font: cs.fontFamily,
+        size: parseFloat(cs.fontSize),
+        color: cs.color,
+        bg: cs.backgroundColor,
+        weight: cs.fontWeight,
+        shadow: cs.textShadow,
+        /** 字幕底边离播放器底边多远 */
+        fromBottom: Math.round(player.bottom - box.bottom),
+        centered: Math.abs((box.left + box.right) / 2 - (player.left + player.right) / 2) < 2,
+        pointer: getComputedStyle(host).pointerEvents,
+      };
+    });
+  /** @returns {Promise<any>} */
+  const waitOverlay = async (/** @type {(o: any) => boolean} */ ok, /** @type {string} */ what) => {
+    let o;
+    for (let i = 0; i < 60; i++) {
+      o = await overlay();
+      if (ok(o)) return o;
+      await page.waitForTimeout(100);
+    }
+    throw new Error(`等不到配音字幕层：${what}（最后：${JSON.stringify(o)}）`);
+  };
+  const subsBox = panel.getByTestId('dub-subs');
+  await subsBox.waitFor({ timeout: 5000 });
+  check(
+    (await panel.getByTestId('dub-subs-show').isChecked()) && ((await panel.getByTestId('dub-subs-now').textContent()) ?? '').includes('还没有字幕') && (await overlay()) === undefined,
+    '「配音」页有"配音字幕"一节，默认勾着"显示"；这个配音还没有字幕时说明、画面上什么都不加',
+  );
+  // 字幕文件：每 4 秒一句，中英双语（每句两行）。配音是中文配音：只显示中文那一行
+  const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
+  const srtAt = (/** @type {number} */ sec) => `00:${pad(Math.floor(sec / 60))}:${pad(sec % 60)},000`;
+  const srt = Array.from({ length: 23 }, (_, i) => `${i + 1}\n${srtAt(i * 4)} --> ${srtAt(i * 4 + 4)}\n第 ${i} 句中文配音\nEnglish line number ${i}\n`).join('\n');
+  await panel.getByTestId('dub-subs-file').setInputFiles({ name: 'not-subs.srt', mimeType: 'application/x-subrip', buffer: Buffer.from('{"not": "subtitles"}') });
+  await panel.getByTestId('dub-subs-problem').waitFor({ timeout: 5000 });
+  check(((await panel.getByTestId('dub-subs-problem').textContent()) ?? '').includes('not-subs.srt」用不了') && (await storedRec()).subs === undefined, `不是字幕的文件：说明原因，不存（${((await panel.getByTestId('dub-subs-problem').textContent()) ?? '').trim().slice(0, 50)}…）`);
+  await panel.getByTestId('dub-subs-file').setInputFiles({ name: '配音.zh-en.srt', mimeType: 'application/x-subrip', buffer: Buffer.from(srt, 'utf8') });
+  r = await waitStored((x) => x.subs?.count === 23, '存下字幕');
+  const subsDoc = /** @type {any} */ (await panel.evaluate((k) => /** @type {any} */ (globalThis).chrome.storage.local.get(k).then((/** @type {any} */ x) => x[k]), `dubSubs:${DUB_VIDEO.id}`));
+  check(
+    r.subs.lang === 'zh' && r.subs.reduced === true && r.subs.source === 'file' && r.subs.name === '配音.zh-en.srt' && subsDoc.cues.length === 23 && subsDoc.cues[5].text === '第 5 句中文配音' && subsDoc.cues[5].start === 20,
+    `选中英双语的字幕文件：只留中文那几行（字幕的语言跟配音走），字幕按视频单独存一个键：${JSON.stringify(r.subs)}`,
+  );
+  check(((await panel.getByTestId('dub-subs-note').textContent()) ?? '').includes('23 句，中文') && ((await panel.getByTestId('dub-subs-note').textContent()) ?? '').includes('只显示中文那几行'), `存好后说明：${((await panel.getByTestId('dub-subs-note').textContent()) ?? '').trim()}`);
+  // 画面上：配音此刻说到的那一句。先不偏移（中文位置 = 视频位置）
+  const cueOf = (/** @type {number} */ t) => `第 ${Math.floor(t / 4)} 句中文配音`;
+  /** 读一次字幕层和配音状态；离句子交界不到 0.4 秒时前后两句都算对 */
+  const shownMatchesDub = async () => {
+    const [o, st] = [/** @type {any} */ (await overlay()), await dubState()];
+    const ok = !!o && !o.hidden && [cueOf(st.dubTime - 0.4), cueOf(st.dubTime), cueOf(st.dubTime + 0.4)].includes(o.text);
+    return { ok, o, st };
+  };
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 21;
+    void v.play();
+  });
+  await waitState((x) => x.playing && x.videoTime > 21.3 && x.videoTime < 23, '字幕：从 0:21 放');
+  let ov = await waitOverlay((o) => !!o && !o.hidden && o.text === '第 5 句中文配音', '显示第 5 句');
+  check(ov.centered && ov.pointer === 'none' && ov.fromBottom === 60, `配音放到 0:21：画面底部居中显示"${ov.text}"（控制栏上方：离底边 ${ov.fromBottom} 像素），只显示中文那一行，不挡点击`);
+  check(
+    (await page.evaluate(() => document.querySelectorAll('[data-tubemuse]').length)) === 1 && (await page.evaluate(() => /** @type {HTMLElement} */ (document.querySelector('[data-tubemuse="dubsubs"]')).parentElement?.id)) === 'movie_player',
+    '字幕层是播放器里的一层（Shadow DOM），别的什么都没加',
+  );
+  const nowText = async () => ((await panel.getByTestId('dub-subs-now').textContent()) ?? '').trim();
+  for (let i = 0; i < 30 && !(await nowText()).includes('句中文配音'); i++) await page.waitForTimeout(100);
+  check((await nowText()).startsWith('此刻（中文 0:2') && /第 [56] 句中文配音/.test(await nowText()), `侧边栏也写着此刻这一句：${await nowText()}`);
+  // 字幕跟配音走，不是跟视频走：偏移 +10 秒（中文推后），视频 0:50 时配音在 0:40 → 显示的是第 10 句，不是第 12 句
+  await panel.getByTestId('dub-delay-input').fill('10');
+  await panel.getByTestId('dub-delay-input').blur();
+  await waitStored((x) => x.delaySec === 10, '字幕：偏移 +10');
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 50.5));
+  await waitState((x) => x.playing && x.videoTime > 50.8 && Math.abs(x.videoTime - 10 - x.dubTime) < 0.4, '偏移 +10 后从 0:50 放');
+  ov = await waitOverlay((o) => !!o && o.text === '第 10 句中文配音', '偏移后显示第 10 句');
+  s = await dubState();
+  check(cueOf(s.videoTime) === '第 12 句中文配音', `偏移 +10 秒：视频在 ${s.videoTime.toFixed(1)} 秒（按视频时间会是第 12 句），配音在 ${s.dubTime.toFixed(1)} 秒，画面上是"${ov.text}"——字幕跟配音走`);
+  // 中文还没开始时不显示（按偏移，视频 0:10 之前配音没在放）
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 3));
+  await waitState((x) => x.reason === 'before-start', '中文还没开始');
+  ov = await waitOverlay((o) => !!o && o.hidden, '中文没开始时隐藏');
+  for (let i = 0; i < 30 && !(await nowText()).includes('不显示'); i++) await page.waitForTimeout(100);
+  check(ov.text === '' && (await nowText()).includes('此刻不显示：中文还没开始'), `中文还没开始（视频 0:03，偏移 +10）：画面上不显示字幕；侧边栏说明：${await nowText()}`);
+  // 视频暂停：字幕停在配音停下的那一句
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 37));
+  await waitOverlay((o) => !!o && o.text === '第 6 句中文配音', '0:37 − 10 → 第 6 句');
+  await playBtn.click();
+  s = await waitState((x) => x.reason === 'paused', '字幕：暂停');
+  await page.waitForTimeout(600);
+  let m = await shownMatchesDub();
+  const pausedAt = m.st.dubTime;
+  const pausedText = m.o?.text;
+  await page.waitForTimeout(600);
+  check(m.ok && (await overlay())?.text === pausedText && Math.abs((await dubState()).dubTime - pausedAt) < 0.05, `视频暂停：字幕留在配音停下的那一句不动（中文 ${pausedAt.toFixed(1)} 秒，"${pausedText}"）`);
+  // 用控制键跳：停着时前进 15 秒，字幕换到配音新位置的那一句
+  await seekBtn(15).click();
+  ov = await waitOverlay((o) => !!o && o.text === cueOf(pausedAt + 15), '停着时前进 15 秒 → 配音新位置的那一句');
+  check(ov.text !== pausedText, `停着时点"15 秒 »"：字幕从"${pausedText}"换成"${ov.text}"（配音 ${pausedAt.toFixed(1)} → ${(pausedAt + 15).toFixed(1)} 秒）`);
+  await playBtn.click();
+  await waitState((x) => x.playing, '字幕：接着放');
+  // 快速对齐开着时：配音在"视频 × 倍速"，字幕按那里
+  await panel.getByTestId('dub-quick-apply').click();
+  await waitStored((x) => x.quickRate === quickWant, '字幕：开快速对齐');
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 90.5));
+  s = await waitState((x) => x.playing && x.videoTime > 91 && Math.abs(x.videoTime * quickWant - x.dubTime) < 0.4, '快速对齐从 1:30 放');
+  await page.waitForTimeout(300);
+  m = await shownMatchesDub();
+  check(m.ok && cueOf(m.st.videoTime) !== m.o.text, `快速对齐（${quickLabel}）：视频 ${m.st.videoTime.toFixed(1)} 秒时配音在 ${m.st.dubTime.toFixed(1)} 秒，画面上是"${m.o?.text}"（按视频时间会是"${cueOf(m.st.videoTime)}"）`);
+  await panel.getByTestId('dub-quick-off').click();
+  await waitStored((x) => x.quickRate === undefined, '字幕：切回手动');
+  await panel.getByTestId('dub-delay-input').fill('0');
+  await panel.getByTestId('dub-delay-input').blur();
+  await waitStored((x) => x.delaySec === 0, '字幕：偏移归零');
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 20.5));
+  await waitOverlay((o) => !!o && o.text === '第 5 句中文配音', '回到 0:20');
+  // 广告期间不显示
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.add('ad-showing'));
+  ov = await waitOverlay((o) => !!o && o.hidden, '广告时隐藏');
+  await page.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('movie_player')).classList.remove('ad-showing'));
+  await waitOverlay((o) => !!o && !o.hidden, '广告结束后又显示');
+  check(ov.hidden, '广告期间不显示配音字幕，广告结束接着显示');
+
+  // 样式：字体、字号、文字颜色、背景色与不透明度、粗体、描边、抬高
+  const base = await waitOverlay((o) => !!o && !o.hidden, '默认样式');
+  check(
+    Math.abs(base.size - 15.1) < 0.2 && base.color === 'rgb(255, 255, 255)' && base.bg === 'rgba(8, 8, 8, 0.72)' && base.weight === '500' && base.shadow !== 'none' && /Noto Sans SC|YouTube Noto/.test(base.font),
+    `默认样式：白字、深色半透明底、黑体、带描边，字号按播放器高度（360 像素 → ${base.size} 像素）`,
+  );
+  await panel.getByTestId('dub-subs-style').locator('summary').click();
+  const setRange = async (/** @type {string} */ id, /** @type {number} */ v) =>
+    panel.getByTestId(id).evaluate((el, value) => {
+      const i = /** @type {HTMLInputElement} */ (el);
+      i.value = String(value);
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    }, v);
+  const setColor = async (/** @type {string} */ id, /** @type {string} */ v) =>
+    panel.getByTestId(id).evaluate((el, value) => {
+      const i = /** @type {HTMLInputElement} */ (el);
+      i.value = value;
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+    }, v);
+  await panel.getByTestId('dub-subs-font').selectOption('kai');
+  await setRange('dub-subs-scale', 1.5);
+  await setColor('dub-subs-color', '#ffee00');
+  await setColor('dub-subs-bg', '#000080');
+  await setRange('dub-subs-bg-opacity', 0.5);
+  await setRange('dub-subs-raise', 20);
+  await panel.getByTestId('dub-subs-bold').check();
+  await panel.getByTestId('dub-subs-outline').uncheck();
+  const styled = await waitOverlay(
+    (o) => !!o && !o.hidden && o.color === 'rgb(255, 238, 0)' && o.bg === 'rgba(0, 0, 128, 0.5)' && o.weight === '700' && o.shadow === 'none' && /Kaiti|KaiTi/.test(o.font) && Math.abs(o.size - base.size * 1.5) < 0.3,
+    '改样式后页面上立刻变',
+  );
+  check(
+    Math.abs(styled.fromBottom - base.fromBottom - 72) <= 2,
+    `改样式，页面上立刻变：楷体、字号 150%（${styled.size} 像素）、黄字（${styled.color}）、深蓝半透明底（${styled.bg}）、粗体、不描边、抬高 20%（离底边 ${base.fromBottom} → ${styled.fromBottom} 像素）`,
+  );
+  const preview = await panel.getByTestId('dub-subs-preview').locator('span').evaluate((el) => {
+    const cs = getComputedStyle(el);
+    return { color: cs.color, bg: cs.backgroundColor, weight: cs.fontWeight, font: cs.fontFamily, text: el.textContent };
+  });
+  check(preview.color === styled.color && preview.bg === styled.bg && preview.weight === '700' && /Kaiti|KaiTi/.test(preview.font) && /句中文配音/.test(preview.text ?? ''), `侧边栏的预览和页面上同一套样式：${JSON.stringify(preview)}`);
+  const savedStyle = /** @type {any} */ (await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('settings'))).settings.dub.subtitles;
+  check(
+    // 存储不保证键的顺序：排好再比
+    JSON.stringify(Object.entries(savedStyle).sort()) === JSON.stringify(Object.entries({ show: true, font: 'kai', scale: 1.5, color: '#ffee00', background: '#000080', backgroundOpacity: 0.5, bold: true, outline: false, raisePct: 20 }).sort()),
+    `样式存在设置里（对所有视频生效）：${JSON.stringify(savedStyle)}`,
+  );
+  await panel.getByTestId('dub-subs').scrollIntoViewIfNeeded();
+  await panel.screenshot({ path: join(shots, '72-dub-subtitles-panel.png'), fullPage: true });
+  // 不把视频页切到前台：测试里侧边栏是一个标签页，切走之后它跟的就不是这个视频了（截图不需要在前台）
+  await page.screenshot({ path: join(shots, '73-dub-subtitles-page.png') });
+  await setRange('dub-subs-bg-opacity', 0);
+  await waitOverlay((o) => !!o && o.bg === 'rgba(0, 0, 128, 0)', '背景全透明');
+  check(((await panel.getByTestId('dub-subs-bg-opacity-value').textContent()) ?? '').trim() === '没有背景', '背景不透明度拉到 0：没有背景');
+  await panel.getByTestId('dub-subs-reset').click();
+  // 位置变化带 0.2 秒的过渡：等它落回原处再量
+  const reset = await waitOverlay(
+    (o) => !!o && !o.hidden && o.color === base.color && o.bg === base.bg && o.weight === '500' && Math.abs(o.size - base.size) < 0.2 && Math.abs(o.fromBottom - base.fromBottom) <= 2,
+    '恢复默认样式',
+  );
+  check((await panel.getByTestId('dub-subs-show').isChecked()) && (await panel.getByTestId('dub-subs-reset').isDisabled()), `"恢复默认样式"：样式回到默认（离底边 ${reset.fromBottom} 像素），"显示"的勾不动；已经是默认时这个键停用`);
+
+  // 关掉"显示"：字幕层整个拿掉；再勾上又出现。关掉配音也拿掉
+  await panel.getByTestId('dub-subs-show').uncheck();
+  for (let i = 0; i < 30 && (await overlay()) !== undefined; i++) await page.waitForTimeout(100);
+  check((await overlay()) === undefined && (await page.evaluate(() => document.querySelectorAll('[data-tubemuse]').length)) === 0 && (await nowText()).includes('已关闭'), '去掉"显示"的勾：字幕层从页面上拿掉');
+  await options.reload();
+  await options.getByTestId('dub-subtitles-setting').waitFor();
+  check(!(await options.getByTestId('dub-subtitles-setting').isChecked()), '设置页"中文配音"一节里也有这个开关，和侧边栏是同一个');
+  await options.getByTestId('dub-subtitles-setting').click();
+  await panel.waitForFunction(() => /** @type {any} */ (globalThis).chrome.storage.local.get('settings').then((/** @type {any} */ x) => x.settings?.dub?.subtitles?.show === true), null, { timeout: 5000 });
+  // 设置页被点过之后当前标签页可能变了：切回这个视频（侧边栏跟的是当前标签页）
+  await panel.evaluate((id) => /** @type {any} */ (globalThis).chrome.tabs.update(id, { active: true }), await tabOf());
+  await waitOverlay((o) => !!o && !o.hidden, '再勾上又出现');
+  await panel.getByTestId('dub-toggle').click();
+  await waitState((x) => !x.active, '字幕：关配音');
+  for (let i = 0; i < 30 && (await overlay()) !== undefined; i++) await page.waitForTimeout(100);
+  check((await overlay()) === undefined && (await nowText()).includes('开启配音后显示'), '关闭配音：字幕层也拿掉（它是配音的字幕）');
+  await panel.getByTestId('dub-toggle').click();
+  await waitState((x) => x.active && x.playing, '字幕：再开配音');
+  await waitOverlay((o) => !!o && !o.hidden, '开配音后又显示');
+
+  // 小宇宙里已经生成的字幕：配音多半就是小宇宙上的某一集。只读本机存着的那一份，每句取它自己语言的那一行
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const cue = (/** @type {number} */ i, /** @type {any} */ extra) => ({ id: `e2eDubEp:${i * 4000}`, start: i * 4, end: i * 4 + 4, createdAt: 1, ...extra });
+    await c.storage.local.set({
+      xyzTranscriptIndex: { ...((await c.storage.local.get('xyzTranscriptIndex')).xyzTranscriptIndex ?? {}), e2eDubEp: 2, e2eOtherEp: 3 },
+      'xyzTranscript:e2eDubEp': {
+        eid: 'e2eDubEp',
+        title: 'xyz-tones',
+        podcastTitle: '跨国串门儿计划',
+        asrModel: 'gpt-transcribe',
+        duration: 92,
+        done: [[0, 40]],
+        updatedAt: 2,
+        cues: Array.from({ length: 10 }, (_, i) => cue(i, { raw: `小宇宙转写第${i}句`, lang: 'zh', zh: `小宇宙第 ${i} 句（校对后）`, en: `Xiaoyuzhou line ${i}`, polished: true })),
+      },
+      'xyzTranscript:e2eOtherEp': { eid: 'e2eOtherEp', title: '别的节目', podcastTitle: '别的播客', asrModel: 'gpt-transcribe', duration: 600, done: [[0, 600]], updatedAt: 3, cues: [cue(0, { raw: 'hello there', lang: 'en' })] },
+    });
+  });
+  await panel.getByTestId('dub-subs-xyz').click();
+  await panel.getByTestId('dub-subs-xyz-select').waitFor({ timeout: 5000 });
+  // 这一组前面的小宇宙部分也可能留下了字幕（那一集的音频和这个配音一样长，同样标 ★）：只看这里放进去的两集
+  const xyzOptions = (await panel.getByTestId('dub-subs-xyz-select').locator('option').allTextContents()).map((t) => t.replace(/\s+/g, ' ').trim());
+  const mine = xyzOptions.indexOf('★ xyz-tones · 跨国串门儿计划 · 10 句');
+  const other = xyzOptions.findIndex((t) => t.startsWith('别的节目 · 别的播客'));
+  /** 第一个不带 ★ 的：它后面不该再有带 ★ 的 */
+  const firstPlain = xyzOptions.findIndex((t) => !t.startsWith('★'));
+  await panel.getByTestId('dub-subs-xyz-select').selectOption('e2eDubEp');
+  let xyzNote = '';
+  for (let i = 0; i < 30 && !xyzNote.includes('只生成了 0:40'); i++) {
+    xyzNote = ((await panel.getByTestId('dub-subs-xyz-note').textContent()) ?? '').trim();
+    await page.waitForTimeout(100);
+  }
+  check(
+    mine >= 0 && firstPlain > mine && other >= firstPlain && xyzOptions.slice(firstPlain).every((t) => !t.startsWith('★')) && xyzNote.includes('看起来就是这个配音') && xyzNote.includes('只生成了 0:40 / 1:32'),
+    `"用小宇宙里已生成的字幕"：列出本机存着的那几集，像这个配音的（标题在文件名里、时长一样）排在前面并标 ★，不像的排后面；没生成完的如实说（${xyzOptions.join(' | ')}）`,
+  );
+  await panel.getByTestId('dub-subs-xyz-use').click();
+  r = await waitStored((x) => x.subs?.source === 'xyz', '用小宇宙的字幕');
+  check(r.subs.count === 10 && r.subs.name === 'xyz-tones' && r.subs.lang === 'zh', `存成这个配音的字幕：${JSON.stringify(r.subs)}`);
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 12.5));
+  ov = await waitOverlay((o) => !!o && o.text === '小宇宙第 3 句（校对后）', '小宇宙字幕第 3 句');
+  check(true, `画面上换成小宇宙那一集的字幕，每句取中文那一行（音频的语言）："${ov.text}"`);
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 60.5));
+  ov = await waitOverlay((o) => !!o && o.hidden, '没生成的地方没有字幕');
+  for (let i = 0; i < 30 && !(await nowText()).includes('两句之间'); i++) await page.waitForTimeout(100);
+  check((await nowText()).includes('两句之间，没有字幕'), `字幕没覆盖到的地方（1:00）不显示，侧边栏照实说：${await nowText()}`);
+  // 测试放进去的两集小宇宙字幕用完拿掉，不留给后面的部分
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const { e2eDubEp: _a, e2eOtherEp: _b, ...rest } = (await c.storage.local.get('xyzTranscriptIndex')).xyzTranscriptIndex ?? {};
+    await c.storage.local.set({ xyzTranscriptIndex: rest });
+    await c.storage.local.remove(['xyzTranscript:e2eDubEp', 'xyzTranscript:e2eOtherEp']);
+  });
+  // 去掉字幕
+  await panel.getByTestId('dub-subs-remove').click();
+  await waitStored((x) => x.subs === undefined, '去掉字幕');
+  for (let i = 0; i < 30 && (await overlay()) !== undefined; i++) await page.waitForTimeout(100);
+  const goneDoc = await panel.evaluate((k) => /** @type {any} */ (globalThis).chrome.storage.local.get(k).then((/** @type {any} */ x) => k in x), `dubSubs:${DUB_VIDEO.id}`);
+  check((await overlay()) === undefined && goneDoc === false && (await page.evaluate(() => document.querySelectorAll('[data-tubemuse]').length)) === 0, '"去掉字幕"：说明和字幕本身都从本机删掉，页面上的字幕层拿掉');
+  // 留一份字幕到后面："移除"配音时要一并删掉
+  await panel.getByTestId('dub-subs-file').setInputFiles({ name: '配音.srt', mimeType: 'application/x-subrip', buffer: Buffer.from(srt, 'utf8') });
+  await waitStored((x) => x.subs?.source === 'file', '再存一份字幕');
+  await page.evaluate(() => {
+    const v = /** @type {HTMLVideoElement} */ (document.querySelector('video'));
+    v.currentTime = 20;
+    void v.play();
+  });
+  await waitState((x) => x.playing && x.videoTime > 20.3, '字幕之后：照常放着');
+  // 片段录制勾着"把字幕画进片段"时：配音字幕也是播放器里当时显示的字幕，一起画进去
+  /** 录约 2 秒，取片段中间一帧，数画面底部（字幕处）和上部的亮像素 */
+  const recordBurn = async () => {
+    await panel.getByRole('tab', { name: '片段', exact: true }).click();
+    await panel.getByTestId('clip-start').waitFor({ timeout: 10000 });
+    await page.waitForTimeout(500);
+    await panel.getByTestId('clip-start').click();
+    await panel.getByTestId('clip-status').filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+    await page.waitForTimeout(2200);
+    const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+    const b64 = readFileSync(/** @type {string} */ (await dl.path())).toString('base64');
+    return page.evaluate(async (data) => {
+      const url = URL.createObjectURL(new Blob([Uint8Array.from(atob(data), (c) => c.charCodeAt(0))]));
+      const v = document.createElement('video');
+      v.muted = true;
+      v.src = url;
+      await new Promise((resolve, reject) => {
+        v.onloadedmetadata = resolve;
+        v.onerror = () => reject(new Error('片段无法播放'));
+      });
+      v.currentTime = 1;
+      await new Promise((r) => (v.onseeked = r));
+      const c = document.createElement('canvas');
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      const g = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+      g.drawImage(v, 0, 0);
+      const bright = (/** @type {number} */ y0, /** @type {number} */ y1) => {
+        const d = g.getImageData(0, Math.floor(c.height * y0), c.width, Math.floor(c.height * (y1 - y0))).data;
+        let n = 0;
+        for (let i = 0; i < d.length; i += 4) if (/** @type {number} */ (d[i]) + /** @type {number} */ (d[i + 1]) + /** @type {number} */ (d[i + 2]) > 600) n++;
+        return n;
+      };
+      URL.revokeObjectURL(url);
+      return { bottom: bright(0.8, 0.95), top: bright(0.05, 0.6) };
+    }, b64);
+  };
+  const setBurn = async (/** @type {boolean} */ on) => {
+    await panel.getByRole('tab', { name: '片段', exact: true }).click();
+    await panel.getByTestId('clip-burn').waitFor({ timeout: 10000 });
+    if ((await panel.getByTestId('clip-burn').isChecked()) !== on) await panel.getByTestId('clip-burn').click();
+    await panel.waitForFunction((want) => /** @type {any} */ (globalThis).chrome.storage.local.get('settings').then((/** @type {any} */ x) => (x.settings?.clips?.burnSubtitles ?? false) === want), on, { timeout: 5000 });
+    await panel.getByTestId('clip-burn').and(panel.locator(on ? ':checked' : ':not(:checked)')).waitFor({ timeout: 5000 });
+  };
+  await setBurn(true);
+  const burned = await recordBurn();
+  await panel.getByRole('tab', { name: '配音', exact: true }).click();
+  await panel.getByTestId('dub-subs-show').click();
+  await panel.waitForFunction(() => /** @type {any} */ (globalThis).chrome.storage.local.get('settings').then((/** @type {any} */ x) => x.settings?.dub?.subtitles?.show === false), null, { timeout: 5000 });
+  for (let i = 0; i < 30 && (await overlay()) !== undefined; i++) await page.waitForTimeout(100);
+  const plain = await recordBurn();
+  check(
+    burned.bottom > 200 && burned.top === 0 && plain.bottom === 0,
+    `片段录制勾着"把字幕画进片段"：配音字幕显示着时画进了画面底部（亮像素 ${burned.bottom}），关掉配音字幕再录就没有（${plain.bottom}）`,
+  );
+  await setBurn(false);
+  await panel.getByRole('tab', { name: '配音', exact: true }).click();
+  await panel.getByTestId('dub-subs-show').click();
+  await panel.waitForFunction(() => /** @type {any} */ (globalThis).chrome.storage.local.get('settings').then((/** @type {any} */ x) => x.settings?.dub?.subtitles?.show === true), null, { timeout: 5000 });
+  await waitOverlay((o) => !!o && !o.hidden, '烧录检查之后字幕照常显示');
+
   console.log('\n[中文配音 × 片段录制：配音开着时录下的是双语混音（原声按 80% + 中文配音）；关着时和以前一样]');
   /** 录一段（约 seconds 秒）并取回下载的文件，在页面里解码量响度 */
   const recordClip = async (/** @type {number} */ seconds) => {
@@ -605,7 +1077,7 @@ export async function dub(t) {
     const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
     const b64 = readFileSync(/** @type {string} */ (await dl.path())).toString('base64');
     // 原声那个 200 Hz 单音的振幅（Goertzel：只量这一个频率，配音的音高不在这里）和去掉它之后剩下的响度（= 配音）。
-    // 按 0.1 秒一段分别量、取中位数：软件编码吃紧时录音偶尔掉几帧声音（咔哒一下），不让这几下左右结果
+    // 按 0.1 秒一段分别量、再取分位数：软件编码吃紧时录音偶尔掉几帧声音（咔哒一下），不让这几下左右结果
     const { tone, rest } = await page.evaluate(
       async ([b64, hz]) => {
         const bytes = Uint8Array.from(atob(/** @type {string} */ (b64)), (c) => c.charCodeAt(0));
@@ -631,8 +1103,11 @@ export async function dub(t) {
             tones.push(amp);
             rests.push(Math.sqrt(Math.max(0, sum / win - (amp * amp) / 2)));
           }
-          const median = (/** @type {number[]} */ xs) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length / 2)] ?? -1;
-          return { tone: median(tones), rest: median(rests) };
+          const at = (/** @type {number[]} */ xs, /** @type {number} */ q) => [...xs].sort((x, y) => x - y)[Math.floor(xs.length * q)] ?? -1;
+          // 原声是连续的单音：取中位数。配音（测试音频）每 3 秒里只有 1.8 秒有声，录的这几秒落在周期的哪里不一定——
+          // 有声的段数可能只比一半多一点，中位数会落在一段音的边上（2026-11-18 CI 上量到 0.006）。取上四分位：
+          // 它总落在有声的那些段里；配音没录进去时各段都接近 0，上四分位也接近 0；偶尔掉几帧（咔哒一下）的那几段到不了四分之一
+          return { tone: at(tones, 0.5), rest: at(rests, 0.75) };
         } catch {
           return { tone: -1, rest: -1 };
         } finally {
@@ -688,7 +1163,8 @@ export async function dub(t) {
         };
       }),
   );
-  check(JSON.stringify(after) === '{}' && idbAfter === 0, '移除：对应关系和 IndexedDB 里的音频都删掉');
+  const subsAfter = await panel.evaluate((k) => /** @type {any} */ (globalThis).chrome.storage.local.get(k).then((/** @type {any} */ x) => k in x), `dubSubs:${DUB_VIDEO.id}`);
+  check(JSON.stringify(after) === '{}' && idbAfter === 0 && subsAfter === false, '移除：对应关系、IndexedDB 里的音频、这个配音的字幕都删掉');
   await waitState((x) => !x.available, '移除后页面里也没有了');
   for (let i = 0; i < 20 && (await badge()) !== ''; i++) await page.waitForTimeout(150);
   check((await badge()) === '', '移除后图标上的"中"消失');

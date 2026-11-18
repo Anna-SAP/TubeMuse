@@ -35,6 +35,8 @@ import { addDubAnchor, attachDub, checkDubStorage, removeDub, removeDubAnchor, s
 import { stores } from '../../services/repo';
 import { appCtx, asAppError, useStore } from '../shared/app';
 import { DubAlignMap, DubGapReadout, useDubAlignNow } from './DubAlignMap';
+import { DubSubtitles } from './DubSubtitles';
+import { DubTransport } from './DubTransport';
 import { SUB_SOURCE_LABELS } from '../../core/subtitle-track';
 import { exportJob, useExportJob, type ExportJob } from './dub-export-job';
 import { Notice } from '../shared/components';
@@ -438,7 +440,20 @@ function QuickAlign({ rec, suggestion, onApply, onManual }: { rec: DubRecord; su
  * 对齐（DECISIONS §75）：视频此刻所在那一段的偏移（微调按钮、输入框、"中文位置"滑块，都只改这一段）、
  * "在这里加对齐点"、对齐点列表。开头那一段的偏移就是原来的"偏移"。
  */
-function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: number | undefined; state: DubTabState; onNote: (n: { text: string; undo?: () => void } | undefined) => void }) {
+function AlignControl({
+  rec,
+  tabId,
+  state,
+  onNote,
+  onControl,
+}: {
+  rec: DubRecord;
+  tabId: number | undefined;
+  state: DubTabState;
+  onNote: (n: { text: string; undo?: () => void } | undefined) => void;
+  /** 按了视频控制键：现在就再读一次页面的状态（不等下一次轮询） */
+  onControl: () => void;
+}) {
   const ctx = appCtx();
   const seg = state.segment ?? { index: -1, fromVideo: 0, offset: rec.delaySec, count: rec.anchors?.length ?? 0 };
   const [draft, setDraft] = useState<{ index: number; offset: number }>();
@@ -591,7 +606,7 @@ function AlignControl({ rec, tabId, state, onNote }: { rec: DubRecord; tabId: nu
       </div>
       <DubGapReadout now={alignNow} />
       <QuickAlign rec={rec} suggestion={suggestion} onApply={(rate) => void applyQuick(rate)} onManual={() => void backToManual()} />
-      <DubAlignMap now={alignNow} map={liveMap} segment={seg.index} onPreview={previewOffset} onCommit={commit} />
+      <DubAlignMap now={alignNow} map={liveMap} segment={seg.index} onPreview={previewOffset} onCommit={commit} footer={<DubTransport tabId={tabId} state={state} onDone={onControl} />} />
       {quickOn && problem && <ProblemBox problem={problem} onClose={() => setProblem(undefined)} />}
       {quickOn ? (
         <details class="dub-kept" data-testid="dub-kept">
@@ -706,7 +721,7 @@ export function DubView() {
   const ctx = appCtx();
   const settings = useStore(stores.settings);
   const index = useStore(stores.dubs);
-  const { tabId, state } = useActiveTabState<DubTabState>(DUB_MSG.getState, DUB_MSG.state, 1000);
+  const { tabId, state, refresh } = useActiveTabState<DubTabState>(DUB_MSG.getState, DUB_MSG.state, 1000);
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<string>();
   const [problem, setProblem] = useState<Problem>();
@@ -788,7 +803,7 @@ export function DubView() {
             ? `快速对齐的倍速按新文件的时长重新算成 ${rateText(saved.quickRate)}（精确 ${rateExactText(saved.quickRate)}）。`
             : '';
       setDone(
-        `已把 ${saved.fileName} 关联到这个视频。${quickNote}${saved.anchors?.length ? '原来的偏移和对齐点保留着：新文件不一样的话在下面删掉重设。' : ''}${wasOn ? '' : '点"开启配音"开始播放。'}`,
+        `已把 ${saved.fileName} 关联到这个视频。${quickNote}${saved.anchors?.length ? '原来的偏移和对齐点保留着：新文件不一样的话在下面删掉重设。' : ''}${saved.subs ? '原来的配音字幕也保留着：和新文件对不上的话换一份。' : ''}${wasOn ? '' : '点"开启配音"开始播放。'}`,
       );
     } catch (e) {
       setProblem(await toProblem(e));
@@ -911,8 +926,9 @@ export function DubView() {
               </button>
             </div>
             {removeConfirm(rec.videoId)}
+            <DubSubtitles rec={rec} state={state} />
             <FullSave rec={rec} missing={missing.includes(rec.videoId)} onPick={() => pickSource(rec.videoId)} onYouTube={tabId !== undefined} />
-            <AlignControl key={rec.videoId} rec={rec} tabId={tabId} state={state} onNote={setAlignNote} />
+            <AlignControl key={rec.videoId} rec={rec} tabId={tabId} state={state} onNote={setAlignNote} onControl={refresh} />
             {alignNote && (
               <Notice kind="ok" onClose={() => setAlignNote(undefined)}>
                 <span data-testid="dub-align-note">{alignNote.text}</span>
@@ -960,6 +976,7 @@ export function DubView() {
                     {r.durationSec ? ` · ${formatClockSec(r.durationSec)}` : ''} · 偏移 {r.delaySec > 0 ? '+' : ''}
                     {r.delaySec.toFixed(1)} 秒{r.anchors?.length ? ` · ${r.anchors.length} 个对齐点` : ''}
                     {r.quickRate !== undefined ? ` · 快速对齐 ${rateText(r.quickRate)}` : ''}
+                    {r.subs ? ` · 字幕 ${r.subs.count} 句` : ''}
                     {missing.includes(r.videoId) ? ' · 本机的音频不见了' : ''}
                   </div>
                   {r.videoId !== videoId && (
@@ -992,6 +1009,13 @@ export function DubView() {
           <li>配音开启时，原声降到你的音量的 80%（降 20%），中文保持正常音量、不跟 YouTube 的音量与静音走；关闭、换视频、离开页面时原声恢复。广告期间配音暂停、原声恢复。</li>
           <li>
             "保存完整双语视频"不用播放：你选这个视频的原视频文件（MP4），TubeMuse 在侧边栏里离线合成——画面原样照搬，原声和中文解码后按现在的对齐混在一起，重新编码成一条音轨（能用 AAC 就用 AAC，否则用 Opus）。快速对齐时中文用变速不变调的算法放慢 / 放快，和播放时听到的是同一种效果，波形不会逐个样本相同。原视频文件只在合成时读，不存进扩展；TubeMuse 不下载 YouTube 的视频，这个文件要你自己准备。不在 YouTube 页面上也能做：在"已关联的视频"里点"保存完整双语视频…"。
+          </li>
+          <li>
+            对齐图下面的"视频"一排按键控制的是 YouTube 页面里的视频（暂停 / 播放，后退、前进几秒），和你自己在播放器上操作一样；配音照现在的对齐跟上。广告期间不能前进 / 后退。
+          </li>
+          <li>
+            配音字幕是配音这段音频自己的字幕（你选的 .srt / .vtt，或小宇宙里已经生成的那一集），按配音实际放到的位置显示，不按视频时间：中文停下等画面、还没开始、已经放完时不显示。TubeMuse
+            不在这里转写或翻译，字幕里写什么就显示什么；中英双语的字幕只显示中文那几行。字幕文字存在本机，会随"导出数据"一起导出。
           </li>
           <li>配音由 YouTube 页面里的 TubeMuse 脚本播放，关掉侧边栏也继续；刷新页面后要重新开启（只提示，不自动出声）。</li>
           <li>音频文件存在这个浏览器里（扩展自己的 IndexedDB），不上传、不发任何网络请求；导出数据时只导出视频与文件名、偏移的对应关系，不含音频本身；"清空全部数据"会一并删除。</li>
