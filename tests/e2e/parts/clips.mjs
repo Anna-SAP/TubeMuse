@@ -8,6 +8,7 @@ import { BILI_EPISODE, BILI_FESTIVAL, BILI_PREVIEW_SECONDS, BILI_SEASON, BILI_VI
 import { DOUYIN_NEXT, DOUYIN_SEARCH_TITLE, DOUYIN_VIDEO } from '../douyin-pages.mjs';
 import { IG_FEED_POST, IG_PLAIN_POST } from '../ig-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_EPISODE, KUBB_MOVIE, KUBB_SHOW } from '../kubb-pages.mjs';
+import { YOUKU_EP1, YOUKU_EP4, YOUKU_SHOW } from '../youku-pages.mjs';
 import { SHORT_A, SHORT_B, SHORTS_STALE_WATCH_SECONDS } from '../shorts-pages.mjs';
 import { X_FEED_POST, X_GIF_POST, X_POST, X_TEXT_POST } from '../x-pages.mjs';
 import { XHS_N1, XHS_N2, XHS_N3, XHS_N4, XHS_UID, XHS_V1 } from '../xhs-pages.mjs';
@@ -1521,6 +1522,138 @@ export async function clips(t) {
     `B 站页面上 TubeMuse 没有发出任何请求（只有页面自己取的视频）${biliPageReqs.length ? `：${[...new Set(biliPageReqs.map((r) => r.path))].join(', ')}` : ''}`,
   );
   await bili.close();
+  await panel.bringToFront();
+
+  // ───────────────────────── 优酷：片段录制 ─────────────────────────
+  console.log('\n[优酷：整部剧的链接跳转前说明要打开播放页；跳到播放页（整页加载）后不用刷新就能录；片头的贴片广告时不截图、不让按时间段截取、录制先等着]');
+  const ykReqStart = requests.length;
+  const [yk] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), `${MOCK}/youku/video?${YOUKU_SHOW}`)]);
+  yk.on('pageerror', (e) => consoleErrors.push(`youku pageerror: ${e.message}`));
+  await yk.waitForLoadState('domcontentloaded');
+  await panel.bringToFront();
+  await panel.getByRole('tab', { name: '片段', exact: true }).click();
+  // 把侧边栏拿到前台时，当前标签页变成了侧边栏自己：切回优酷那个标签页（就像你点回它）
+  await panel.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/youku/'));
+    await c.tabs.update(t.id, { active: true });
+  });
+  await clipStatus.filter({ hasText: '不是优酷的播放页' }).waitFor({ timeout: 10000 });
+  check((await panel.getByTestId('clip-unsupported').count()) === 0, '优酷上还没跳到播放页时：侧边栏不再说"当前标签页不是…"，而是说明要打开播放页');
+  await Promise.all([yk.waitForURL(/\/youku\/v_show\//, { timeout: 15000 }), yk.evaluate(() => /** @type {any} */ (window).__go())]);
+  await yk.waitForLoadState('domcontentloaded');
+  await yk.evaluate(() => /** @type {any} */ (window).__ready);
+  const ykMain = '#ykPlayer .video-layer > video';
+  const ykAd = '#ykPlayer .advertise-layer video';
+  /** 侧边栏"当前位置"里的总时长是这么多秒（选成广告的 <video> 会超时） */
+  const ykShowsDuration = (/** @type {number} */ seconds) =>
+    panel.getByTestId('clip-position').filter({ hasText: new RegExp(` 0:(${seconds - 1}|${seconds})$`) }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('clip-title').filter({ hasText: YOUKU_EP4.title }).waitFor({ timeout: 10000 });
+  check(
+    (await panel.getByTestId('clip-burn').count()) === 0 && (await panel.getByTestId('clip-capture').count()) === 1 && (await panel.getByTestId('clip-unsupported').count()) === 0,
+    `用户举的播放页（/v_show/id_${YOUKU_EP4.id}.html）认得出：标题来自页面标题（去掉"-电视剧-高清完整正版视频在线观看-优酷"），不提供字幕烧录，有 Capture`,
+  );
+  const ykNote = (await panel.getByTestId('clip-no-burn').textContent()) ?? '';
+  check(ykNote.includes('弹幕') && ykNote.includes('贴片广告') && ykNote.includes('品牌头条') && ykNote.includes('别的广告认不出来'), '界面写明弹幕不会录进去，认得出贴片广告和品牌头条，别的广告认不出来');
+  await ykShowsDuration(YOUKU_EP4.seconds);
+  const ykAdState = await yk.evaluate(
+    ([m, a]) => ({ mainPaused: /** @type {HTMLVideoElement} */ (document.querySelector(m)).paused, ads: [...document.querySelectorAll(a)].map((v) => /** @type {HTMLVideoElement} */ (v).paused) }),
+    [ykMain, ykAd],
+  );
+  check(ykAdState.mainPaused && ykAdState.ads.length === 2 && ykAdState.ads[0] === false, `选中的是正片的 <video>（${YOUKU_EP4.seconds} 秒，停在开头），不是广告层里在放的那个、也不是藏着的下一条`);
+  const ykSeqAtAd = await captureSeq();
+  await panel.getByTestId('clip-capture').click();
+  await panel.getByRole('alert').filter({ hasText: '正在播广告' }).waitFor({ timeout: 5000 });
+  check((await captureSeq()) === ykSeqAtAd && (await panel.getByTestId('clip-capture-saved').count()) === 0, '贴片广告时点 Capture：不截，说明原因，不占序号');
+  await panel.getByTestId('clip-mode-range').click();
+  await panel.getByTestId('clip-start-at').fill('0:02');
+  await panel.getByTestId('clip-end-at').fill('0:08');
+  await panel.getByTestId('clip-start').click();
+  await panel.getByRole('alert').filter({ hasText: '广告结束后再开始截取' }).waitFor({ timeout: 5000 });
+  check((await panel.getByTestId('clip-live').count()) === 0 && (await yk.evaluate((m) => /** @type {HTMLVideoElement} */ (document.querySelector(m)).currentTime, ykMain)) === 0, '贴片广告时不让按时间段截取，也没去动正片的进度');
+  await panel.getByRole('radio', { name: '自由录制' }).click();
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '广告中' }).waitFor({ timeout: 10000 });
+  const ykBadge = await sw2.evaluate(async () => {
+    const c = /** @type {any} */ (globalThis).chrome;
+    const [t] = (await c.tabs.query({})).filter((/** @type {any} */ x) => String(x.url).includes('/youku/'));
+    return c.action.getBadgeText({ tabId: t.id });
+  });
+  check(ykBadge === 'REC', `优酷上录制中，工具栏图标也显示 REC（实际："${ykBadge}"）`);
+  await yk.waitForTimeout(1500);
+  check((await recordedSec()) === 0 && ((await clipStatus.textContent()) ?? '').includes('广告中'), '贴片广告期间录制等着、不计时');
+
+  console.log('\n[优酷：贴片广告放完正片开始 → 接着录；正片里插的品牌头条（同一个 <video>，进度照走）时暂停，放完接着录；成片不含广告那一截]');
+  await yk.evaluate(() => /** @type {any} */ (window).__endPreroll());
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  const ykAppHtml = () => yk.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML);
+  const ykAppBefore = await ykAppHtml();
+  await yk.waitForTimeout(2000);
+  await yk.evaluate(() => /** @type {any} */ (window).__brandAd(true));
+  await clipStatus.filter({ hasText: '广告中' }).waitFor({ timeout: 5000 });
+  const ykRecAtBrand = await recordedSec();
+  await yk.waitForTimeout(3000);
+  const ykRecAfterBrand = await recordedSec();
+  check(
+    (await yk.evaluate((m) => !(/** @type {HTMLVideoElement} */ (document.querySelector(m)).paused), ykMain)) && ykRecAfterBrand - ykRecAtBrand <= 1,
+    `品牌头条时正片照样在放，录制暂停、不计时（${ykRecAtBrand} → ${ykRecAfterBrand} 秒）`,
+  );
+  await yk.evaluate(() => /** @type {any} */ (window).__brandAd(false));
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 5000 });
+  await yk.waitForTimeout(2000);
+  const [ykDl] = await Promise.all([yk.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('clip-stop').click()]);
+  const ykName = ykDl.suggestedFilename();
+  check(ykName.startsWith(`${YOUKU_EP4.title}_00m0`) && /_00m\d\ds-00m\d\ds\.(mp4|webm)$/.test(ykName), `停止后保存，文件名用标题与起止时间：${ykName}`);
+  const ykClip = await analyzeClip(yk, /** @type {string} */ (await ykDl.path()));
+  await panel.getByTestId('clip-log').filter({ hasText: ykName }).waitFor({ timeout: 5000 });
+  const ykLog = (await clipLog())[0];
+  // 记录里的起止是这一段从正片的哪儿录到哪儿（品牌头条也在这条进度上）：成片比它短了至少 2 秒，就是品牌头条那 3 秒多没录进去
+  const ykSpan = (ykLog?.end ?? 0) - (ykLog?.start ?? 0);
+  check(
+    container(ykClip.head) === ykName.split('.').pop() && ykClip.duration > 2.5 && ykClip.duration < ykSpan - 2 && ykClip.rms > 0.02,
+    `录到了正片的声音，品牌头条那一截没录进去（成片 ${ykClip.duration.toFixed(1)} 秒，录的是正片 ${ykSpan.toFixed(1)} 秒长的一段，响度 ${ykClip.rms.toFixed(3)}）`,
+  );
+  check(
+    ykLog?.site === 'youku' && ykLog.videoId === YOUKU_EP4.id && ykLog.title === YOUKU_EP4.title && ykLog.url === `${MOCK}/youku/v_show/id_${YOUKU_EP4.id}.html` && ykLog.fileName === ykName,
+    `"最近录过的片段"记下这是优酷的视频；链接只留播放页，节目 ID 和来源标记去掉：${ykLog?.url}`,
+  );
+  check(((await panel.getByTestId('clip-log').textContent()) ?? '').includes('优酷 · '), '侧边栏的片段清单标出优酷');
+  check((await ykAppHtml()) === ykAppBefore && (await yk.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '录制没有往优酷页面里加任何元素，没有点到优酷自己的任何东西');
+
+  console.log('\n[优酷：换一集（网址换成那一集的，播放器还是同一个）时这一段自动结束并保存，接下来录的是新的一集]');
+  await panel.getByTestId('clip-start').click();
+  await clipStatus.filter({ hasText: '正在录制' }).waitFor({ timeout: 10000 });
+  await yk.waitForTimeout(1500);
+  const [ykSwitchDl] = await Promise.all([yk.waitForEvent('download', { timeout: 10000 }), yk.evaluate(() => /** @type {any} */ (window).__nextEpisode())]);
+  check(ykSwitchDl.suggestedFilename().startsWith(`${YOUKU_EP4.title}_`), `换集时自动结束这一段并保存，文件名是开录时那一集的：${ykSwitchDl.suggestedFilename()}`);
+  await panel.getByTestId('clip-ready').filter({ hasText: '切到了别的视频' }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('clip-log').filter({ hasText: ykSwitchDl.suggestedFilename() }).waitFor({ timeout: 5000 });
+  check((await clipLog())[0]?.videoId === YOUKU_EP4.id, '这一段记在开录时的那一集名下');
+  await panel.getByTestId('clip-title').filter({ hasText: YOUKU_EP1.title }).waitFor({ timeout: 10000 });
+  await ykShowsDuration(YOUKU_EP1.seconds);
+  check(true, `换集后侧边栏跟上新的一集：${(await panel.getByTestId('clip-title').textContent()) ?? ''}`);
+  await panel.getByRole('button', { name: '释放内存' }).click();
+
+  console.log('\n[优酷：暂停时弹出的图片广告不算广告：暂停下来照样能 Capture，截的是正片这一帧]');
+  await useFramedVideo(yk, ykMain);
+  await yk.evaluate(() => /** @type {any} */ (window).__pauseWithAd());
+  await clipStatus.filter({ hasText: '可以开始录制' }).waitFor({ timeout: 5000 });
+  const ykSeqBefore = await captureSeq();
+  const ykShot = await capture();
+  const ykShotName = ykShot.suggestedFilename();
+  const ykPng = await readPng(/** @type {string} */ (await ykShot.path()), yk);
+  check(
+    ykShotName.startsWith(`${YOUKU_EP1.title}_00-00-0`) && ykShotName.endsWith(`_original_${String(ykSeqBefore + 1).padStart(5, '0')}.png`) && ykPng.width === 720 && ykPng.height === 1280 && ykPng.left[0] > 150 && ykPng.right[2] > 150,
+    `Capture：截的是正片这一帧，按视频的真实尺寸存，不带弹幕、字幕和暂停广告：${ykShotName}（${ykPng.width}×${ykPng.height}）`,
+  );
+  await yk.evaluate(() => /** @type {any} */ (window).__closePauseAd());
+  check((await yk.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '全程没有点到优酷自己的任何东西');
+  const ykPageReqs = requests.slice(ykReqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/youku/`));
+  check(
+    ykPageReqs.every((r) => r.method === 'GET' && (r.path.startsWith('/youku/') || r.path === '/favicon.ico')),
+    `优酷页面上 TubeMuse 没有发出任何请求（只有页面自己取的视频）${ykPageReqs.length ? `：${[...new Set(ykPageReqs.map((r) => r.path))].join(', ')}` : ''}`,
+  );
+  await yk.close();
   await panel.bringToFront();
 
   // ───────────────────────── YouTube Shorts：片段录制 ─────────────────────────

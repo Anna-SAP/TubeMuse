@@ -55,6 +55,9 @@ export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/', `${MO
 /** e2e：本机 mock 的 /bili/ 下是仿 B 站网页版的页面（/bili/video/<BV号>、/bili/bangumi/play/<ep 或 ss 号>、/bili/festival/<活动名> 等） */
 export const BILI_PAGES: readonly string[] = ['https://www.bilibili.com/', `${MOCK}/bili/`];
 
+/** e2e：本机 mock 的 /youku/ 下是仿优酷网页版的页面（播放页是 /youku/v_show/id_<视频ID>.html） */
+export const YOUKU_PAGES: readonly string[] = ['https://v.youku.com/', `${MOCK}/youku/`];
+
 /** e2e：故事不读的站，加上本机 mock 里仿这些站的路径（仿 YouTube 播放页是 /watch 与 /shorts/；仿新闻页在 /news/，不在这里） */
 export const STORY_SKIP_PAGES: readonly string[] = [
   'https://www.youtube.com/',
@@ -68,6 +71,7 @@ export const STORY_SKIP_PAGES: readonly string[] = [
   ...IG_PAGES,
   ...DOUYIN_PAGES,
   ...BILI_PAGES,
+  ...YOUKU_PAGES,
   ...XYZ_PAGES,
 ];
 

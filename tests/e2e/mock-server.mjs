@@ -1,5 +1,5 @@
 // @ts-check
-// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI（含语音转写）、X、豆瓣评论 RSS，以及 YouTube 播放页、小红书网页版（/xhs/）、X 网页版（/xpage/）、酷播（/kubb/）、B 站（/bili/）与 Gmail（/gmail/）。
+// e2e 用的本机 mock 服务：模拟 Google 授权页、YouTube Data API v3、Anthropic、OpenAI（含语音转写）、X、豆瓣评论 RSS，以及 YouTube 播放页、小红书网页版（/xhs/）、X 网页版（/xpage/）、酷播（/kubb/）、B 站（/bili/）、优酷（/youku/）与 Gmail（/gmail/）。
 // 只监听 127.0.0.1，记录每个请求供断言（例如 Key 只发往 LLM、令牌只发往 YouTube）。
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -14,6 +14,7 @@ import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
 import { gmailPage } from './email-pages.mjs';
 import { storyBriefAnswer, storyPage, storyResearchContent } from './story-pages.mjs';
 import { xyzImage, xyzMedia, xyzPage, xyzToneIndex } from './xyz-pages.mjs';
+import { youkuMediaSeconds, youkuPage } from './youku-pages.mjs';
 
 export const PORT = 47321;
 /** e2e 用的假 Client Secret：只有 mock 令牌端点认它 */
@@ -678,7 +679,7 @@ export function startMockServer() {
       }
       const p = url.pathname;
       // 仿小红书、X 网页版、酷播、YouTube Shorts 等的视频：一段有声音的 WAV（同源，与真实页面的 blob: 流一样读得到）
-      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p) ?? kubbMediaSeconds(p) ?? igMediaSeconds(p) ?? douyinMediaSeconds(p) ?? biliMediaSeconds(p) ?? shortsMediaSeconds(p);
+      const mediaSeconds = xhsMediaSeconds(p) ?? xMediaSeconds(p) ?? kubbMediaSeconds(p) ?? igMediaSeconds(p) ?? douyinMediaSeconds(p) ?? biliMediaSeconds(p) ?? youkuMediaSeconds(p) ?? shortsMediaSeconds(p);
       if (mediaSeconds !== undefined) {
         const wav = speechWav(mediaSeconds);
         res.writeHead(200, { 'content-type': 'audio/wav', 'accept-ranges': 'bytes', 'content-length': wav.length });
@@ -744,6 +745,13 @@ export function startMockServer() {
       // 仿 B 站网页版（首页是 /bili/ 本身，播放页由页面里的站内跳转进入）
       if (p.startsWith('/bili/')) {
         const html = biliPage(p);
+        if (!html) return send(404, {});
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(html);
+      }
+      // 仿优酷网页版（播放页 /youku/v_show/id_<视频ID>.html；整部剧的链接 /youku/video?s=… 是跳转前的页面）
+      if (p.startsWith('/youku/')) {
+        const html = youkuPage(p, url.searchParams);
         if (!html) return send(404, {});
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);

@@ -94,6 +94,14 @@ export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/'];
 export const BILI_PAGES: readonly string[] = ['https://www.bilibili.com/'];
 
 /**
+ * 优酷网页版（2026-11-18 新增，见 DECISIONS §89）：片段录制脚本注入的页面，录播放页（/v_show/id_<视频ID>.html）播放器里正在看的这个视频。
+ * 站内列表、推荐里的 /video?vid=<视频ID>、整部剧的 /video?s=<节目ID> 打开后都跳到 /v_show/…（当天实测）；换集、放完自动播下一集
+ * 都不重新加载页面，所以注入范围是整个 v.youku.com，脚本自己只认播放页。首页、频道页在 www.youku.com，是另一个域名，换到播放页时整页重新加载，不用注入。
+ * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
+ */
+export const YOUKU_PAGES: readonly string[] = ['https://v.youku.com/'];
+
+/**
  * 小宇宙网页版（2026-11-13 新增，见 DECISIONS §72）：小宇宙脚本注入的页面。脚本只认单集页 /episode/<ID>：
  * 读单集的标题、节目名、封面、音频地址、时长和节目简介，看 <audio> 的播放状态，在页面上叠加一层只读字幕（可关闭）。
  * 小宇宙是单页应用，从节目页点进单集不重新加载，所以注入范围是整个站。扩展不向这个站点发任何请求，不在 ENDPOINTS 里。
@@ -102,7 +110,7 @@ export const XYZ_PAGES: readonly string[] = ['https://www.xiaoyuzhoufm.com/'];
 
 /**
  * 故事（2026-11-18 新增，见 DECISIONS §88）：这些站各有自己的约定（YouTube 只走官方接口；小红书、Gmail、Instagram、抖音、B 站、
- * 小宇宙、酷播的脚本各读什么都写死了），故事的页面读取函数在这些网址上一个字都不读，直接说"这个站不读"。X 帖子页单独处理（只读那一条帖子）。
+ * 小宇宙、酷播、优酷（2026-11-18 起，DECISIONS §89）的脚本各读什么都写死了），故事的页面读取函数在这些网址上一个字都不读，直接说"这个站不读"。X 帖子页单独处理（只读那一条帖子）。
  */
 export const STORY_SKIP_PAGES: readonly string[] = [
   'https://www.youtube.com/',
@@ -114,6 +122,7 @@ export const STORY_SKIP_PAGES: readonly string[] = [
   ...IG_PAGES,
   ...DOUYIN_PAGES,
   ...BILI_PAGES,
+  ...YOUKU_PAGES,
   ...XYZ_PAGES,
 ];
 

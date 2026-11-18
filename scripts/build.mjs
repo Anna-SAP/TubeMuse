@@ -56,7 +56,7 @@ if (!e2e && existsSync(configPath)) {
 // ── 读取网络出口（把 endpoints.ts 临时编译成 JS 再导入）──
 const endpointsFile = join(root, 'src', 'config', e2e ? 'endpoints.e2e.ts' : 'endpoints.ts');
 const compiled = await esbuild.build({ entryPoints: [endpointsFile], bundle: true, write: false, format: 'esm', platform: 'neutral' });
-const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XYZ_IMAGE_ORIGINS, XHS_PAGES, EMAIL_PAGES, X_PAGES, KUBB_PAGES, IG_PAGES, DOUYIN_PAGES, BILI_PAGES, XYZ_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
+const { ENDPOINTS, TRACKED_SITES, DOUBAN_IMAGE_ORIGINS, XYZ_IMAGE_ORIGINS, XHS_PAGES, EMAIL_PAGES, X_PAGES, KUBB_PAGES, IG_PAGES, DOUYIN_PAGES, BILI_PAGES, YOUKU_PAGES, XYZ_PAGES } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].text).toString('base64')}`);
 /** @type {string[]} */
 const origins = [...new Set(Object.values(ENDPOINTS).map((u) => new URL(String(u)).origin))];
 /**
@@ -216,6 +216,7 @@ const manifest = {
   // Instagram 同理（从别的页面回到首页不重新加载），匹配整个 www.instagram.com，脚本自己只认首页信息流
   // 抖音同理（在精选页点开视频、划到下一条都不重新加载），匹配整个 www.douyin.com，脚本自己只认精选页里打开的视频（?modal_id=）
   // B 站同理（换集、换分 P、连播、从列表里点下一个都不重新加载），匹配整个 www.bilibili.com，脚本自己只认页面的主播放器（DECISIONS §64）
+  // 优酷同理（换集、放完自动播下一集都不重新加载），匹配整个 v.youku.com，脚本自己只认播放页 /v_show/id_<视频ID>.html（DECISIONS §89）
   // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
   // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
   // eMails（DECISIONS §44）：只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"，不发网络请求，不写页面
@@ -227,7 +228,7 @@ const manifest = {
   content_scripts: [
     { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-tracker.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-subtitles.js'], run_at: 'document_idle' },
-    { matches: [...new Set([...[...TRACKED_SITES].map((o) => match(`${o}/*`)), ...[...XHS_PAGES, ...X_PAGES, ...KUBB_PAGES, ...IG_PAGES, ...DOUYIN_PAGES, ...BILI_PAGES].map((/** @type {string} */ p) => match(`${p}*`))])], js: ['content-clipper.js'], run_at: 'document_idle' },
+    { matches: [...new Set([...[...TRACKED_SITES].map((o) => match(`${o}/*`)), ...[...XHS_PAGES, ...X_PAGES, ...KUBB_PAGES, ...IG_PAGES, ...DOUYIN_PAGES, ...BILI_PAGES, ...YOUKU_PAGES].map((/** @type {string} */ p) => match(`${p}*`))])], js: ['content-clipper.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-multicc-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
     { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-multicc.js'], run_at: 'document_idle' },
     { matches: XHS_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },

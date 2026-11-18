@@ -73,6 +73,7 @@ describe('时间与链接', () => {
       ['douyin', 'https://www.douyin.com/jingxuan?modal_id=7704250528896716072'],
       ['bilibili', 'https://www.bilibili.com/bangumi/play/ep733317'],
       ['bilibili', 'https://www.bilibili.com/video/BV1Kb411W75N/?p=5'],
+      ['youku', 'https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg==.html'],
     ];
     for (const [site, url] of links) {
       const link = museLink({ site, videoId: 'x', url, position: 42 });
@@ -110,6 +111,16 @@ describe('这条视频 / 帖子的规范链接', () => {
     expect(museItem('bilibili', 'https://live.bilibili.com/22')).toBeUndefined();
     expect(museItem('douyin', 'https://www.douyin.com/video/7704250528896716072')).toBeUndefined();
   });
+
+  it('优酷：沿用片段录制的规范链接——节目 ID（s）、来源标记（spm、scm）去掉；整部剧的链接认不出是哪一集', () => {
+    expect(museItem('youku', 'https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg==.html?spm=a2hkn.playlist.myhome.d_3&s=aace2910c3784944a0ad')).toEqual({
+      id: 'XNjU4MjM4NjQxNg==',
+      url: 'https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg==.html',
+    });
+    expect(museItem('youku', 'https://v.youku.com/video?vid=XNjU4MjM4MjEyMA%3D%3D&scm=x')?.url).toBe('https://v.youku.com/v_show/id_XNjU4MjM4MjEyMA==.html');
+    expect(museItem('youku', 'https://v.youku.com/video?s=aace2910c3784944a0ad')).toBeUndefined();
+    expect(museItem('youku', 'https://www.youku.com/ku/webhome')).toBeUndefined();
+  });
 });
 
 describe('认不出当前这条视频时说明原因', () => {
@@ -121,6 +132,8 @@ describe('认不出当前这条视频时说明原因', () => {
     expect(museUnavailable('douyin', { videoId: null, feed: false, hasVideo: false })).toContain('没有点开的抖音视频');
     expect(museUnavailable('bilibili', { videoId: null, feed: false, hasVideo: false })).toContain('没有 B 站的播放器');
     expect(museUnavailable('bilibili', { videoId: 'ss28747', feed: false, hasVideo: false })).toBeUndefined();
+    expect(museUnavailable('youku', { videoId: null, feed: false, hasVideo: false })).toContain('不是优酷的播放页');
+    expect(museUnavailable('youku', { videoId: 'XNjU4MjM4NjQxNg==', feed: false, hasVideo: true })).toBeUndefined();
   });
 
   it('首页信息流：没有开着声音在播的视频、或认不出帖子（广告）', () => {
@@ -392,6 +405,13 @@ describe('咨询包', () => {
     const bili = buildMusePackage({ snapshot: { site: 'bilibili', videoId: 'ep733317', url: 'https://www.bilibili.com/bangumi/play/ep733317', title: '凡人修仙传第2集', position: 118, duration: 1076 }, question: '' });
     expect(bili.text).toContain('平台：B 站\n页面链接：https://www.bilibili.com/bangumi/play/ep733317\n标题：凡人修仙传第2集\n作者：无\n播放位置：01:58 / 17:56\n章节：无\n简介：无\n上下文：只有上面的标题');
     expect(bili.context).toBe('title');
+    // 优酷也一样：简介、作者不读页面
+    const youku = buildMusePackage({
+      snapshot: { site: 'youku', videoId: 'XNjU4MjM4NjQxNg==', url: 'https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg==.html', title: '生死制暴', position: 61, duration: 5400 },
+      question: '',
+    });
+    expect(youku.text).toContain('平台：优酷\n页面链接：https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg==.html\n标题：生死制暴\n作者：无\n播放位置：01:01 / 1:30:00\n章节：无\n简介：无\n上下文：只有上面的标题');
+    expect(youku.context).toBe('title');
     const none = buildMusePackage({ snapshot: { site: 'ig', videoId: 'Dfch523M0ca', url: 'https://www.instagram.com/p/Dfch523M0ca/', author: 'plain.user', position: 3, duration: 30 }, question: '' });
     expect(none.text).toContain('平台：Instagram\n');
     expect(none.text).toContain('上下文：无\n我的问题：无\n\n');
@@ -487,6 +507,9 @@ describe('咨询包里不出现 Key / 令牌', () => {
       'https://www.kubb.tv/play/e2rCXFzJUz2?id=lIM07A3d3g8',
       'https://www.bilibili.com/video/BV1Kb411W75N/?p=5',
       'https://www.bilibili.com/bangumi/play/ep733317',
+      // 优酷的视频 ID 是一串 base64、结尾带 =：不是令牌
+      'https://v.youku.com/v_show/id_XNjU4MjM4NjQxNg==.html',
+      'https://v.youku.com/v_show/id_XOTEwODkzODA=.html',
       '用 sk-learn 做聚类',
     ];
     for (const text of plain) expect(redactMuse(text)).toEqual({ text, changed: false });

@@ -6,6 +6,7 @@ import { check, FAKE_KEY, MOCK, shots, X_TOKEN } from '../harness.mjs';
 import { DOUYIN_NEXT, DOUYIN_VIDEO } from '../douyin-pages.mjs';
 import { IG_FEED_POST } from '../ig-pages.mjs';
 import { BILI_EPISODE } from '../bili-pages.mjs';
+import { YOUKU_EP4, YOUKU_SHOW } from '../youku-pages.mjs';
 import { KUBB_AD_SECONDS, KUBB_MOVIE } from '../kubb-pages.mjs';
 import { X_FEED_POST, X_POST, X_TEXT_POST } from '../x-pages.mjs';
 import { XHS_N1, XHS_V1 } from '../xhs-pages.mjs';
@@ -419,6 +420,27 @@ export async function muse(t) {
   check((await museBili.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML.replace(/ src="blob:[^"]*"/, ''))) === biliHtmlBefore && (await nativeClicks(museBili)) === 0, '没有改动页面，没有点任何东西');
   await museBili.close();
 
+  console.log('\n[问 muse：优酷——只有页面标题和播放位置；链接只留播放页；贴片广告时不给播放位置]');
+  const museYk = await museTab(`${MOCK}/youku/video?${YOUKU_SHOW}`);
+  check(await askMuseFails('不是优酷的播放页'), '优酷整部剧的链接还在跳转（网址里没有视频 ID）：说明要先打开播放页');
+  await museYk.evaluate(() => /** @type {any} */ (window).__go());
+  await museYk.waitForURL(/\/youku\/v_show\//, { timeout: 15000 });
+  await scriptReady(museYk);
+  await museYk.evaluate(() => /** @type {any} */ (window).__ready);
+  const ykAdPkg = await askMuse();
+  check(museField(ykAdPkg, '平台') === '优酷' && museField(ykAdPkg, '播放位置') === '未知' && (await museNotes()).includes('正在播广告'), '贴片广告期间：播放位置写「未知」并说明');
+  await museYk.evaluate(() => /** @type {any} */ (window).__endPreroll());
+  await museYk.waitForFunction(() => /** @type {HTMLVideoElement} */ (document.querySelector('#ykPlayer .video-layer > video')).currentTime > 1, null, { timeout: 15000 });
+  const ykHtmlBefore = await museYk.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML.replace(/ src="blob:[^"]*"/, ''));
+  const ykPkg = await askMuse();
+  check(
+    museField(ykPkg, '页面链接') === `${MOCK}/youku/v_show/id_${YOUKU_EP4.id}.html` && museField(ykPkg, '标题') === YOUKU_EP4.title && museField(ykPkg, '作者') === '无' && /^00:0\d \/ 00:30$/.test(museField(ykPkg, '播放位置')),
+    `标题来自页面标题，链接去掉节目 ID 和来源标记，作者不读（写「无」）：${museField(ykPkg, '页面链接')} / ${museField(ykPkg, '标题')} / ${museField(ykPkg, '播放位置')}`,
+  );
+  check(ykPkg.includes('\n上下文：只有上面的标题（没有字幕 / 转写，也没有正文 / 描述）\n') && !ykPkg.includes('弹幕弹幕') && !ykPkg.includes('字幕字幕'), '弹幕、字幕层不读');
+  check((await museYk.evaluate(() => /** @type {HTMLElement} */ (document.getElementById('app')).outerHTML.replace(/ src="blob:[^"]*"/, ''))) === ykHtmlBefore && (await nativeClicks(museYk)) === 0, '没有改动页面，没有点任何东西');
+  await museYk.close();
+
   // 2026-11-11 用户要求「问 muse」也支持 Shorts（DECISIONS §68）。仿 Shorts 页面同多语字幕那一段：假播放器挂在 #shorts-player 上，
   // 页面上藏着一个播放页的 #movie_player（另一个视频，被调用会记下来）
   console.log('\n[问 muse：YouTube Shorts——位置读的是 Shorts 播放器；自己取这条 Short 的字幕；链接是 Shorts 的网址；藏着的播放页播放器不碰]');
@@ -456,7 +478,7 @@ export async function muse(t) {
   console.log('\n[问 muse：红线]');
   const museReqs = requests.slice(museReqStart);
   check(llmCount() === museLlmStart && museReqs.every((r) => !r.path.startsWith('/openai') && !r.path.startsWith('/x/')), '全程没有调大模型（也没有语音转写、没有读 X）：不产生任何费用');
-  const musePagePaths = ['/watch', '/shorts/', '/media/', '/api/timedtext', '/xhs/', '/xpage/', '/igpage/', '/douyin/', '/kubb/', '/bili/', '/muse/', '/favicon.ico'];
+  const musePagePaths = ['/watch', '/shorts/', '/media/', '/api/timedtext', '/xhs/', '/xpage/', '/igpage/', '/douyin/', '/kubb/', '/bili/', '/youku/', '/muse/', '/favicon.ico'];
   const fromPages = museReqs.filter((r) => String(r.headers.referer ?? '').startsWith(MOCK));
   const pageLeaks = fromPages.filter((r) => r.method !== 'GET' || !musePagePaths.some((p) => r.path === p || r.path.startsWith(p)));
   const museTt = fromPages.filter((r) => r.path === '/api/timedtext');
@@ -475,7 +497,7 @@ export async function muse(t) {
       !museManifest.content_security_policy.extension_pages.includes('muse'),
     `「问 muse」没有新增权限和域名：${museManifest.permissions.join(', ')}`,
   );
-  check(![ytPkg3, plainPkg, shortPkg, xhsPkg, xFeedPkg, xPostPkg, igPkg, dyPkg, kubbPkg, biliPkg].some((p) => p.includes(FAKE_KEY) || p.includes('e2e-fake-token') || p.includes(E2E_CLIENT_SECRET) || p.includes(X_TOKEN)), '咨询包里没有任何 Key / 令牌');
+  check(![ytPkg3, plainPkg, shortPkg, xhsPkg, xFeedPkg, xPostPkg, igPkg, dyPkg, kubbPkg, biliPkg, ykAdPkg, ykPkg].some((p) => p.includes(FAKE_KEY) || p.includes('e2e-fake-token') || p.includes(E2E_CLIENT_SECRET) || p.includes(X_TOKEN)), '咨询包里没有任何 Key / 令牌');
   await panel.bringToFront();
   await panel.getByTestId('muse-close').click();
   check((await musePanel.count()) === 0, '点 × 收起面板');
