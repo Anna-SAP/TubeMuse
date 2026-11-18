@@ -1,7 +1,7 @@
 // MV3 service worker（Firefox 版是事件页，见 DECISIONS §69）：点图标开侧边栏；接收观看上报；自动字幕（转写、翻译、记账）；定时任务（每日总结、周报、补元数据、导师提醒）。
 // service worker 会休眠、浏览器可能在到点时没开：闹钟设为跨会话保留，并且每次醒来都检查闹钟是否还在、按"应该已完成但还没有"补算。
 
-import { GOOGLE_OAUTH, SUMMARY } from './config/defaults';
+import { GOOGLE_OAUTH, STORY, SUMMARY } from './config/defaults';
 import { TRACKED_SITES } from './config/endpoints';
 import { nextDailyRun } from './core/schedule';
 import { AUTH_CONNECT_MESSAGE, connectYouTube, toAuthReply, type AuthConnectReply } from './services/auth-service';
@@ -327,6 +327,43 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((m) => void keepAlive(() => handle(m)).catch((e) => console.warn('[TubeMuse] 字幕处理失败', e instanceof Error ? e.message : e)));
 });
 
+// ── 故事（DECISIONS §88）：网页右键菜单「TubeMuse：讲讲这个故事」与快捷键 ──
+// 两者都是浏览器认可的"你主动调用了扩展"：对你右键 / 按键的那个标签页临时放行一次（activeTab），侧边栏才能读它。
+// 先打开侧边栏（必须在用户操作的这一刻调用，前面不能 await），再在 chrome.storage.session 里留话：读哪个标签页。侧边栏读了就删。
+// 故事在设置里关掉时，右键菜单项也拿掉。
+
+const STORY_REQUEST_KEY = 'storyRequest';
+
+async function syncStoryMenu(): Promise<void> {
+  const enabled = (await stores.settings.read(ctx.kv)).story.enabled;
+  await chrome.contextMenus.removeAll();
+  if (!enabled) return;
+  chrome.contextMenus.create({ id: STORY.menuId, title: 'TubeMuse：讲讲这个故事', contexts: ['page', 'selection', 'link', 'image', 'video'] }, () => void chrome.runtime.lastError);
+}
+
+function openStory(tab: chrome.tabs.Tab | undefined): void {
+  if (tab?.id === undefined) return;
+  if (IS_FIREFOX) {
+    const sidebar = (chrome as unknown as { sidebarAction?: { open(): Promise<void> } }).sidebarAction;
+    void sidebar?.open().catch((e: unknown) => console.warn('[TubeMuse] 没能打开侧边栏', e instanceof Error ? e.message : e));
+  } else {
+    void chrome.sidePanel.open({ windowId: tab.windowId }).catch((e: unknown) => console.warn('[TubeMuse] 没能打开侧边栏', e instanceof Error ? e.message : e));
+  }
+  void chrome.storage.session.set({ [STORY_REQUEST_KEY]: { tabId: tab.id, at: Date.now() } });
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === STORY.menuId) openStory(tab);
+});
+chrome.runtime.onInstalled.addListener(() => void syncStoryMenu().catch(() => undefined));
+chrome.runtime.onStartup.addListener(() => void syncStoryMenu().catch(() => undefined));
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.settings) return;
+  const before = (changes.settings.oldValue as { story?: { enabled?: boolean } } | undefined)?.story?.enabled;
+  const after = (changes.settings.newValue as { story?: { enabled?: boolean } } | undefined)?.story?.enabled;
+  if (before !== after) void syncStoryMenu().catch(() => undefined);
+});
+
 // 快捷键：开关当前标签页这个视频的自动字幕 / 多语字幕 / 开始或停止录制片段（只发给本扩展的内容脚本；
 // 不是 YouTube 页面时什么也不做；录制也认小红书、X、酷播、Instagram、抖音和 B 站；Alt+Shift+S 在小宇宙单集页上开关这一集的字幕）
 chrome.commands.onCommand.addListener((command, tab) => {
@@ -334,6 +371,7 @@ chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'toggle-subtitles') void chrome.tabs.sendMessage(tab.id, { type: 'tubemuse:subtitles:toggle' }).catch(() => undefined);
   else if (command === 'toggle-multi-captions') void chrome.tabs.sendMessage(tab.id, { type: MULTICC_MSG.toggle }).catch(() => undefined);
   else if (command === 'toggle-clip-recording') void chrome.tabs.sendMessage(tab.id, { type: CLIP_MSG.toggle }).catch(() => undefined);
+  else if (command === 'story-read') openStory(tab);
 });
 
 void ensureAlarms();

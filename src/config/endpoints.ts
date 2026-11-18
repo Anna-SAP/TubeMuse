@@ -101,6 +101,23 @@ export const BILI_PAGES: readonly string[] = ['https://www.bilibili.com/'];
 export const XYZ_PAGES: readonly string[] = ['https://www.xiaoyuzhoufm.com/'];
 
 /**
+ * 故事（2026-11-18 新增，见 DECISIONS §88）：这些站各有自己的约定（YouTube 只走官方接口；小红书、Gmail、Instagram、抖音、B 站、
+ * 小宇宙、酷播的脚本各读什么都写死了），故事的页面读取函数在这些网址上一个字都不读，直接说"这个站不读"。X 帖子页单独处理（只读那一条帖子）。
+ */
+export const STORY_SKIP_PAGES: readonly string[] = [
+  'https://www.youtube.com/',
+  'https://m.youtube.com/',
+  'https://music.youtube.com/',
+  ...XHS_PAGES,
+  ...EMAIL_PAGES,
+  ...KUBB_PAGES,
+  ...IG_PAGES,
+  ...DOUYIN_PAGES,
+  ...BILI_PAGES,
+  ...XYZ_PAGES,
+];
+
+/**
  * Muse 聊天（2026-11-11 新增，见 DECISIONS §60）：「问 muse」面板里的"打开 muse.ai"只是在新标签页里打开它，
  * 咨询包由你自己粘贴进去。扩展不向它发任何请求、不注入脚本、不读它的页面，所以不在 ENDPOINTS（connect-src / host_permissions）里，
  * 也不在任何内容脚本的 matches 里。

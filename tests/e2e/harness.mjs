@@ -220,7 +220,7 @@ export function redLines(t, ran) {
   const llm = requests.filter((r) => r.path.startsWith('/anthropic'));
   const yt = requests.filter((r) => r.path.startsWith('/youtube'));
   // 片段那一组不调大模型：只在会调的组里要求"确实发过请求"
-  const expectLlm = ['core', 'subtitles', 'emails', 'xyz'].some((p) => ran.has(p));
+  const expectLlm = ['core', 'subtitles', 'emails', 'xyz', 'story'].some((p) => ran.has(p));
   check((!expectLlm || llm.length > 0) && llm.every((r) => String(r.headers.authorization ?? r.headers['x-api-key'] ?? '').includes(FAKE_KEY)), 'LLM 请求携带 Key（仅在请求头）');
   check(yt.every((r) => r.headers.authorization === 'Bearer e2e-fake-token'), 'YouTube 请求携带 OAuth 令牌（仅在请求头）');
   check(yt.every((r) => !JSON.stringify(r).includes(FAKE_KEY)), 'LLM Key 从未发往 YouTube');

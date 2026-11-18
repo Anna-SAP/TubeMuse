@@ -3,9 +3,10 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI, { toFile } from 'openai';
-import { ANTHROPIC_FALLBACK, LLM_LIMITS } from '../config/defaults';
+import { ANTHROPIC_FALLBACK, LLM_LIMITS, STORY } from '../config/defaults';
 import type { JsonSchema } from '../core/prompts';
 import { redact } from '../core/redact';
+import type { ResearchRaw } from '../core/story';
 import { wellFormed } from '../core/text';
 import { AppError, type Billing } from './errors';
 
@@ -25,6 +26,21 @@ export interface JsonRequest {
 export interface LlmUsage {
   inputTokens: number;
   outputTokens: number;
+  /** 服务方自带的联网搜索做了几次（每次另收费；只有"故事调研"会用到） */
+  webSearches?: number;
+}
+
+/**
+ * 带联网搜索的调研（故事，DECISIONS §88）：让大模型用服务方自带的搜索工具查资料、写带引用的笔记。
+ * 不要求结构化输出（各家的搜索引用和 JSON 结构化输出不能同时用），整理成结构化结果是下一步的事。
+ */
+export interface ResearchRequest {
+  system: string;
+  user: string;
+  /** 最多搜几次 */
+  maxSearches: number;
+  maxOutputTokens: number;
+  effort: 'low' | 'medium';
 }
 
 export interface LlmClient {
@@ -33,6 +49,8 @@ export interface LlmClient {
   generateJson(req: JsonRequest): Promise<unknown>;
   /** 同 generateJson，并返回服务方报告的 token 用量（自动字幕按此记账） */
   generateJsonWithUsage(req: JsonRequest): Promise<{ value: unknown; usage: LlmUsage }>;
+  /** 联网调研：回答的文字、引用的网页、搜索结果、搜了什么；用量里带着搜索次数 */
+  research(req: ResearchRequest): Promise<{ raw: ResearchRaw; usage: LlmUsage }>;
 }
 
 export interface LlmConfig {
@@ -261,12 +279,107 @@ export function createAnthropicClient(cfg: LlmConfig): LlmClient {
       throw billedError(mapLlmError(e, 'anthropic', cfg.model, cfg.apiKey), usage);
     }
   };
+  const research = async (req: ResearchRequest): Promise<{ raw: ResearchRaw; usage: LlmUsage }> => {
+    const usage: LlmUsage = { inputTokens: 0, outputTokens: 0, webSearches: 0 };
+    const add = (u: Anthropic.Beta.Messages.BetaUsage | undefined) => {
+      usage.inputTokens += (u?.input_tokens ?? 0) + (u?.cache_creation_input_tokens ?? 0) + (u?.cache_read_input_tokens ?? 0);
+      usage.outputTokens += u?.output_tokens ?? 0;
+      usage.webSearches = (usage.webSearches ?? 0) + (u?.server_tool_use?.web_search_requests ?? 0);
+    };
+    const billed = () => usage.inputTokens + usage.outputTokens + (usage.webSearches ?? 0) > 0;
+    try {
+      const messages: Anthropic.Beta.Messages.BetaMessageParam[] = [{ role: 'user', content: wellFormed(req.user) }];
+      const blocks: Anthropic.Beta.Messages.BetaContentBlock[] = [];
+      let container: string | undefined;
+      let paused = false;
+      for (let turn = 0; ; turn++) {
+        const res = await withOneRetry(
+          () =>
+            client.beta.messages.create(
+              {
+                model: cfg.model,
+                max_tokens: req.maxOutputTokens,
+                system: wellFormed(req.system),
+                messages,
+                tools: [anthropicWebSearchTool(cfg.model, req.maxSearches)],
+                output_config: { effort: req.effort },
+                ...(container ? { container } : {}),
+                betas: [ANTHROPIC_FALLBACK.beta],
+                fallbacks: ANTHROPIC_FALLBACK.fallbacks,
+              },
+              { timeout: STORY.researchTimeoutMs },
+            ),
+          // 服务方明确拒绝（没有计费）时重试这一次请求；接着做的那几次也一样，只重试被拒的那一次，不重复前面的
+          () => true,
+        );
+        add(res.usage);
+        blocks.push(...res.content);
+        container = res.container?.id ?? container;
+        if (res.stop_reason === 'refusal') throw new AppError('llm', '模型拒绝调研这个页面', '换一个页面，或者把要查的部分选中后再试');
+        if (res.stop_reason === 'max_tokens') throw new AppError('llm', '调研笔记写到一半被截断了', '再试一次；或者在设置页把"故事调研"换成主模型');
+        if (res.stop_reason !== 'pause_turn') break;
+        // 服务方说这一轮还没做完（搜索循环到了上限）：把这一段原样交回去，让它接着做；最多接几次
+        if (turn >= STORY.maxContinuations) {
+          paused = true;
+          break;
+        }
+        messages.push({ role: 'assistant', content: res.content as Anthropic.Beta.Messages.BetaContentBlockParam[] });
+      }
+      const raw = anthropicResearchRaw(blocks);
+      if (paused) raw.errors.push('paused');
+      return { raw, usage };
+    } catch (e) {
+      throw billedError(mapLlmError(e, 'anthropic', cfg.model, cfg.apiKey), billed() ? usage : undefined);
+    }
+  };
   return {
     provider: 'anthropic',
     model: cfg.model,
     generateJson: (req) => run(req).then((r) => r.value),
     generateJsonWithUsage: run,
+    research,
   };
+}
+
+/**
+ * Anthropic 的联网搜索工具。Claude 4.6 及以后的模型用 web_search_20260209：大模型先写代码筛一遍搜索结果、只把有用的放进上下文，
+ * 省 token（"dynamic filtering"，代码执行不另收费）；更早的模型只有基础版 web_search_20250305（2026-11-18 核实官方文档）。
+ */
+export function anthropicWebSearchTool(model: string, maxUses: number): Anthropic.Beta.Messages.BetaWebSearchTool20260209 | Anthropic.Beta.Messages.BetaWebSearchTool20250305 {
+  const legacy = /^claude-(?:3|(?:haiku|sonnet|opus)-4(?:-[0-5])?(?:-\d{8})?$|(?:haiku|sonnet|opus)-4-[0-5]-)/.test(model.trim());
+  return legacy ? { type: 'web_search_20250305', name: 'web_search', max_uses: maxUses } : { type: 'web_search_20260209', name: 'web_search', max_uses: maxUses };
+}
+
+/** 从 Anthropic 的回答里取出：文字段落和各自的引用、搜索结果、搜索词、搜索出错的错误码（不认识的块一律跳过） */
+export function anthropicResearchRaw(blocks: readonly unknown[]): ResearchRaw {
+  const raw: ResearchRaw = { segments: [], results: [], queries: [], errors: [] };
+  for (const b of blocks) {
+    const block = b as { type?: string; text?: unknown; citations?: unknown; name?: unknown; input?: { query?: unknown }; content?: unknown };
+    if (block.type === 'text' && typeof block.text === 'string') {
+      const cites = (Array.isArray(block.citations) ? block.citations : [])
+        .filter((c: { type?: string; url?: unknown }) => c?.type === 'web_search_result_location' && typeof c.url === 'string')
+        .map((c: { url: string; title?: unknown; cited_text?: unknown }) => ({
+          url: c.url,
+          ...(typeof c.title === 'string' ? { title: c.title } : {}),
+          ...(typeof c.cited_text === 'string' ? { quote: c.cited_text } : {}),
+        }));
+      raw.segments.push({ text: block.text, cites });
+    } else if (block.type === 'server_tool_use' && block.name === 'web_search' && typeof block.input?.query === 'string') {
+      raw.queries.push(block.input.query);
+    } else if (block.type === 'web_search_tool_result') {
+      if (Array.isArray(block.content)) {
+        for (const r of block.content as { type?: string; url?: unknown; title?: unknown; page_age?: unknown }[]) {
+          if (r?.type === 'web_search_result' && typeof r.url === 'string') {
+            raw.results.push({ url: r.url, ...(typeof r.title === 'string' ? { title: r.title } : {}), ...(typeof r.page_age === 'string' ? { date: r.page_age } : {}) });
+          }
+        }
+      } else {
+        const code = (block.content as { error_code?: unknown } | undefined)?.error_code;
+        raw.errors.push(typeof code === 'string' ? code : 'unknown');
+      }
+    }
+  }
+  return raw;
 }
 
 /** 只有推理模型接受 reasoning 参数；其他模型（如 gpt-4o）发送会被拒绝。 */
@@ -317,12 +430,90 @@ export function createOpenAIClient(cfg: LlmConfig): LlmClient {
       throw billedError(mapLlmError(e, 'openai', cfg.model, cfg.apiKey), usage);
     }
   };
+  const research = async (req: ResearchRequest): Promise<{ raw: ResearchRaw; usage: LlmUsage }> => {
+    let usage: LlmUsage | undefined;
+    try {
+      return await withOneRetry(async () => {
+        const res = await client.responses.create(
+          {
+            model: cfg.model,
+            instructions: wellFormed(req.system),
+            input: wellFormed(req.user),
+            max_output_tokens: req.maxOutputTokens,
+            tools: [{ type: 'web_search' }],
+            // 搜索用过的全部网页（不只是回答里引用的）：来源清单要用
+            include: ['web_search_call.action.sources'],
+            // OpenAI 的 Responses 接口（这一版 SDK）没有"最多搜几次"的参数：次数只在提示词里限定，实际按服务方报告的次数结算
+            ...(supportsReasoningEffort(cfg.model) ? { reasoning: { effort: req.effort } } : {}),
+            store: false,
+          },
+          { timeout: STORY.researchTimeoutMs },
+        );
+        const raw = openaiResearchRaw(res.output ?? []);
+        usage = { inputTokens: res.usage?.input_tokens ?? 0, outputTokens: res.usage?.output_tokens ?? 0, webSearches: raw.searches };
+        if (raw.refused) throw new AppError('llm', '模型拒绝调研这个页面', '换一个页面，或者把要查的部分选中后再试');
+        if (res.status === 'incomplete') throw new AppError('llm', `OpenAI 的调研没有做完（${res.incomplete_details?.reason ?? '未知原因'}）`, '再试一次；或者在设置页把"故事调研"换成主模型');
+        return { raw: raw.raw, usage };
+      }, (e) => mapLlmError(e, 'openai', cfg.model, cfg.apiKey).kind !== 'llm_quota');
+    } catch (e) {
+      throw billedError(mapLlmError(e, 'openai', cfg.model, cfg.apiKey), usage);
+    }
+  };
   return {
     provider: 'openai',
     model: cfg.model,
     generateJson: (req) => run(req).then((r) => r.value),
     generateJsonWithUsage: run,
+    research,
   };
+}
+
+/**
+ * 从 OpenAI Responses 的输出里取出：文字段落（按 url_citation 的位置切开，引用挂在它结束的那一段上）、搜索结果、搜索词。
+ * 只有 search 动作收费（打开网页、页内查找不收，OpenAI 定价页 2026-11-18 核实），searches 只数它。
+ */
+export function openaiResearchRaw(output: readonly unknown[]): { raw: ResearchRaw; searches: number; refused: boolean } {
+  const raw: ResearchRaw = { segments: [], results: [], queries: [], errors: [] };
+  let searches = 0;
+  let refused = false;
+  for (const o of output) {
+    const item = o as { type?: string; status?: string; action?: { type?: string; query?: unknown; queries?: unknown; sources?: unknown; url?: unknown }; content?: unknown };
+    if (item.type === 'web_search_call') {
+      const a = item.action;
+      if (item.status === 'failed') raw.errors.push('failed');
+      if (a?.type === 'search' || a === undefined) {
+        searches++;
+        const qs = Array.isArray(a?.queries) ? a.queries : typeof a?.query === 'string' ? [a.query] : [];
+        for (const q of qs) if (typeof q === 'string') raw.queries.push(q);
+        for (const src of Array.isArray(a?.sources) ? (a.sources as { url?: unknown }[]) : []) if (typeof src?.url === 'string') raw.results.push({ url: src.url });
+      } else if (a?.type === 'open_page' && typeof a.url === 'string') {
+        raw.results.push({ url: a.url });
+      }
+    } else if (item.type === 'message' && Array.isArray(item.content)) {
+      for (const part of item.content as { type?: string; text?: unknown; annotations?: unknown }[]) {
+        if (part?.type === 'refusal') refused = true;
+        if (part?.type !== 'output_text' || typeof part.text !== 'string') continue;
+        const text = part.text;
+        const notes = (Array.isArray(part.annotations) ? part.annotations : [])
+          .filter((n: { type?: string; url?: unknown; end_index?: unknown }) => n?.type === 'url_citation' && typeof n.url === 'string')
+          .map((n: { url: string; title?: unknown; end_index?: unknown }) => ({ url: n.url, title: typeof n.title === 'string' ? n.title : undefined, end: Math.min(text.length, Math.max(0, Number(n.end_index) || text.length)) }))
+          .sort((x: { end: number }, y: { end: number }) => x.end - y.end);
+        let at = 0;
+        for (let i = 0; i < notes.length; ) {
+          const end = notes[i]!.end;
+          const cites: { url: string; title?: string }[] = [];
+          while (i < notes.length && notes[i]!.end === end) {
+            const n = notes[i++]!;
+            cites.push({ url: n.url, ...(n.title ? { title: n.title } : {}) });
+          }
+          raw.segments.push({ text: text.slice(at, end), cites });
+          at = end;
+        }
+        if (at < text.length) raw.segments.push({ text: text.slice(at), cites: [] });
+      }
+    }
+  }
+  return { raw, searches, refused };
 }
 
 export function createLlmClient(cfg: LlmConfig): LlmClient {

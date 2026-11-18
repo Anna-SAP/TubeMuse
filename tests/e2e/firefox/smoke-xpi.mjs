@@ -117,7 +117,7 @@ try {
       ]),
     '内容脚本与 Chrome 版完全相同：注入的站点、两个页面内助手在页面环境（MAIN）',
   );
-  check(JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['alarms', 'identity', 'storage', 'unlimitedStorage']), `权限最小化：${manifest.permissions.join(', ')}`);
+  check(JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['activeTab', 'alarms', 'contextMenus', 'identity', 'scripting', 'storage', 'unlimitedStorage']), `权限最小化：${manifest.permissions.join(', ')}`);
   check(!manifest.web_accessible_resources, '没有向网页暴露任何扩展文件');
   // Mozilla 签名必填的数据收集声明（DECISIONS §71）：Firefox 认得、原样保留在装好的扩展里
   check(

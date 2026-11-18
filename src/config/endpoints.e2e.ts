@@ -55,5 +55,21 @@ export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/', `${MO
 /** e2e：本机 mock 的 /bili/ 下是仿 B 站网页版的页面（/bili/video/<BV号>、/bili/bangumi/play/<ep 或 ss 号>、/bili/festival/<活动名> 等） */
 export const BILI_PAGES: readonly string[] = ['https://www.bilibili.com/', `${MOCK}/bili/`];
 
+/** e2e：故事不读的站，加上本机 mock 里仿这些站的路径（仿 YouTube 播放页是 /watch 与 /shorts/；仿新闻页在 /news/，不在这里） */
+export const STORY_SKIP_PAGES: readonly string[] = [
+  'https://www.youtube.com/',
+  'https://m.youtube.com/',
+  'https://music.youtube.com/',
+  `${MOCK}/watch`,
+  `${MOCK}/shorts/`,
+  ...XHS_PAGES,
+  ...EMAIL_PAGES,
+  ...KUBB_PAGES,
+  ...IG_PAGES,
+  ...DOUYIN_PAGES,
+  ...BILI_PAGES,
+  ...XYZ_PAGES,
+];
+
 /** e2e："打开 muse.ai"打开的是本机 mock 的一个空页面，测试不出网 */
 export const MUSE_CHAT_URL = `${MOCK}/muse/`;

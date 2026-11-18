@@ -281,6 +281,17 @@ export const DEFAULT_SETTINGS = {
       raisePct: 0,
     },
   },
+  /**
+   * 故事（2026-11-18 新增，用户要求，见 DECISIONS §88）：读你停留的新闻 / 帖子页面，联网调研它的来龙去脉。
+   * 读页面只在你点「读这个页面」（或右键菜单、快捷键）时发生；调研要花钱，只在你点「调研」时发生
+   */
+  story: {
+    enabled: true,
+    /** 一次调研最多让大模型搜索几次（每次搜索另收费，见 WEB_SEARCH_USD_PER_CALL） */
+    maxSearches: 5,
+    /** 同一个页面多少小时内再打开，直接显示上次的调研结果、不再花钱（可以点"重新调研"） */
+    cacheHours: 12,
+  },
   /** 侧边栏界面偏好 */
   ui: {
     /** 导航栏（找片、发现…）固定在头部下方，往下滚动时保持可见；默认随页面滚动 */
@@ -434,6 +445,13 @@ export const LLM_PRICES_PER_MTOK: Record<string, { input: number; output: number
   'gpt-6-luna': { input: 0.1, output: 0.5 },
 };
 export const LLM_UNKNOWN_PRICE_PER_MTOK = { input: 10, output: 50 } as const;
+
+/**
+ * 大模型服务方自带的联网搜索，每次搜索另收的钱（美元；搜到的网页内容另按输入 token 计费）。
+ * Anthropic：web search 工具 $10 / 1,000 次，出错的那次不收（platform.claude.com 文档，2026-11-18 核实）；
+ * OpenAI：Responses API 的 web_search 工具 $10 / 1,000 次，只有 search 动作收费（developers.openai.com 定价页，2026-11-18 核实）。
+ */
+export const WEB_SEARCH_USD_PER_CALL = { anthropic: 0.01, openai: 0.01 } as const;
 
 /**
  * X API（2026-11 官方邮件与公告核实；按返回的资源条数计费，同一资源在同一 UTC 日内只计一次）。
@@ -920,6 +938,40 @@ export const STORAGE_LIMITS = {
   intentCacheKept: 30,
 } as const;
 
+/** 故事（2026-11-18 新增，见 DECISIONS §88）的内部参数 */
+export const STORY = {
+  /** 从页面上最多读多少字的正文（读到的留在本机；发给大模型的见 promptTextChars） */
+  maxTextChars: 12_000,
+  /** 一条帖子的正文最多读多少字 */
+  maxPostChars: 4_000,
+  /** 你选中的文字最多读多少字 */
+  maxSelectionChars: 2_000,
+  /** 发给大模型的正文最多多少字（数据最小化） */
+  promptTextChars: 6_000,
+  /** 标题、作者、站点名之类最多多少字 */
+  titleMaxChars: 300,
+  nameMaxChars: 120,
+  /** 一次调研最多留多少个来源 */
+  maxSources: 24,
+  /** 每个来源最多留几句被引用的原文、每句多少字 */
+  quotesPerSource: 2,
+  quoteMaxChars: 220,
+  /** 调研笔记最多交多少字给"整理"这一步 */
+  notesMaxChars: 14_000,
+  /** 预扣预算时，每次搜索带回来的网页内容按多少输入 token 估（实际按服务方报告的用量结算） */
+  searchInputTokens: 10_000,
+  /** 服务方说"这一轮还没做完"（pause_turn）时，最多接着做几次 */
+  maxContinuations: 2,
+  /** 调研这一次请求最多等多久（要搜索好几次，比一般调用慢得多） */
+  researchTimeoutMs: 240_000,
+  /** 整理结果里各部分最多几条、每条最多多少字 */
+  limits: { claims: 8, timeline: 14, perspectives: 8, context: 8, analysis: 5, openQuestions: 6, textChars: 500, shortChars: 120 },
+  /** 本机最多留多少个调研过的故事 */
+  maxKept: 30,
+  /** 页面上的右键菜单项 */
+  menuId: 'tubemuse-story',
+} as const;
+
 /** 大模型任务的档位：economy 用省钱模型，main 用主模型 */
 export type LlmTier = 'economy' | 'main';
 
@@ -936,8 +988,11 @@ export const LLM_TASKS = {
   hotspots: { label: 'X 热点整理', tier: 'economy', maxOutputTokens: 4_000, typical: { inputTokens: 5_000, outputTokens: 1_500, perDay: 1 } },
   emailScore: { label: 'eMails 打分', tier: 'economy', maxOutputTokens: 4_000, typical: { inputTokens: 1_500, outputTokens: 1_200, perDay: 1 } },
   emailVerdict: { label: 'eMails 总体结论', tier: 'economy', maxOutputTokens: 2_000, typical: { inputTokens: 1_500, outputTokens: 500, perDay: 1 } },
+  // 故事（DECISIONS §88）：调研这一步带着联网搜索，typical.searches 是典型的搜索次数（另收费）；输入里大半是搜到的网页内容
+  storyResearch: { label: '故事调研（联网搜索）', tier: 'economy', maxOutputTokens: 8_000, typical: { inputTokens: 30_000, outputTokens: 2_500, perDay: 1, searches: 4 } },
+  storyBrief: { label: '故事整理', tier: 'economy', maxOutputTokens: 6_000, typical: { inputTokens: 6_000, outputTokens: 2_000, perDay: 1 } },
   ping: { label: '测试连接', tier: 'main', maxOutputTokens: 500, typical: { inputTokens: 40, outputTokens: 20, perDay: 0 } },
-} as const satisfies Record<string, { label: string; tier: LlmTier; maxOutputTokens: number; typical: { inputTokens: number; outputTokens: number; perDay: number } }>;
+} as const satisfies Record<string, { label: string; tier: LlmTier; maxOutputTokens: number; typical: { inputTokens: number; outputTokens: number; perDay: number; searches?: number } }>;
 
 export type LlmTask = keyof typeof LLM_TASKS;
 

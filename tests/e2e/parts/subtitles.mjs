@@ -266,7 +266,8 @@ export async function subtitles(t) {
   check(manifestCc.commands?.['toggle-multi-captions']?.suggested_key?.default === 'Alt+Shift+C', '快捷键 Alt+Shift+C 开关多语字幕');
   const bridgeEntry = manifestCc.content_scripts.find((/** @type {any} */ c) => c.js.includes('content-multicc-bridge.js'));
   check(bridgeEntry?.world === 'MAIN' && manifestCc.content_scripts.find((/** @type {any} */ c) => c.js.includes('content-multicc.js'))?.world !== 'MAIN', '页面内助手跑在页面环境（MAIN），取字幕与画字幕层的脚本在隔离环境');
-  check(!['scripting', 'webRequest', 'declarativeNetRequest', 'tabs'].some((p) => manifestCc.permissions.includes(p)), `多语字幕没有新增权限：${manifestCc.permissions.join(', ')}`);
+  // scripting 是 2026-11-18 起「故事」要的（DECISIONS §88，构建时检查全部产物里只有故事读页面那一处 executeScript），多语字幕不用它
+  check(!['webRequest', 'declarativeNetRequest', 'tabs'].some((p) => manifestCc.permissions.includes(p)), `多语字幕没有新增权限：${manifestCc.permissions.join(', ')}`);
 
   const timedtextReqs = (/** @type {string} */ v) => requests.filter((r) => r.path === '/api/timedtext' && r.query.v === v);
   const playerTt = (/** @type {string} */ v) => timedtextReqs(v).filter((r) => r.headers['x-mock-player'] === '1');

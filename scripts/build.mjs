@@ -161,6 +161,16 @@ const csp = [
 
 const icons = { 16: 'icons/icon-16.png', 32: 'icons/icon-32.png', 48: 'icons/icon-48.png', 128: 'icons/icon-128.png' };
 /**
+ * 故事（2026-11-18 新增，用户批准，DECISIONS §88）：
+ * - scripting：在你点「读这个页面」时把只读的读取函数放进当前标签页跑一次（content/story-reader.ts，下面有构建检查）；
+ * - activeTab：你在网页上右键「TubeMuse：讲讲这个故事」或按快捷键时，浏览器对那一个标签页临时放行一次；
+ * - contextMenus：那个右键菜单项；
+ * - optional_host_permissions：安装时不要任何网站；你点「以后在 xxx 上直接读」时浏览器弹窗、只为那一个网站要权限，随时可以收回。
+ * 都不新增网络出口：读取函数不发请求，联网调研走你选的大模型服务方自带的搜索。
+ */
+const STORY_PERMISSIONS = ['scripting', 'activeTab', 'contextMenus'];
+const STORY_OPTIONAL_HOSTS = ['https://*/*', 'http://*/*'];
+/**
  * 两个浏览器不同的那几项（DECISIONS §69）：
  * - Chrome：key 固定扩展 ID；后台是 service worker；侧边栏是 side_panel（要 sidePanel 权限）；设置页 options_page。
  * - Firefox：gecko.id 固定扩展 ID（不认 key）；后台是事件页（background.scripts，Firefox 不支持扩展的 service worker）；
@@ -173,7 +183,8 @@ const browserSpecific = firefox
       browser_specific_settings: {
         gecko: { id: geckoId, strict_min_version: FIREFOX_MIN_VERSION, data_collection_permissions: { required: [...FIREFOX_DATA_COLLECTION.required] } },
       },
-      permissions: ['storage', 'unlimitedStorage', 'identity', 'alarms'],
+      permissions: ['storage', 'unlimitedStorage', 'identity', 'alarms', ...STORY_PERMISSIONS],
+      optional_host_permissions: STORY_OPTIONAL_HOSTS,
       background: { scripts: ['background.js'], type: 'module' },
       sidebar_action: { default_panel: 'sidepanel.html', default_title: 'TubeMuse', default_icon: icons, open_at_install: false },
       options_ui: { page: 'options.html', open_in_tab: true },
@@ -182,7 +193,8 @@ const browserSpecific = firefox
       // e2e 版不带 key：避免与正式版同 ID 冲突
       ...(e2e ? {} : { key: manifestKey }),
       minimum_chrome_version: '116',
-      permissions: ['storage', 'unlimitedStorage', 'sidePanel', 'identity', 'alarms'],
+      permissions: ['storage', 'unlimitedStorage', 'sidePanel', 'identity', 'alarms', ...STORY_PERMISSIONS],
+      optional_host_permissions: STORY_OPTIONAL_HOSTS,
       background: { service_worker: 'background.js', type: 'module' },
       side_panel: { default_path: 'sidepanel.html' },
       options_page: 'options.html',
@@ -229,6 +241,7 @@ const manifest = {
     'toggle-subtitles': { suggested_key: { default: 'Alt+Shift+S' }, description: '开关当前视频的自动字幕（在小宇宙单集页上开关这一集的字幕）' },
     'toggle-multi-captions': { suggested_key: { default: 'Alt+Shift+C' }, description: '开关当前视频的多语字幕（YouTube 原生字幕叠加显示）' },
     'toggle-clip-recording': { suggested_key: { default: 'Alt+Shift+R' }, description: '开始 / 停止录制当前视频的片段' },
+    'story-read': { suggested_key: { default: 'Alt+Shift+G' }, description: '读当前页面的故事（打开侧边栏的「故事」页，读你正在看的新闻或帖子）' },
   },
   action: { default_title: 'TubeMuse', default_icon: icons },
   icons,
@@ -403,6 +416,45 @@ for (const bad of [
   /window\.open\(/,
 ]) {
   if (bad.test(email)) fail(`邮件脚本里出现了不允许的操作（${bad}）：它只能在被问到时读打开的这封邮件。`);
+}
+
+// 故事（2026-11-18 新增，DECISIONS §88）：读取函数在你点「读这个页面」时被放进当前标签页跑一次（executeScript），只读不写。
+// 单独打一遍包来查：不得发任何网络请求、不得往页面写任何东西（插元素、写 HTML、改文字、改属性、改样式）、不得点击或模拟事件、
+// 不得碰 Cookie / 页面存储、不得用扩展接口、不得跳转或开新窗口、不得动态执行代码
+const storyReader = (
+  await esbuild.build({ entryPoints: [join(root, 'src', 'content', 'story-reader.ts')], bundle: true, write: false, format: 'esm', platform: 'browser', target: 'chrome116', logLevel: 'warning' })
+).outputFiles[0].text;
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /\bimport\(/,
+  /innerHTML|outerHTML|insertAdjacent/,
+  /appendChild\(|\.append\(|\.prepend\(|insertBefore\(|replaceChildren\(|replaceWith\(|removeChild\(|\.remove\(\)/,
+  /createElement\(|attachShadow\(/,
+  /setAttribute\(|removeAttribute\(|toggleAttribute\(|classList\.(add|remove|toggle)\(/,
+  /\.(textContent|innerText|nodeValue|value|src|href)\s*=[^=]/,
+  /\.style\b/,
+  /\.click\(\)|dispatchEvent\(|\.focus\(\)|\.submit\(\)/,
+  /document\.cookie/,
+  /localStorage|sessionStorage|indexedDB/,
+  /\bchrome\.|\bbrowser\./,
+  /\beval\(|new Function\(/,
+  /window\.open\(|location\.(assign|replace|reload)\(|location(\.href)?\s*=[^=]/,
+  /\.download\s*=/,
+]) {
+  if (bad.test(storyReader)) fail(`故事的页面读取函数里出现了不允许的操作（${bad}）：它只能读这一页、把结果交回侧边栏。`);
+}
+// 全部打包产物里只有一处 executeScript：侧边栏的故事页（ui/sidepanel/story-page.ts），放进去的只是上面查过的读取函数
+{
+  const calls = walk(outdir)
+    .filter((f) => f.endsWith('.js'))
+    .reduce((n, f) => n + (readFileSync(f, 'utf8').match(/\.executeScript\(/g) ?? []).length, 0);
+  if (calls !== 1) fail(`打包产物里应当只有一处 executeScript（故事读页面），实际有 ${calls} 处。`);
+  const sidepanelJs = walk(outdir).filter((f) => f.endsWith('.js')).map((f) => readFileSync(f, 'utf8')).find((t) => t.includes('.executeScript('));
+  if (!sidepanelJs || !/executeScript\(\{\s*target:\s*\{\s*tabId:\s*\w+\s*\},\s*func:\s*readStoryPage\d*,/.test(sidepanelJs)) fail('executeScript 只能放进故事的读取函数 readStoryPage。');
 }
 
 // 小宇宙（2026-11-13 新增，DECISIONS §72）：注入小宇宙的脚本自己不发任何网络请求（音频由后台只从小宇宙 CDN 读），

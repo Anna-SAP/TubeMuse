@@ -31,7 +31,7 @@ export type ErrorKind =
  * 这次失败有没有花钱。没有这个字段 = 服务方明确拒绝了，没有计费。
  * billed：响应已经回来（用量知道时带上），只是结果不能用；unknown：不知道（超时、断网、响应读不出来），预算上按花了算。
  */
-export type Billing = { state: 'billed'; usage?: { inputTokens: number; outputTokens: number } } | { state: 'unknown' };
+export type Billing = { state: 'billed'; usage?: { inputTokens: number; outputTokens: number; webSearches?: number } } | { state: 'unknown' };
 
 export class AppError extends Error {
   constructor(
