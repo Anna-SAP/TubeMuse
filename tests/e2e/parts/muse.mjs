@@ -468,7 +468,8 @@ export async function muse(t) {
   check(museLeaks.length === 0, '咨询包和你的问题没有发往任何地方（只在侧边栏和剪贴板里）');
   const museManifest = await (context.serviceWorkers()[0] ?? sw).evaluate(() => /** @type {any} */ (globalThis).chrome.runtime.getManifest());
   check(
-    JSON.stringify([...museManifest.permissions].sort()) === JSON.stringify(['alarms', 'identity', 'sidePanel', 'storage', 'unlimitedStorage']) &&
+    // scripting、activeTab、contextMenus 是 2026-11-18 起「故事」要的（DECISIONS §88），问 muse 不用
+    JSON.stringify([...museManifest.permissions].sort()) === JSON.stringify(['activeTab', 'alarms', 'contextMenus', 'identity', 'scripting', 'sidePanel', 'storage', 'unlimitedStorage']) &&
       !JSON.stringify(museManifest.host_permissions).includes('muse') &&
       !JSON.stringify(museManifest.content_scripts).includes('muse') &&
       !museManifest.content_security_policy.extension_pages.includes('muse'),

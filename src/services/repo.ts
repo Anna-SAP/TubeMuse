@@ -1,5 +1,6 @@
 // 类型化的本地数据仓库：每个键一个 Store，读时补默认值，改时加锁。
 
+import { emptyStoryState, sanitizeStoryState, type StoryState } from '../core/story';
 import { DEFAULT_FACTOR_WEIGHTS, DEFAULT_SETTINGS, DOUBAN, X_DEFAULTS_VERSION } from '../config/defaults';
 import { EMPTY_LEDGER, type QuotaLedger } from '../core/quota';
 import type { SearchCache } from '../core/cache';
@@ -127,6 +128,7 @@ export function mergeSettings(stored: unknown): Settings {
     muse: { ...d.muse, ...(s.muse as object) },
     xyz: { ...d.xyz, ...(s.xyz as object) },
     dub: { ...d.dub, ...(s.dub as object), subtitles: sanitizeDubSubStyle(s.dub?.subtitles) },
+    story: { ...d.story, ...(s.story as object) },
     ui: { ...d.ui, ...(s.ui as object), zoom: normalizeZoom(s.ui?.zoom) },
   } as Settings;
 }
@@ -231,6 +233,11 @@ export const stores = {
    * 中文配音：视频 ID → 关联的本地 .m4a（文件名、大小、时长、偏移；音频本身在 IndexedDB，见 services/dub-store.ts，不进导出）
    */
   dubs: new Store<DubIndex>('dubs', () => ({}), sanitizeDubIndex),
+  /**
+   * 故事（DECISIONS §88）：调研过的页面（读到的页面内容、整理结果、来源清单、搜了什么、花了多少），新的在前，最多 STORY.maxKept 个。
+   * 同一个页面 cacheHours 小时内再打开直接显示，不再花钱
+   */
+  stories: new Store<StoryState>('stories', emptyStoryState, sanitizeStoryState),
   /** YouTube 授权：访问令牌、刷新令牌与续期状态（不进导出） */
   youtubeAuth: new Store<YouTubeAuthState | null>('youtubeAuth', () => null),
   /** 最近一次连接 / 重新授权：何时开始、是否结束、失败原因（不进导出） */

@@ -18,6 +18,8 @@ import { XhsView } from './XhsView';
 import { EmailView } from './EmailView';
 import { XyzView } from './XyzView';
 import { DubPrompt, DubView } from './DubView';
+import { StoryView } from './StoryView';
+import { STORY_REQUEST_FRESH_MS, STORY_REQUEST_KEY, type StoryRequest } from './story-page';
 import { ReminderBanner } from './ReminderBanner';
 import { HostAccessBanner } from '../shared/host-access';
 import { useMuseAsk } from './MuseAsk';
@@ -26,7 +28,7 @@ import { normalizeZoom } from '../../core/zoom';
 import { cssZoomOf } from '../shared/css-zoom';
 import { applyZoom, useZoom, ZoomControl } from './zoom';
 
-type Tab = 'find' | 'discover' | 'douban' | 'xhs' | 'xyz' | 'email' | 'subtitles' | 'dub' | 'clips' | 'records' | 'profile' | 'changes';
+type Tab = 'find' | 'discover' | 'story' | 'douban' | 'xhs' | 'xyz' | 'email' | 'subtitles' | 'dub' | 'clips' | 'records' | 'profile' | 'changes';
 
 function SetupBanner() {
   const ctx = appCtx();
@@ -154,6 +156,29 @@ function usePinnedNav(pinned: boolean, zoom: number) {
   return { header, nav, anchor, stuck, toContentTop };
 }
 
+/**
+ * 右键菜单「TubeMuse：讲讲这个故事」/ 快捷键：后台先打开侧边栏、再在 chrome.storage.session 里留话（读哪个标签页）。
+ * 侧边栏打开时、或开着时收到留话，切到「故事」页去读那个标签页；读了就删掉这条留话
+ */
+function useStoryRequest(onRequest: (r: StoryRequest) => void) {
+  useEffect(() => {
+    const session = chrome.storage.session;
+    if (!session) return;
+    const take = (v: unknown) => {
+      const r = v as StoryRequest | undefined;
+      if (!r || typeof r.tabId !== 'number' || typeof r.at !== 'number') return;
+      void session.remove(STORY_REQUEST_KEY);
+      if (Date.now() - r.at <= STORY_REQUEST_FRESH_MS) onRequest(r);
+    };
+    void session.get(STORY_REQUEST_KEY).then((all) => take(all[STORY_REQUEST_KEY]), () => undefined);
+    const onChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === 'session' && changes[STORY_REQUEST_KEY]?.newValue) take(changes[STORY_REQUEST_KEY].newValue);
+    };
+    chrome.storage.onChanged.addListener(onChanged);
+    return () => chrome.storage.onChanged.removeListener(onChanged);
+  }, []);
+}
+
 function PinIcon({ on }: { on: boolean }) {
   return (
     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -167,6 +192,7 @@ function PinIcon({ on }: { on: boolean }) {
 function App({ initialZoom }: { initialZoom: number }) {
   const [tab, setTab] = useState<Tab>('find');
   const [prefill, setPrefill] = useState<{ text: string; n: number; autoSubmit?: boolean }>();
+  const [storyRequest, setStoryRequest] = useState<{ tabId: number; n: number }>();
   const quota = useQuota();
   const x = useXSpend();
   const sub = useSubtitleSpend();
@@ -181,6 +207,10 @@ function App({ initialZoom }: { initialZoom: number }) {
     pin.toContentTop();
     setTab(id);
   };
+  useStoryRequest((r) => {
+    setStoryRequest({ tabId: r.tabId, n: Date.now() });
+    go('story');
+  });
   // 打开侧边栏时顺带跑一次例行任务（补元数据、补算总结、评估提醒）；与后台互斥，不会重复执行
   useEffect(() => {
     void runScheduledJobs(appCtx()).catch(() => undefined);
@@ -219,6 +249,7 @@ function App({ initialZoom }: { initialZoom: number }) {
             [
               ['find', '找片'],
               ['discover', '发现'],
+              ['story', '故事'],
               ['douban', '豆瓣'],
               ['xhs', '小红书'],
               ['xyz', '小宇宙'],
@@ -258,6 +289,9 @@ function App({ initialZoom }: { initialZoom: number }) {
             }}
           />
         )}
+        <div hidden={tab !== 'story'}>
+          <StoryView request={storyRequest} />
+        </div>
         {tab === 'douban' && <DoubanView />}
         {tab === 'xhs' && <XhsView />}
         {tab === 'xyz' && <XyzView />}

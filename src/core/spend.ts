@@ -2,7 +2,7 @@
 // 预扣写进持久存储：页面被关、service worker 被回收、响应在路上丢了，这笔钱都还在账上，下一次检查预算时绕不过去。
 // 结算三种结果：知道实际用量 → 按实际记；服务方明确拒绝（没有计费）→ 退回；不知道有没有计费（超时、断网、响应读不出来）→ 按预扣额记成"未确认"。
 
-import { LLM_LIMITS, LLM_PRICES_PER_MTOK, LLM_UNKNOWN_PRICE_PER_MTOK, STORAGE_LIMITS, type LlmTask } from '../config/defaults';
+import { LLM_LIMITS, LLM_PRICES_PER_MTOK, LLM_UNKNOWN_PRICE_PER_MTOK, STORAGE_LIMITS, WEB_SEARCH_USD_PER_CALL, type LlmTask } from '../config/defaults';
 
 /** 一笔进行中的预扣 */
 export interface SpendHold {
@@ -31,6 +31,11 @@ export function llmPrice(model: string): { input: number; output: number; known:
 export function llmCostUsd(model: string, inputTokens: number, outputTokens: number): number {
   const p = llmPrice(model);
   return round6((inputTokens * p.input + outputTokens * p.output) / 1e6);
+}
+
+/** 服务方自带的联网搜索：n 次另收多少钱 */
+export function webSearchUsd(provider: keyof typeof WEB_SEARCH_USD_PER_CALL, n: number): number {
+  return round6(Math.max(0, n) * WEB_SEARCH_USD_PER_CALL[provider]);
 }
 
 export function heldUsd(day: HoldDay | undefined): number {
@@ -146,11 +151,11 @@ function charge(day: LlmDay, task: LlmTask, usd: number): LlmDay {
   return { ...day, spentUsd: round6(day.spentUsd + usd), byTask: { ...day.byTask, [task]: { calls: cur.calls + 1, usd: round6(cur.usd + usd) } } };
 }
 
-/** 按服务方报告的用量结算（请求已计费，哪怕结果不能用） */
-export function settleLlmHold(ledger: LlmLedger, holdId: string, task: LlmTask, model: string, usage: { inputTokens: number; outputTokens: number }): LlmLedger {
+/** 按服务方报告的用量结算（请求已计费，哪怕结果不能用）；extraUsd 是 token 之外另收的钱（联网搜索） */
+export function settleLlmHold(ledger: LlmLedger, holdId: string, task: LlmTask, model: string, usage: { inputTokens: number; outputTokens: number }, extraUsd = 0): LlmLedger {
   const t = takeHold(ledger.days, holdId);
   if (!t.day) return ledger;
-  const usd = llmCostUsd(model, usage.inputTokens, usage.outputTokens);
+  const usd = round6(llmCostUsd(model, usage.inputTokens, usage.outputTokens) + Math.max(0, extraUsd));
   const next = charge(t.days[t.day]!, task, usd);
   return { days: { ...t.days, [t.day]: llmPrice(model).known ? next : { ...next, estimatedPrice: true } } };
 }

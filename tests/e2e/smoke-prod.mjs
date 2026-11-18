@@ -58,8 +58,9 @@ try {
     `观看追踪、自动字幕、多语字幕脚本只注入 www.youtube.com，小红书脚本只注入小红书网页版，邮件脚本只注入 mail.google.com，小宇宙脚本只注入小宇宙网页版，中文配音脚本和配音字幕脚本只注入 www.youtube.com，片段录制脚本注入 YouTube、小红书、X、酷播、Instagram、抖音、B 站（同一条、只注入一次，后五个站只有它），只有两个页面内助手在页面环境（${scripts.map((/** @type {{ js: string; matches: string; world: string }} */ s) => `${s.js} → ${s.matches} ${s.world}`).join('；')}）`,
   );
   check(
-    manifest.permissions.includes('alarms') && !['tabs', 'scripting', 'tabCapture', 'offscreen', 'downloads', 'desktopCapture', 'webRequest', 'declarativeNetRequest'].some((p) => manifest.permissions.includes(p)),
-    `权限最小化（自动字幕与片段录制没有新增权限：不用 tabCapture / downloads）：${manifest.permissions.join(', ')}`,
+    JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['activeTab', 'alarms', 'contextMenus', 'identity', 'scripting', 'sidePanel', 'storage', 'unlimitedStorage']) &&
+      !['tabs', 'tabCapture', 'offscreen', 'downloads', 'desktopCapture', 'webRequest', 'declarativeNetRequest'].some((p) => manifest.permissions.includes(p)),
+    `权限最小化（自动字幕与片段录制没有新增权限：不用 tabCapture / downloads；scripting、activeTab、contextMenus 只给「故事」读页面，DECISIONS §88）：${manifest.permissions.join(', ')}`,
   );
   check(!manifest.web_accessible_resources, '没有向网页暴露任何扩展文件');
   check(manifest.commands?.['toggle-subtitles']?.suggested_key?.default === 'Alt+Shift+S', '快捷键 Alt+Shift+S 开关字幕');
@@ -67,6 +68,11 @@ try {
   check(manifest.commands?.['toggle-multi-captions']?.suggested_key?.default === 'Alt+Shift+C', '快捷键 Alt+Shift+C 开关多语字幕');
   // 授权走 launchWebAuthFlow：不再需要 manifest 的 oauth2（那是 getAuthToken 专用，依赖浏览器级 Google 登录）
   check(!manifest.oauth2 && manifest.permissions.includes('identity'), 'manifest 不含 oauth2，授权走 launchWebAuthFlow');
+  check(
+    JSON.stringify(manifest.optional_host_permissions) === JSON.stringify(['https://*/*', 'http://*/*']) && !manifest.host_permissions.some((/** @type {string} */ h) => /^\w+:\/\/\*\//.test(h) || h === '<all_urls>'),
+    '「故事」要的网站权限是可选的：安装时不要任何网站，你同意了才为那一个网站要（DECISIONS §88）',
+  );
+  check(manifest.commands?.['story-read']?.suggested_key?.default === 'Alt+Shift+G', '快捷键 Alt+Shift+G 读当前页面的故事');
   const connect = /connect-src ([^;]+)/.exec(manifest.content_security_policy.extension_pages)?.[1]?.trim().split(/\s+/) ?? [];
   const expected = ['https://www.googleapis.com', 'https://oauth2.googleapis.com', 'https://api.anthropic.com', 'https://api.openai.com', 'https://api.x.com', 'https://www.douban.com', 'https://media.xyzcdn.net'];
   check(JSON.stringify([...connect].sort()) === JSON.stringify([...expected].sort()), `网络出口白名单只有官方 API、豆瓣 RSS 与小宇宙的音频 CDN：${connect.join(' ')}`);

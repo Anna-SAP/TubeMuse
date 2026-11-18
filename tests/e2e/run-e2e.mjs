@@ -20,11 +20,12 @@ import { dubFull } from './parts/dub-full.mjs';
 import { emails } from './parts/emails.mjs';
 import { muse } from './parts/muse.mjs';
 import { settings } from './parts/settings.mjs';
+import { story } from './parts/story.mjs';
 import { subtitles } from './parts/subtitles.mjs';
 import { xyz } from './parts/xyz.mjs';
 
 /** @type {Record<string, (t: import('./harness.mjs').Harness) => Promise<void>>} */
-const PARTS = { core, subtitles, clips, emails, muse, settings, xyz, dub, 'dub-full': dubFull };
+const PARTS = { core, subtitles, clips, emails, muse, settings, xyz, dub, 'dub-full': dubFull, story };
 /** @type {Record<string, string[]>} */
 const SHARDS = JSON.parse(readFileSync(new URL('./shards.json', import.meta.url), 'utf8'));
 

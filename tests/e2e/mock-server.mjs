@@ -12,6 +12,7 @@ import { shortsMediaSeconds, shortsPage } from './shorts-pages.mjs';
 import { xMediaSeconds, xPage } from './x-pages.mjs';
 import { xhsMediaSeconds, xhsPage } from './xhs-pages.mjs';
 import { gmailPage } from './email-pages.mjs';
+import { storyBriefAnswer, storyPage, storyResearchContent } from './story-pages.mjs';
 import { xyzImage, xyzMedia, xyzPage, xyzToneIndex } from './xyz-pages.mjs';
 
 export const PORT = 47321;
@@ -487,6 +488,7 @@ function llmAnswer(/** @type {string} */ system, /** @type {string} */ user) {
       }),
     };
   }
+  if (system.includes('故事整理员')) return storyBriefAnswer();
   if (system.includes('只回复')) return { ok: true };
   if (system.includes('播客字幕的校对兼翻译')) {
     // 小宇宙：中文加一个"（校）"标记，英文带上同一个编号，便于断言哪句对哪句、校对过没有
@@ -712,6 +714,12 @@ export function startMockServer() {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);
       }
+      // 故事：仿新闻页（/news/<slug>）和仿 X 帖子页（用户给的例子）
+      const story = storyPage(p);
+      if (story) {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(story);
+      }
       // 仿 X 网页版（/x/ 是 X 官方 API 的 mock）
       if (p.startsWith('/xpage/')) {
         const html = xPage(p);
@@ -886,6 +894,20 @@ export function startMockServer() {
       }
       if (p === '/anthropic/v1/messages' && req.method === 'POST') {
         const b = JSON.parse(body || '{}');
+        // 故事的联网调研：带着 web search 工具。照文档的响应结构回一段带搜索结果和引用的笔记，用量里带搜索次数
+        if (Array.isArray(b.tools) && b.tools.some((/** @type {{ type?: string }} */ t) => String(t.type ?? '').startsWith('web_search'))) {
+          return send(200, {
+            id: 'msg_e2e_research',
+            type: 'message',
+            role: 'assistant',
+            model: b.model,
+            content: storyResearchContent(),
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            container: null,
+            usage: { input_tokens: 20000, output_tokens: 1500, server_tool_use: { web_search_requests: 1 } },
+          });
+        }
         const out = llmAnswer(String(b.system ?? ''), String(b.messages?.[0]?.content ?? ''));
         return send(200, {
           id: 'msg_e2e',

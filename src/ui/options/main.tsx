@@ -1,5 +1,6 @@
 // 设置页：LLM Key、YouTube 授权、配额与找片偏好、语音、学习开关、自动字幕、数据导出与清空。
 
+import { requestedOrigins } from '../shared/host-access';
 import { render } from 'preact';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
@@ -855,6 +856,35 @@ function App() {
         </label>
       </Section>
 
+      <Section title="20. 故事" id="story">
+        <p class="muted small">
+          在侧边栏"故事"页读你停留的新闻或帖子页面，用你选的大模型自带的联网搜索调研它的来龙去脉，分清已证实的事实、某一方的说法和推测，每一条都标着可以点开核对的来源。
+          只在你点"读这个页面"（或在网页上右键「TubeMuse：讲讲这个故事」、按快捷键）时读，读一次就走，不常驻页面；X 帖子只读那一条帖子和它引用的那一条；YouTube、小红书、Gmail、Instagram、抖音、B 站、小宇宙、酷播不读。
+          只有点"调研"才把读到的内容发给大模型（要花钱：token 加每次 $0.01 的搜索费，记在"AI $"里）。调研结果存在本机。
+        </p>
+        <label class="inline">
+          <input type="checkbox" data-testid="story-enabled" checked={settings.story.enabled} onChange={(e) => updateSection('story', { enabled: e.currentTarget.checked })} />
+          启用故事（关掉后不读页面、不调研，网页右键菜单里的那一项也拿掉；已有的调研记录保留）
+        </label>
+        <NumField
+          label="一次调研最多搜索几次"
+          value={settings.story.maxSearches}
+          min={1}
+          max={10}
+          onChange={(v) => updateSection('story', { maxSearches: v })}
+          hint="每次 $0.01，另加搜到的网页内容按输入 token 计费。搜得越多越全，也越贵、越慢。OpenAI 没有硬上限，次数只在提示词里限定"
+        />
+        <NumField
+          label="同一个页面多少小时内不再重新调研"
+          value={settings.story.cacheHours}
+          min={0}
+          max={168}
+          onChange={(v) => updateSection('story', { cacheHours: v })}
+          hint="这段时间内再打开同一个页面直接显示上次的结果、不花钱；随时可以点「重新调研」"
+        />
+        <StorySites />
+      </Section>
+
       <Section title="网络出口" id="egress">
         <p class="muted small">本扩展只会连接以下地址（由内容安全策略强制限制）：</p>
         <ul class="small">
@@ -910,9 +940,58 @@ function App() {
           注入 Gmail（mail.google.com）的脚本只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"：只读打开的这一封的主题、发件人名字和正文，不读发件人地址、收件人和邮件列表；不发任何网络请求，不往 Gmail 页面写任何东西，不点击任何按钮，不碰 Cookie 与本地存储。
         </p>
         <p class="muted small">
+          故事不往任何网站常驻脚本：你点"读这个页面"（或在网页上右键「TubeMuse：讲讲这个故事」、按快捷键）时，把一个只读的读取函数放进当前标签页跑一次，读完就走。
+          它读页面自己声明的标题、作者、发布时间、简介和正文段落，以及你选中的文字；在 X 帖子页只读那一条帖子和它引用的那一条（作者、正文、时间、页面上显示的互动数据、媒体类型），回复和信息流不读；
+          YouTube、小红书、Gmail、Instagram、抖音、B 站、小宇宙、酷播一个字都不读。它不发任何网络请求、不改动页面、不点击任何东西、不碰 Cookie 与本地存储。
+          联网调研由你选的大模型服务方（{new URL(ENDPOINTS.anthropic).host} / {new URL(ENDPOINTS.openai).host}）自带的搜索完成，扩展自己不连接任何新的地址。
+        </p>
+        <p class="muted small">
           注入 youtube.com、小红书网页版、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版与 B 站网页版（www.bilibili.com）的片段录制脚本只在你开始录制后才录：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕，只限 YouTube），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、不点击页面上的任何东西、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字；按时间段截取时会把这个视频跳到起点并播放。在 X 和 Instagram 的首页信息流上，为了知道录哪个，它会一直看页面上各个视频在不在播、有没有声音，并且只读正在播放、开着声音的那个视频所在那一条帖子的链接、作者名和正文（用来显示、起文件名、记下回到帖子的链接），别的帖子不读。在抖音精选页打开的视频上，它另读这一条视频的作者昵称和描述（用来显示和起文件名；页面标题在划到下一条时不更新，不能用），别的视频不读。在 B 站上它只认页面的主播放器，读的只有播放器状态、页面标题和网址：UP 主、简介、评论、弹幕和推荐列表都不读。
         </p>
       </Section>
+    </div>
+  );
+}
+
+/**
+ * 故事：你允许 TubeMuse 直接读的网站（在故事页点「以后在 xxx 上直接读」、浏览器弹窗时同意的那些），可以在这里收回。
+ * manifest 里本来就要的网站（各官方 API、各内容脚本的站）不在这里列。
+ */
+function StorySites() {
+  const [sites, setSites] = useState<string[]>();
+  useEffect(() => {
+    const declared = new Set(requestedOrigins(chrome.runtime.getManifest() as Parameters<typeof requestedOrigins>[0]));
+    const load = () =>
+      void chrome.permissions.getAll().then(
+        (p) => setSites((p.origins ?? []).filter((o) => !declared.has(o)).sort()),
+        () => setSites([]),
+      );
+    load();
+    chrome.permissions.onAdded.addListener(load);
+    chrome.permissions.onRemoved.addListener(load);
+    return () => {
+      chrome.permissions.onAdded.removeListener(load);
+      chrome.permissions.onRemoved.removeListener(load);
+    };
+  }, []);
+  if (!sites) return null;
+  return (
+    <div class="field" data-testid="story-sites">
+      <span>允许直接读的网站</span>
+      {sites.length ? (
+        <ul class="small">
+          {sites.map((o) => (
+            <li>
+              <code>{o.replace(/\/\*$/, '')}</code>{' '}
+              <button class="btn link small" onClick={() => void chrome.permissions.remove({ origins: [o] }).catch(() => undefined)}>
+                收回
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <span class="muted small">还没有。在没给过权限的网站上，在页面上右键「TubeMuse：讲讲这个故事」或按快捷键读一次；读过之后可以让浏览器记住那个网站。</span>
+      )}
     </div>
   );
 }

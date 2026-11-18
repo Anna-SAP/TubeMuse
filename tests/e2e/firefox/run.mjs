@@ -215,7 +215,7 @@ try {
       !manifest.background?.service_worker,
     '侧边栏是 sidebar_action；后台是事件页（ES 模块），不是 service worker',
   );
-  check(JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['alarms', 'identity', 'storage', 'unlimitedStorage']), `权限：${manifest.permissions.join(', ')}（不需要 sidePanel，也没有 downloads / clipboardWrite / tabs）`);
+  check(JSON.stringify([...manifest.permissions].sort()) === JSON.stringify(['activeTab', 'alarms', 'contextMenus', 'identity', 'scripting', 'storage', 'unlimitedStorage']), `权限：${manifest.permissions.join(', ')}（不需要 sidePanel，也没有 downloads / clipboardWrite / tabs；scripting、activeTab、contextMenus 只给「故事」，DECISIONS §88）`);
   const alarms = await b.waitFor(`return browser.alarms.getAll().then((a) => a.length >= 2 ? a.map((x) => x.name).sort() : false)`, { what: '后台建好闹钟' }).catch(() => []);
   check(JSON.stringify(alarms) === JSON.stringify(['tubemuse-daily', 'tubemuse-tick']), `后台建好了例行闹钟与每日总结闹钟（Firefox 不认 persistAcrossSessions，带上会建不起来）：${alarms}`);
   const origins = [...new Set([...manifest.host_permissions, ...manifest.content_scripts.flatMap((/** @type {any} */ c) => c.matches)])];
@@ -519,6 +519,25 @@ try {
   await b.waitFor(`document.querySelector('[data-testid=email-found]')?.textContent.includes('找到 5 篇文章')`, { timeout: 15_000, what: '列出 5 篇文章' });
   check(true, '侧边栏列出当前邮件里的 5 篇文章');
   await closeTab(gmail);
+
+  console.log('\n[故事（DECISIONS §88）：侧边栏把读取函数放进 X 帖子页跑一次（Firefox 的 scripting）→ 联网调研 → 结果分清已证实 / 说法]');
+  await tapText('故事', '[role=tab]');
+  const storyX = await openActiveTab(`${MOCK}/xpage/elonmusk/status/2122810772967575759?s=20&t=sharerToken`);
+  await b.switchTo(storyX);
+  await b.waitFor(`document.querySelector('#story-main') && document.readyState === 'complete'`, { what: '仿 X 帖子页' });
+  await b.switchTo(handles.panel);
+  await tap('[data-testid=story-read]');
+  const storyPost = await b.waitFor(`return document.querySelector('[data-testid=story-post]')?.textContent || false`, { timeout: 15_000, what: '读到的主帖' });
+  const storyQuoted = await b.exec(`return document.querySelector('[data-testid=story-quoted]')?.textContent ?? ''`);
+  check(String(storyPost).includes('Elon Musk') && String(storyQuoted).includes('Sean Duffy RESPONDS') && !String(storyQuoted).includes('最新消息'), `Firefox 里读到了主帖和引用的帖子（译文不读）：${String(storyQuoted).slice(0, 60)}`);
+  check(!(await b.exec(`return document.querySelector('[data-testid=story-page]')?.textContent ?? ''`)).includes('This reply text'), '回复不读');
+  await tap('[data-testid=story-run]');
+  const storyLegend = await b.waitFor(`return document.querySelector('[data-testid=story-legend]')?.textContent || false`, { timeout: 20_000, what: '调研结果' });
+  check(String(storyLegend).includes('已证实 2') && String(storyLegend).includes('只是说法 1'), `调研结果分清已证实 / 只是说法：${storyLegend}`);
+  await b.switchTo(storyX);
+  const storyMut = await b.exec(`return { m: window.__mutations, c: window.__clicks }`);
+  check(storyMut.m === 0 && storyMut.c === 0, 'X 页面：读的时候没有改动页面、没有点任何东西');
+  await closeTab(storyX);
 
   console.log('\n[自动字幕：设置页按 Firefox 写——浏览器识别只在本机、没有云端；本地翻译 Firefox 没有]');
   const OPENAI_KEY = 'e2e-openai-test-key-not-real';
@@ -1012,7 +1031,8 @@ try {
 } finally {
   // 红线：除本机 mock 以外没有请求能出去（代理是死的）；这里核对 mock 只收到了预期的几类请求
   const paths = [...new Set(requests.map((r) => r.path.split('/').slice(0, 2).join('/')))];
-  check(paths.every((p) => ['/youtube', '/oauth', '/anthropic', '/openai', '/thumb', '/watch', '/media', '/api', '/xhs', '/gmail', '/xyz', '/xyzimg', '/xyzmedia', '/favicon.ico'].includes(p)), `mock 只收到预期的请求：${paths.join(' ')}`);
+  // /xpage 是故事读的仿 X 帖子页（页面本身，DECISIONS §88）
+  check(paths.every((p) => ['/youtube', '/oauth', '/anthropic', '/openai', '/thumb', '/watch', '/media', '/api', '/xhs', '/gmail', '/xpage', '/xyz', '/xyzimg', '/xyzmedia', '/favicon.ico'].includes(p)), `mock 只收到预期的请求：${paths.join(' ')}`);
   // 扩展自己的报错（后台、页面、内容脚本）：Firefox 打到标准输出的 JavaScript 错误
   const extErrors = log.filter((l) => /JavaScript error|console\.error|Uncaught/.test(l) && (l.includes(UUID) || /content-[\w-]+\.js|TubeMuse/.test(l)));
   check(extErrors.length === 0, `扩展没有报错${extErrors.length ? `：\n    ${extErrors.slice(0, 10).join('\n    ')}` : ''}`);

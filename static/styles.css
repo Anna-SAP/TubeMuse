@@ -1816,6 +1816,159 @@ a.db-title:hover {
   margin: 6px 0 0;
 }
 
+/* ── 故事 ── */
+.story-actions {
+  margin: 6px 0;
+  align-items: center;
+}
+.story-page {
+  overflow-wrap: anywhere;
+}
+.story-page-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.story-post {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.story-post-text,
+.story-text {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+.story-post-text.clamp,
+.story-text.clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.story-desc {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+.story-selection {
+  margin-top: 8px;
+  padding: 4px 8px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+}
+.story-metrics {
+  margin-top: 2px;
+}
+.story-paste {
+  margin-top: 12px;
+}
+.story-paste textarea,
+.story-paste input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 6px 0;
+}
+.story-result {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.story-headline {
+  margin: 4px 0;
+  font-size: 15px;
+}
+.story-summary {
+  margin: 4px 0 8px;
+}
+.story-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0;
+}
+.story-st {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0 7px;
+  white-space: nowrap;
+  background: var(--ref-soft);
+  color: var(--ref);
+}
+.story-st.st-confirmed {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.story-st.st-claimed {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.story-st.st-disputed {
+  background: var(--no-soft);
+  color: var(--no);
+}
+.story-st.st-analysis {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.story-sec h4 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+}
+.story-list,
+.story-timeline,
+.story-sources {
+  margin: 0;
+  padding-left: 18px;
+}
+.story-list li,
+.story-timeline li,
+.story-sources li {
+  margin: 4px 0;
+}
+.story-when {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.story-note {
+  color: var(--muted);
+  margin-top: 2px;
+}
+.story-refs {
+  margin-left: 4px;
+  font-size: 12px;
+}
+.story-refs a {
+  margin-right: 2px;
+  text-decoration: none;
+}
+.story-noref {
+  margin-left: 4px;
+}
+.story-analysis li {
+  color: var(--text);
+}
+.story-sid {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.story-sources li[data-used] .story-sid {
+  color: var(--accent);
+}
+.story-quote {
+  margin: 2px 0 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+}
+.story-history-title {
+  text-align: left;
+  font-weight: 600;
+  padding: 0;
+}
+
 /* ── 问 muse ── */
 /* 顶部的按钮是一张图：平时没有边框和底色，悬停 / 展开时才显出来（边框一直占着 1px，显出来时不挤动别的） */
 .muse-btn {
