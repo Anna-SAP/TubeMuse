@@ -27,7 +27,7 @@ import { SubtitleFileError, parseSubtitleFile, type SubCue } from '../core/subti
 import type { XyzTranscript } from '../core/xyz';
 import type { AppContext } from './context';
 import type { DubAudioStore } from './dub-store';
-import { dubSubsStore, newId, stores, xyzTranscriptStore } from './repo';
+import { dubAsrStore, dubSubsStore, newId, stores, xyzTranscriptStore } from './repo';
 
 function audioStore(ctx: AppContext): DubAudioStore {
   if (!ctx.dubAudio) throw new DubFileError('这个浏览器环境里没有 IndexedDB，存不了配音文件');
@@ -96,7 +96,11 @@ export async function attachDub(ctx: AppContext, input: AttachInput): Promise<Du
     saved = rec;
     return { ...index, [input.videoId]: rec };
   });
-  if (previous && previous !== fileId) await store.delete(previous).catch(() => undefined);
+  if (previous && previous !== fileId) {
+    await store.delete(previous).catch(() => undefined);
+    // 识别到一半的进度是旧文件的（DECISIONS §91）：换了文件就作废
+    await ctx.kv.remove(dubAsrStore(input.videoId).key);
+  }
   return saved!;
 }
 
@@ -108,8 +112,9 @@ export async function removeDub(ctx: AppContext, videoId: string): Promise<void>
     const { [videoId]: _gone, ...rest } = index;
     return rest;
   });
-  // 这个配音的字幕一并删掉（DECISIONS §86）
+  // 这个配音的字幕、识别到一半的进度一并删掉（DECISIONS §86、§91）
   await ctx.kv.remove(dubSubsStore(videoId).key);
+  await ctx.kv.remove(dubAsrStore(videoId).key);
   if (fileId) await audioStore(ctx).delete(fileId);
 }
 

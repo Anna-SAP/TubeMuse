@@ -83,8 +83,8 @@ export interface DubSubsMeta {
   /** 多少句 */
   count: number;
   lang: DubSubLang;
-  /** 哪来的：你选的字幕文件，或小宇宙里已经生成的那一集字幕 */
-  source: 'file' | 'xyz';
+  /** 哪来的：你选的字幕文件、小宇宙里已经生成的那一集字幕，或从这段配音音频识别出来的（asr，DECISIONS §91） */
+  source: 'file' | 'xyz' | 'asr';
   /** 双语字幕里只留了配音语言的那几行 */
   reduced?: boolean;
   addedAt: number;
@@ -101,7 +101,7 @@ export function sanitizeDubSubsMeta(v: unknown): DubSubsMeta | undefined {
     name: text(m.name, DUB.fileNameMaxChars) || '字幕',
     count,
     lang: SUB_LANGS.includes(m.lang as DubSubLang) ? (m.lang as DubSubLang) : 'other',
-    source: m.source === 'xyz' ? 'xyz' : 'file',
+    source: m.source === 'xyz' ? 'xyz' : m.source === 'asr' ? 'asr' : 'file',
     ...(m.reduced === true ? { reduced: true } : {}),
     addedAt: typeof m.addedAt === 'number' && Number.isFinite(m.addedAt) ? m.addedAt : 0,
   };

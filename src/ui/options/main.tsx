@@ -830,7 +830,7 @@ function App() {
       <Section title="19. 中文配音" id="dub">
         <p class="muted small">
           在侧边栏"配音"页给 YouTube 视频关联一个本地中文配音（.m4a），开启后在播放页叠加播放：跟随视频的播放、暂停、拖动进度和倍速，加上你手动设的偏移和对齐点，或者用快速对齐让中文整段按一个倍速放满全片（都不做逐句对齐）；配音开着时原声降 20%。
-          音频文件只存在这个浏览器里（扩展自己的 IndexedDB），不上传、不发任何网络请求、不花钱；导出数据时只导出视频与文件名、偏移的对应关系。
+          音频文件只存在这个浏览器里（扩展自己的 IndexedDB）；播放、对齐、保存双语视频都不上传、不发网络请求、不花钱。唯一的例外是你在"配音"页点"从配音音频识别字幕"并确认开始的时候：这段配音会一句一句发往 OpenAI 转写。导出数据时只导出视频与文件名、偏移的对应关系和字幕文字。
         </p>
         <label class="inline">
           <input type="checkbox" data-testid="dub-enabled" checked={settings.dub.enabled} onChange={(e) => updateSection('dub', { enabled: e.currentTarget.checked })} />
@@ -852,7 +852,7 @@ function App() {
             checked={settings.dub.subtitles.show}
             onChange={(e) => updateSection('dub', { subtitles: { ...settings.dub.subtitles, show: e.currentTarget.checked } })}
           />
-          配音开着时在视频画面底部显示配音的字幕（配音这段音频自己的字幕，要你在侧边栏"配音"页给它选：字幕文件，或小宇宙里已经生成的那一集；按配音实际放到的位置显示。字体、字号、颜色、背景、位置也在那里调）
+          配音开着时在视频画面底部显示配音的字幕（配音这段音频自己的字幕，在侧边栏"配音"页给它弄一份：选字幕文件；没有字幕文件时从配音音频识别——发往 OpenAI 转写、大模型校对，花费记在"字幕 $"里，受「12. 自动字幕」的每日预算约束；或用小宇宙里已经生成的那一集。按配音实际放到的位置显示。字体、字号、颜色、背景、位置也在那里调）
         </label>
       </Section>
 

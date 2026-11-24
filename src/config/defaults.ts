@@ -263,7 +263,7 @@ export const DEFAULT_SETTINGS = {
      * （按配音实际放到的位置，不按视频时间）。样式在侧边栏「配音」页调，对所有视频生效
      */
     subtitles: {
-      /** 显示配音字幕（每个配音的字幕要你自己选：字幕文件，或小宇宙里已经生成的那一集） */
+      /** 显示配音字幕（每个配音的字幕要你给它：选字幕文件、从配音音频识别（DECISIONS §91），或用小宇宙里已经生成的那一集） */
       show: true,
       /** 字体：见 DUB_SUB_FONTS */
       font: 'sans' as DubSubFont,
@@ -1139,6 +1139,41 @@ export const DUB = {
     raisePct: { min: 0, max: 80, step: 1 },
     lineMaxWidthRatio: 0.92,
     shortsBottomRatio: 0.2,
+  },
+  /**
+   * 从配音音频识别字幕（用户 2026-11-24 要求，见 DECISIONS §91）：没有字幕文件时，把这段配音按停顿切成一句一句，
+   * 发往 OpenAI 转写、再由大模型校对，存成这个配音的字幕。花费记在"字幕 $"里，和自动字幕、小宇宙字幕共用每日预算。
+   * windowSec：一次解码多长的音频（内存只占这么多）；
+   * segmenter：切句参数，沿用小宇宙字幕的（同一类音频：播客式的连续讲话，停顿 0.5 秒算一句说完，一句最长 12 秒）；
+   * maxSegmentSec：一句最长多少秒（发出去之前按它截）；minSegmentSec：短于这么多秒的不发（咔哒声）；
+   * maxInFlight：同时在途的转写请求；promptChars：转写提示词（配音文件名、前几句）最多多少字；promptCues：带前面几句；
+   * proofBatch / proofContextCues / proofMaxOutputTokens：校对一次多少句、带前面几句作上下文、输出上限；
+   * proofEstimate：预算护栏按它预留（偏保守）；proofTypical：给你看的预计花费按它算（每 proofBatch 句一次）；typicalCueSec：平均几秒一句；
+   * proofMinRatio / proofMaxRatio：校对后的字数和原文差出这个范围就不采用（校对只该改错字、补标点，不该增删内容）；
+   * saveEvery：每识别完多少句把进度存一次（侧边栏中途被关掉时最多丢这么多句）；
+   * retries / retryBaseMs：网络出错时一句最多再试几次、从等多久开始；rateRetries / rateWaitMaxMs：被限流时最多等几次、一次最多等多久
+   */
+  asr: {
+    windowSec: 60,
+    segmenter: { pauseSec: 0.5, minSegmentSec: 2, longPauseSec: 1.0, maxSegmentSec: 12 },
+    maxSegmentSec: 13,
+    minSegmentSec: 0.3,
+    maxInFlight: 6,
+    promptChars: 300,
+    promptCues: 4,
+    proofBatch: 24,
+    proofContextCues: 3,
+    proofMaxOutputTokens: 4000,
+    proofEstimate: { inputTokens: 2500 },
+    proofTypical: { inputTokens: 1500, outputTokens: 900 },
+    typicalCueSec: 5,
+    proofMinRatio: 0.5,
+    proofMaxRatio: 2,
+    saveEvery: 8,
+    retries: 2,
+    retryBaseMs: 2_000,
+    rateRetries: 12,
+    rateWaitMaxMs: 120_000,
   },
 } as const;
 

@@ -17,6 +17,7 @@ import { emptyXyzSaved, sanitizeXyzSaved, type XyzListen, type XyzSaved, type Xy
 import type { Mp3Scan } from '../core/podcast-audio';
 import { sanitizeDubIndex, type DubIndex } from '../core/dub';
 import { dubSubsKey, sanitizeDubSubStyle, sanitizeDubSubsDoc, type DubSubsDoc } from '../core/dub-subs';
+import { dubAsrKey, sanitizeDubAsrDoc, type DubAsrDoc } from '../core/dub-asr';
 import { normalizeZoom } from '../core/zoom';
 import type {
   Adjustment,
@@ -252,6 +253,11 @@ export function subtitleTrackStore(videoId: string): Store<SubtitleTrack | null>
 /** 一个配音的字幕（按配音自己的时间；DECISIONS §86）：每个视频一个键，调偏移、加对齐点时不必重写 */
 export function dubSubsStore(videoId: string): Store<DubSubsDoc | null> {
   return new Store<DubSubsDoc | null>(dubSubsKey(videoId), () => null, (v) => sanitizeDubSubsDoc(v, videoId));
+}
+
+/** 一个配音识别到一半的进度（DECISIONS §91）：每个视频一个键；识别完、存成字幕后删掉 */
+export function dubAsrStore(videoId: string): Store<DubAsrDoc | null> {
+  return new Store<DubAsrDoc | null>(dubAsrKey(videoId), () => null, (v) => sanitizeDubAsrDoc(v, videoId));
 }
 
 /** 一集小宇宙的字幕（按真实时间）：每集一个键 */

@@ -1,7 +1,8 @@
 // 配音字幕（用户 2026-11-18 要求，见 DECISIONS §86）：「配音」页里的一节——勾选要不要在视频画面底部显示配音的字幕，
-// 给这个配音选字幕（字幕文件，或小宇宙里已经生成的那一集），调样式（字体、字号、文字颜色、背景色与不透明度、粗体、描边、抬高多少）。
+// 给这个配音弄一份字幕（选字幕文件；没有字幕文件时从配音音频识别，见 DubAsr.tsx 与 DECISIONS §91；或用小宇宙里已经生成的那一集），
+// 调样式（字体、字号、文字颜色、背景色与不透明度、粗体、描边、抬高多少）。
 // 字幕是配音的字幕：页面里按配音实际放到的位置显示（不按视频时间）；这里的"此刻这一句"也按配音的位置算。
-// 字幕文字存在本机（每个视频一个键），不转写、不翻译、不联网；样式存在设置里，对所有视频生效，改了页面上立刻变。
+// 字幕文字存在本机（每个视频一个键）；样式存在设置里，对所有视频生效，改了页面上立刻变。
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { DEFAULT_SETTINGS, DUB, DUB_SUB_FONTS, type DubSubFont } from '../../config/defaults';
@@ -24,6 +25,8 @@ import { SubtitleFileError } from '../../core/subtitle-track';
 import { listXyzSubsForDub, readDubSubtitles, removeDubSubtitles, setDubSubtitleFile, copyXyzSubsForDub, type DubSubsSaved } from '../../services/dub-service';
 import { stores } from '../../services/repo';
 import { appCtx, useStore } from '../shared/app';
+import { DubAsr } from './DubAsr';
+import { asrJob, useAsrJob } from './dub-asr-job';
 
 const problemText = (e: unknown): string => (e instanceof SubtitleFileError ? (e.hint ? `${e.message}：${e.hint}` : e.message) : e instanceof Error ? e.message : String(e));
 
@@ -160,7 +163,7 @@ function XyzPicker({ rec, busy, onUse }: { rec: DubRecord; busy: boolean; onUse:
   if (!list.length) {
     return (
       <p class="muted small dub-subs-xyz-list" data-testid="dub-subs-xyz-empty">
-        本机还没有小宇宙的字幕。配音如果就是小宇宙上的某一集：打开那一集的页面，在「小宇宙」页生成整集字幕，再回到这里选用。
+        本机还没有小宇宙的字幕。可以直接点"从配音音频识别字幕…"；配音如果就是小宇宙上的某一集，也可以打开那一集的页面，在「小宇宙」页生成整集字幕（带英文译文），再回到这里选用。
         <button class="btn link small" onClick={() => setList(undefined)}>
           收起
         </button>
@@ -204,6 +207,9 @@ export function DubSubtitles({ rec, state }: { rec: DubRecord; state: DubTabStat
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string>();
   const [note, setNote] = useState<string>();
+  // 正在从这个配音的音频识别字幕（DECISIONS §91）：做完会换掉这个配音的字幕，这期间不让同时选文件 / 去掉
+  const asr = useAsrJob();
+  const recognizing = asr?.videoId === rec.videoId && asrJob.busy();
   /** 选文件那一刻的视频（文件对话框开着时你可能换了视频） */
   const pickFor = useRef<string>();
   const stamp = rec.subs?.addedAt;
@@ -296,7 +302,7 @@ export function DubSubtitles({ rec, state }: { rec: DubRecord; state: DubTabStat
   let now: string;
   if (!style.show) now = '已关闭：画面上不显示配音字幕。';
   else if (!settings.dub.enabled) now = '中文配音已在设置中关闭。';
-  else if (!rec.subs) now = '这个配音还没有字幕：在上面选一个字幕文件，或用小宇宙里已经生成的那一集。';
+  else if (!rec.subs) now = recognizing ? '这个配音还没有字幕：正在从配音音频识别，做完自动显示。' : '这个配音还没有字幕：在上面选一个字幕文件、从配音音频识别，或用小宇宙里已经生成的那一集。';
   else if (doc === null) now = '';
   else if (!state.active) now = '开启配音后显示：字幕跟着配音走，配音放到哪句显示哪句。';
   else if (state.phase !== 'ready') now = '配音载入好之后显示。';
@@ -322,8 +328,9 @@ export function DubSubtitles({ rec, state }: { rec: DubRecord; state: DubTabStat
         </p>
       ) : (
         <p class="muted small" data-testid="dub-subs-about">
-          字幕是配音这段音频的字幕（.srt / .vtt，时间按配音文件自己的时间）：显示时跟配音实际放到的位置走，不按视频时间。中英双语的字幕只显示中文那几行。TubeMuse
-          不在这里转写：没有字幕文件、而配音就是小宇宙上的某一集时，在「小宇宙」页生成那一集的字幕，再在这里选用。
+          字幕是配音这段音频的字幕，时间按配音文件自己的时间：显示时跟配音实际放到的位置走，不按视频时间。有字幕文件（.srt /
+          .vtt）就直接选，中英双语的只显示中文那几行；没有字幕文件时，点"从配音音频识别字幕…"让 TubeMuse 从这段配音里识别出带时间轴的字幕（一句一句发往 OpenAI
+          转写，花费记在「字幕 $」里，点开先看预计花费）；配音就是小宇宙上的某一集、那一集的字幕已经在「小宇宙」页生成过时，也可以直接选用。
         </p>
       )}
       {rec.subs && doc === null && (
@@ -332,12 +339,13 @@ export function DubSubtitles({ rec, state }: { rec: DubRecord; state: DubTabStat
         </p>
       )}
       <div class="row wrap">
-        <button class={`btn small${rec.subs ? '' : ' primary'}`} data-testid="dub-subs-pick" disabled={busy} onClick={pick}>
+        <button class={`btn small${rec.subs ? '' : ' primary'}`} data-testid="dub-subs-pick" disabled={busy || recognizing} onClick={pick}>
           {rec.subs ? '换一个字幕文件…' : '选字幕文件（.srt / .vtt）…'}
         </button>
-        <XyzPicker key={rec.videoId} rec={rec} busy={busy} onUse={useXyz} />
+        <DubAsr key={`asr:${rec.videoId}`} rec={rec} disabled={busy} />
+        <XyzPicker key={rec.videoId} rec={rec} busy={busy || recognizing} onUse={useXyz} />
         {rec.subs && (
-          <button class="btn link small" data-testid="dub-subs-remove" disabled={busy} onClick={remove}>
+          <button class="btn link small" data-testid="dub-subs-remove" disabled={busy || recognizing} onClick={remove}>
             去掉字幕
           </button>
         )}
