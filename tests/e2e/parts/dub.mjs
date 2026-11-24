@@ -1,12 +1,12 @@
 // @ts-check
 // 中文配音（DECISIONS §74）：给 YouTube 视频选一个本地 .m4a → 存进扩展的 IndexedDB → 下次打开同一视频时提示 →
 // 开启后在页面里叠加播放，跟随播放 / 暂停 / 拖动 / 倍速与偏移 → 对齐点分段跟随（DECISIONS §75）→ 原声降 20%（你改音量、广告、关闭时的处理）
-// → 配音开着时录片段：录下的是双语混音（DECISIONS §76）→ 移除。
-// 全程不发任何新的网络请求。
+// → 配音开着时录片段：录下的是双语混音（DECISIONS §76）→ 从配音音频识别字幕（DECISIONS §91）→ 移除。
+// 除了"从配音音频识别字幕"那一节（发往 OpenAI 转写和大模型校对），全程不发任何新的网络请求。
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { check, MOCK, root, shots } from '../harness.mjs';
-import { DUB_VIDEO } from '../mock-server.mjs';
+import { DUB_VIDEO, dubProofs, dubTranscribes } from '../mock-server.mjs';
 
 /** @param {import('../harness.mjs').Harness} t */
 export async function dub(t) {
@@ -34,6 +34,9 @@ export async function dub(t) {
   await panel.bringToFront();
   await panel.getByRole('tab', { name: '配音', exact: true }).click();
   const reqStart = requests.length;
+  /** "从配音音频识别字幕"那一节发出的请求在 requests 里的范围：只有这一节会联网（DECISIONS §91） */
+  let asrFrom = 0;
+  let asrTo = 0;
   const url = `${MOCK}/watch?v=${DUB_VIDEO.id}`;
   const [page] = await Promise.all([context.waitForEvent('page'), panel.evaluate((u) => /** @type {any} */ (globalThis).chrome.tabs.create({ url: u, active: true }), url)]);
   page.on('pageerror', (e) => consoleErrors.push(`dub watch pageerror: ${e.message}`));
@@ -1179,6 +1182,136 @@ export async function dub(t) {
   for (let i = 0; i < 30 && (await overlay()) !== undefined; i++) await page.waitForTimeout(100);
   const goneDoc = await panel.evaluate((k) => /** @type {any} */ (globalThis).chrome.storage.local.get(k).then((/** @type {any} */ x) => k in x), `dubSubs:${DUB_VIDEO.id}`);
   check((await overlay()) === undefined && goneDoc === false && (await page.evaluate(() => document.querySelectorAll('[data-tubemuse]').length)) === 0, '"去掉字幕"：说明和字幕本身都从本机删掉，页面上的字幕层拿掉');
+
+  console.log('\n[中文配音：从配音音频识别字幕（DECISIONS §91）——没有字幕文件时，直接从配音的 m4a 里识别出带时间轴的字幕；花费记进"字幕 $"；被打断后接着识别]');
+  asrFrom = requests.length;
+  const OPENAI_KEY = 'e2e-openai-test-key-not-real';
+  await fetch(`${MOCK}/e2e/transcribe-mode?mode=ok`);
+  /** 改本机存着的 Key / 每日字幕预算（和在设置页改是同一份存储） */
+  const setAsrEnv = (/** @type {{ openaiKey?: string | null, budgetUsd?: number }} */ env) =>
+    panel.evaluate(async (env) => {
+      const c = /** @type {any} */ (globalThis).chrome;
+      const { secrets, settings } = await c.storage.local.get(['secrets', 'settings']);
+      if (env.openaiKey !== undefined) await c.storage.local.set({ secrets: { ...(secrets ?? {}), openaiApiKey: env.openaiKey ?? undefined } });
+      if (env.budgetUsd !== undefined) await c.storage.local.set({ settings: { ...settings, subtitles: { ...settings.subtitles, dailyBudgetUsd: env.budgetUsd } } });
+    }, env);
+  const ledgerToday = async () => {
+    const days = /** @type {any} */ (await panel.evaluate(() => /** @type {any} */ (globalThis).chrome.storage.local.get('subtitleLedger'))).subtitleLedger?.days ?? {};
+    const all = /** @type {any[]} */ (Object.values(days));
+    return { asrSeconds: all.reduce((n, d) => n + (d.asrSeconds ?? 0), 0), translations: all.reduce((n, d) => n + (d.translations ?? 0), 0), spentUsd: all.reduce((n, d) => n + (d.spentUsd ?? 0), 0), holds: all.reduce((n, d) => n + (d.holds?.length ?? 0), 0) };
+  };
+  const asrDoc = async () => /** @type {any} */ (await panel.evaluate((k) => /** @type {any} */ (globalThis).chrome.storage.local.get(k).then((/** @type {any} */ x) => x[k]), `dubAsr:${DUB_VIDEO.id}`));
+  const asrSubsDoc = async () => /** @type {any} */ (await panel.evaluate((k) => /** @type {any} */ (globalThis).chrome.storage.local.get(k).then((/** @type {any} */ x) => x[k]), `dubSubs:${DUB_VIDEO.id}`));
+  await setAsrEnv({ openaiKey: OPENAI_KEY, budgetUsd: 1 });
+  const aboutText = ((await panel.getByTestId('dub-subs-about').textContent()) ?? '').replace(/\s+/g, ' ');
+  check(
+    !aboutText.includes('不在这里转写') && aboutText.includes('从配音音频识别字幕') && aboutText.includes('发往 OpenAI') && aboutText.includes('字幕 $') && (await nowText()).includes('从配音音频识别') && (await panel.getByTestId('dub-subs-asr').isVisible()) && (await panel.getByTestId('dub-subs-pick').isVisible()),
+    '没有字幕时："选字幕文件"旁边多了"从配音音频识别字幕…"，说明文字不再说"TubeMuse 不在这里转写"，写明声音发往 OpenAI、花费记在「字幕 $」里；手动选字幕文件的入口照旧',
+  );
+  const dubSent = () => dubTranscribes.length;
+  const sentAtStart = dubSent();
+
+  // 没有 OpenAI Key：点开就说明，开始不了
+  await setAsrEnv({ openaiKey: null });
+  await panel.getByTestId('dub-subs-asr').click();
+  await panel.getByTestId('dub-asr-plan').waitFor({ timeout: 8000 });
+  check(((await panel.getByTestId('dub-asr-problem').textContent()) ?? '').includes('需要 OpenAI API Key') && (await panel.getByTestId('dub-asr-start').isDisabled()), '没有 OpenAI Key：点开就说明要先填 Key，"开始识别"点不了');
+  await panel.getByTestId('dub-asr-close').click();
+  await setAsrEnv({ openaiKey: OPENAI_KEY });
+
+  // 今天的"字幕 $"预算用完了：开始前提示，开始后立刻停下说明，一个请求都不发
+  await setAsrEnv({ budgetUsd: 0 });
+  await panel.getByTestId('dub-subs-asr').click();
+  await panel.getByTestId('dub-asr-over-budget').waitFor({ timeout: 8000 });
+  await panel.getByTestId('dub-asr-start').click();
+  await panel.getByTestId('dub-asr-error').waitFor({ timeout: 15000 });
+  const budgetStop = (await panel.getByTestId('dub-asr-error').textContent()) ?? '';
+  check(budgetStop.includes('字幕花费已到上限') && dubSent() === sentAtStart && (await storedRec()).subs === undefined, `和自动字幕、小宇宙字幕共用每日"字幕 $"预算：不够时开始前提示、开始后停下说明，没有发出转写请求（${budgetStop.trim().slice(0, 40)}…）`);
+  await panel.getByTestId('dub-asr-error').getByRole('button', { name: '知道了' }).click();
+  await setAsrEnv({ budgetUsd: 1 });
+
+  // 点开：先给你看要做什么、发到哪、大约花多少；点"开始识别"才开始
+  const ledgerBefore = await ledgerToday();
+  await fetch(`${MOCK}/e2e/transcribe-mode?mode=slow&delayMs=1500`);
+  await panel.getByTestId('dub-subs-asr').click();
+  await panel.getByTestId('dub-asr-estimate').waitFor({ timeout: 8000 });
+  const planText = ((await panel.getByTestId('dub-asr-plan').textContent()) ?? '').replace(/\s+/g, ' ');
+  check(
+    planText.includes('一句一句发往 OpenAI') && planText.includes('gpt-transcribe') && planText.includes('claude-haiku-5-5') && planText.includes('（1:32）') && /预计约 \$0\.00\d+（转写 \$0\.00\d+ \+ 校对 \$0\.00\d+）/.test(planText) && planText.includes('记在「字幕 $」里') && planText.includes('今天还剩') && planText.includes('时间轴来自切句') && dubSent() === sentAtStart,
+    `点开先说明：按停顿切句、一句一句发往 OpenAI 转写、大模型校对，预计花费和今天「字幕 $」的余额；这时还没发任何请求（${/预计约[^；]*/.exec(planText)?.[0]}）`,
+  );
+  await panel.getByTestId('dub-asr-start').click();
+  await panel.getByTestId('dub-asr-running').waitFor({ timeout: 8000 });
+  check((await panel.getByTestId('dub-subs-pick').isDisabled()) && (await nowText()).includes('正在从配音音频识别'), '识别中：显示进度，这期间不能同时选字幕文件（做完会换掉这个配音的字幕）');
+  // 识别到一半点"停止"：在途的几句等它们回来，进度存在本机
+  let progressText = '';
+  for (let i = 0; i < 150; i++) {
+    progressText = ((await panel.getByTestId('dub-asr-progress').textContent()) ?? '').trim();
+    if (Number(/· (\d+) 句/.exec(progressText)?.[1] ?? 0) >= 4) break;
+    await page.waitForTimeout(100);
+  }
+  await panel.getByTestId('dub-asr-stop').click();
+  await panel.getByTestId('dub-asr-resume').waitFor({ timeout: 20000 });
+  const half = await asrDoc();
+  const sentAtStop = dubSent() - sentAtStart;
+  const resumeText = ((await panel.getByTestId('dub-asr-resume').textContent()) ?? '').replace(/\s+/g, ' ');
+  check(
+    /已识别到 \d+:\d\d \/ 1:32/.test(progressText) && !!half && half.doneTo > 5 && half.doneTo < 91 && half.cues.length === sentAtStop && sentAtStop >= 4 && sentAtStop < 30 && resumeText.includes('已停止') && resumeText.includes('上次识别到') && (await storedRec()).subs === undefined,
+    `识别到一半点"停止"：已经发出去的 ${sentAtStop} 句等它们回来，进度存在本机（识别到 ${half?.doneTo?.toFixed?.(1)} 秒），还没存成字幕；界面给出"接着识别 / 先用已识别的这部分 / 丢掉"（进度：${progressText}）`,
+  );
+  // 先用已识别的这部分：存成这个配音的字幕（和字幕文件同一个键），画面上按配音放到的位置显示
+  await panel.getByTestId('dub-asr-partial').click();
+  r = await waitStored((x) => x.subs?.source === 'asr', '先用已识别的部分');
+  const partNote = ((await panel.getByTestId('dub-asr-note').textContent()) ?? '').trim();
+  check(r.subs.count === sentAtStop && r.subs.lang === 'zh' && partNote.includes('后面没识别的地方没有字幕') && !!(await asrDoc()), `"先用已识别的这部分"：${r.subs.count} 句存成这个配音的字幕，如实说只有前面一段；进度留着，还能接着识别（${partNote.slice(0, 36)}…）`);
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 4));
+  ov = await waitOverlay((o) => !!o && o.text === '配音第1段说的话', '识别出的字幕第 1 段');
+  check(true, `识别出的字幕和选进来的字幕文件走同一套显示：配音放到 0:04 时画面底部是那一段（3.5–5.3 秒）的字幕"${ov.text}"`);
+  // 接着识别：只识别剩下的，已经付过钱的不重来
+  await panel.getByTestId('dub-asr-resume-open').click();
+  await panel.getByTestId('dub-asr-estimate').waitFor({ timeout: 8000 });
+  const resumePlan = ((await panel.getByTestId('dub-asr-plan').textContent()) ?? '').replace(/\s+/g, ' ');
+  check(resumePlan.includes('接着识别剩下的') && resumePlan.includes('识别完成后会换掉现在这份字幕') && ((await panel.getByTestId('dub-asr-start').textContent()) ?? '').includes('接着识别'), '接着识别：预计花费只算剩下的那一段；已有字幕时说明做完会换掉它、做完之前照常显示');
+  await fetch(`${MOCK}/e2e/transcribe-mode?mode=ok`);
+  await panel.getByTestId('dub-asr-start').click();
+  await panel.getByTestId('dub-asr-done').waitFor({ timeout: 40000 });
+  const doneText = ((await panel.getByTestId('dub-asr-done').textContent()) ?? '').trim();
+  r = await waitStored((x) => x.subs?.source === 'asr' && x.subs.count === 30, '识别完整');
+  const full = await asrSubsDoc();
+  const ks = /** @type {any[]} */ (full.cues).map((c) => Number(/第(\d+)段/.exec(c.text)?.[1] ?? -1));
+  // 夹具（xyz-tones.m4a）：第 k 段音从 0.5 + 3k 秒响到 2.3 + 3k 秒；切句时句首、句尾各留约 0.2 秒
+  const offBy = /** @type {any[]} */ (full.cues).map((c, i) => c.start - (0.5 + i * 3));
+  const lens = /** @type {any[]} */ (full.cues).map((c) => c.end - c.start);
+  check(ks.length === 30 && ks.every((k, i) => k === i) && /** @type {any[]} */ (full.cues).every((c) => c.text.endsWith('（校）')), `整段 30 句都识别出来了，按顺序、都校对过，存在和字幕文件同一个键（dubSubs:…）里：${doneText.slice(0, 30)}…`);
+  check(
+    offBy.every((d) => d > -0.4 && d < 0.15) && lens.every((d) => d > 1.8 && d < 2.6),
+    `时间轴按配音文件自己的时间、来自切句：每句的开始对得上那段音（句首留白 ${Math.min(...offBy).toFixed(2)}～${Math.max(...offBy).toFixed(2)} 秒），长度也对得上（${Math.min(...lens).toFixed(2)}～${Math.max(...lens).toFixed(2)} 秒；音长 1.8 秒，句首句尾各留约 0.2 秒）`,
+  );
+  const sentTotal = dubSent() - sentAtStart;
+  check(sentTotal === 30 && (await asrDoc()) === undefined, `接着识别时已识别的 ${sentAtStop} 句没有再发一遍（一共发了 ${sentTotal} 次转写）；做完后进度从本机删掉`);
+  const asrReqs = requests.slice(asrFrom).filter((x) => x.path === '/openai/v1/audio/transcriptions');
+  const proofReqs = requests.slice(asrFrom).filter((x) => x.path.startsWith('/anthropic'));
+  check(
+    asrReqs.length === 30 && asrReqs.every((x) => x.headers.authorization === `Bearer ${OPENAI_KEY}` && !x.body.includes(DUB_VIDEO.id)) && dubTranscribes.slice(sentAtStart).every((x) => x.prompt.startsWith('xyz-tones') && x.prompt.length <= 300),
+    '转写：一句一句的音频发往 OpenAI，Key 只在请求头；提示词是配音文件名和前几句，不带视频 ID',
+  );
+  check(
+    proofReqs.length >= 1 && dubProofs.length === proofReqs.length && proofReqs.every((x) => x.body.includes('xyz-tones') && x.body.includes('配音第') && !x.body.includes(DUB_VIDEO.id) && !x.body.includes('RIFF')),
+    `校对：只把转写出的文字、配音文件名和视频标题发给大模型（${proofReqs.length} 次），不发声音、不带视频 ID`,
+  );
+  const ledgerAfter = await ledgerToday();
+  check(
+    Math.abs(ledgerAfter.asrSeconds - ledgerBefore.asrSeconds - 60) < 0.01 && ledgerAfter.translations - ledgerBefore.translations === 30 && ledgerAfter.spentUsd > ledgerBefore.spentUsd && ledgerAfter.holds === 0,
+    `花费记进"字幕 $"（和自动字幕、小宇宙字幕同一本账）：转写 +${(ledgerAfter.asrSeconds - ledgerBefore.asrSeconds).toFixed(0)} 秒、校对 +${ledgerAfter.translations - ledgerBefore.translations} 句、合计 +$${(ledgerAfter.spentUsd - ledgerBefore.spentUsd).toFixed(4)}，预扣都结清`,
+  );
+  await page.evaluate(() => (/** @type {HTMLVideoElement} */ (document.querySelector('video')).currentTime = 76));
+  ov = await waitOverlay((o) => !!o && o.text === '配音第25段说的话（校）', '识别出的字幕第 25 段');
+  const metaText = ((await panel.getByTestId('dub-subs-meta').textContent()) ?? '').trim();
+  check(metaText.includes('从这段配音音频识别') && ((await panel.getByTestId('dub-subs-asr').textContent()) ?? '').includes('重新从配音音频识别'), `识别完自动加载显示（配音放到 1:16 时是"${ov.text}"）；侧边栏写明这份字幕是机器识别的：${metaText}`);
+  await panel.getByTestId('dub-asr-done').getByRole('button', { name: '知道了' }).click();
+  asrTo = requests.length;
+  await panel.getByTestId('dub-subs-remove').click();
+  await waitStored((x) => x.subs === undefined, '识别检查之后去掉字幕');
   // 留一份字幕到后面："移除"配音时要一并删掉
   await panel.getByTestId('dub-subs-file').setInputFiles({ name: '配音.srt', mimeType: 'application/x-subrip', buffer: Buffer.from(srt, 'utf8') });
   await waitStored((x) => x.subs?.source === 'file', '再存一份字幕');
@@ -1357,9 +1490,15 @@ export async function dub(t) {
   for (let i = 0; i < 20 && (await badge()) !== ''; i++) await page.waitForTimeout(150);
   check((await badge()) === '', '移除后图标上的"中"消失');
 
-  // 全程只有页面自己取视频：TubeMuse 没有为配音发出任何请求
-  const newReqs = requests.slice(reqStart).filter((r) => !(r.path === `/watch` || r.path === `/media/${DUB_VIDEO.id}.wav` || r.path === '/favicon.ico' || r.path.startsWith('/youtube/v3/videos')));
-  check(newReqs.length === 0, `配音没有发出任何网络请求${newReqs.length ? `：${[...new Set(newReqs.map((r) => r.path))].join(', ')}` : ''}`);
+  // 全程只有页面自己取视频：除了你点"从配音音频识别字幕"并确认开始的那一节，TubeMuse 没有为配音发出任何请求
+  const own = (/** @type {any} */ r) => r.path === `/watch` || r.path === `/media/${DUB_VIDEO.id}.wav` || r.path === '/favicon.ico' || r.path.startsWith('/youtube/v3/videos');
+  const asrSection = requests.slice(asrFrom, asrTo).filter((r) => !own(r) && !r.path.startsWith('/e2e/'));
+  check(
+    asrSection.length > 0 && asrSection.every((r) => r.path === '/openai/v1/audio/transcriptions' || r.path === '/anthropic/v1/messages'),
+    `"从配音音频识别字幕"那一节只发往 OpenAI 转写和你选的大模型${asrSection.length ? `（${[...new Set(asrSection.map((r) => r.path))].join(', ')}）` : ''}`,
+  );
+  const newReqs = [...requests.slice(reqStart, asrFrom), ...requests.slice(asrTo)].filter((r) => !own(r));
+  check(newReqs.length === 0, `除此之外配音没有发出任何网络请求${newReqs.length ? `：${[...new Set(newReqs.map((r) => r.path))].join(', ')}` : ''}`);
   await page.close();
   await panel.bringToFront();
 }

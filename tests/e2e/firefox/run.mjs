@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { FIREFOX_E2E_ADDON_ID, firefoxRedirectUrl } from '../../../scripts/firefox.mjs';
-import { E2E_CLIENT_SECRET, PORT, startMockServer } from '../mock-server.mjs';
+import { E2E_CLIENT_SECRET, PORT, dubTranscribes, startMockServer } from '../mock-server.mjs';
 import { findFirefox } from './find-firefox.mjs';
 import { Browser, Marionette, launchFirefox } from './marionette.mjs';
 
@@ -903,6 +903,31 @@ try {
   }
   await b.switchTo(handles.panel);
   check(Math.abs(ffBack - 1) < 0.005, `Firefox：关闭配音，原声恢复（${ffBack}）`);
+  // 从配音音频识别字幕（DECISIONS §91）：没有字幕文件时，在 Firefox 的侧边栏页面里把配音的 m4a 解码（AAC → decodeAudioData）、
+  // 按停顿切句、一句一句发去转写、校对，存成这个配音的字幕（和字幕文件同一个键）
+  await b.run(
+    `const { secrets } = await browser.storage.local.get('secrets');
+     await browser.storage.local.set({ secrets: { ...(secrets ?? {}), openaiApiKey: secrets?.openaiApiKey ?? 'e2e-openai-test-key-not-real' } });
+     return true;`,
+  );
+  const ffSentBefore = dubTranscribes.length;
+  await tap('[data-testid=dub-subs-asr]');
+  await b.waitFor(`!!document.querySelector('[data-testid=dub-asr-estimate]')`, { what: '识别前先给预计花费' });
+  const ffPlan = String(await b.exec(`return document.querySelector('[data-testid=dub-asr-plan]').textContent;`)).replace(/\s+/g, ' ');
+  await tap('[data-testid=dub-asr-start]');
+  await b.waitFor(`!!document.querySelector('[data-testid=dub-asr-done]') || !!document.querySelector('[data-testid=dub-asr-error]')`, { what: '从配音音频识别字幕', timeout: 90_000 });
+  const ffAsr = await b.run(
+    `const all = await browser.storage.local.get(null);
+     return { subs: all.dubs?.dubVideo0001?.subs, cues: all['dubSubs:dubVideo0001']?.cues ?? [], left: 'dubAsr:dubVideo0001' in all, error: document.querySelector('[data-testid=dub-asr-error]')?.textContent ?? '' };`,
+  );
+  // 夹具：第 k 段音从 0.5 + 3k 秒响 1.8 秒；mock 转写从收到的音频里认出是第几段
+  const ffKs = /** @type {any[]} */ (ffAsr.cues).map((c) => Number(/第(\d+)段/.exec(c.text)?.[1] ?? -1));
+  const ffOff = /** @type {any[]} */ (ffAsr.cues).map((c, i) => c.start - (0.5 + 3 * i));
+  check(
+    ffPlan.includes('一句一句发往 OpenAI') && /预计约 \$0\.00\d+/.test(ffPlan) && ffAsr.subs?.source === 'asr' && ffAsr.subs.count === 30 && ffKs.every((k, i) => k === i) && ffAsr.cues.every((/** @type {any} */ c) => c.text.endsWith('（校）')) && !ffAsr.left && dubTranscribes.length - ffSentBefore === 30,
+    `Firefox：从配音音频识别字幕——先给预计花费，30 句都识别出来、按顺序、校对过，存成这个配音的字幕${ffAsr.error ? `（出错：${ffAsr.error}）` : ''}`,
+  );
+  check(ffOff.length === 30 && ffOff.every((d) => d > -0.4 && d < 0.15), `Firefox：字幕的时间按配音文件自己的时间，每句的开始对得上那段音（句首留白 ${Math.min(...ffOff).toFixed(2)}～${Math.max(...ffOff).toFixed(2)} 秒）`);
   await tap('[data-testid=dub-remove]');
   await tap('[data-testid=dub-remove-yes]');
   await b.waitFor(`!!document.querySelector('[data-testid=dub-pick]')`, { what: '移除后回到选文件' });

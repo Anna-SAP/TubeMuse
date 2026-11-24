@@ -26,7 +26,8 @@ export function firefoxRedirectUrl(/** @type {string} */ addonId) {
  * Mozilla 的定义：扩展把数据发到扩展以外的任何地方都算。下面四项都是"必需"（安装时同意一次），对应的功能：
  * - searchTerms：找片口令发给你选的大模型，搜索词发给 YouTube Data API（核心功能）
  * - browsingActivity：每日总结、兴趣簇——看过 / 喜欢的视频标题、频道、看了多少发给大模型
- * - websiteContent：eMails 把邮件里的文章标题和摘要发给大模型；自动字幕选 OpenAI 转写时把视频声音发给 OpenAI
+ * - websiteContent：eMails 把邮件里的文章标题和摘要发给大模型；自动字幕选 OpenAI 转写时把视频声音发给 OpenAI；
+ *   从配音音频识别字幕时把你关联的那段配音一句一句发给 OpenAI、文件名和视频标题发给大模型（DECISIONS §91）
  * - personalCommunications：eMails 读的是你的邮件（只发文章标题和摘要，不发主题、发件人），保守起见声明
  * 没有声明的：authenticationInfo（Key 和令牌只发往各自的服务登录它自己）、locationInfo（只发时区换算"两天内"）、
  * technicalAndInteraction（没有任何遥测）、personallyIdentifyingInfo（不发姓名、联系方式）。

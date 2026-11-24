@@ -464,6 +464,10 @@ const empty = (/** @type {Partial<Record<string, unknown>>} */ c) => ({
 export const xyzTranscribes = [];
 /** @type {string[]} */
 export const xyzPolishes = [];
+/** 从配音音频识别字幕（DECISIONS §91）：收到的转写（认出的段号与提示词）与校对请求，供断言 @type {{ k: number | undefined; prompt: string }[]} */
+export const dubTranscribes = [];
+/** @type {string[]} */
+export const dubProofs = [];
 
 function llmAnswer(/** @type {string} */ system, /** @type {string} */ user) {
   if (system.includes('兴趣画像')) {
@@ -491,6 +495,12 @@ function llmAnswer(/** @type {string} */ system, /** @type {string} */ user) {
   }
   if (system.includes('故事整理员')) return storyBriefAnswer();
   if (system.includes('只回复')) return { ok: true };
+  if (system.includes('你是字幕校对。输入是一段中文配音音频')) {
+    // 配音字幕校对：每句末尾加一个"（校）"标记，便于断言校对过没有、哪句对哪句
+    dubProofs.push(user);
+    const items = /** @type {{ id: string; text: string }[]} */ (JSON.parse(user.slice(user.indexOf('待校对（JSON）：\n') + '待校对（JSON）：\n'.length)));
+    return { items: items.map((i) => ({ id: i.id, text: `${i.text}（校）` })) };
+  }
   if (system.includes('播客字幕的校对兼翻译')) {
     // 小宇宙：中文加一个"（校）"标记，英文带上同一个编号，便于断言哪句对哪句、校对过没有
     xyzPolishes.push(user);
@@ -617,10 +627,11 @@ function speechWav(seconds) {
 let transcribeCounter = 0;
 /**
  * 语音转写的模拟故障（只有测试脚本经 /e2e/transcribe-mode 设置，浏览器不会访问）：
- * ok = 正常；quota = 一直 429 credit_balance_exhausted；slowdown = 接下来 N 次 429 slow_down（带 Retry-After），之后正常
+ * ok = 正常；quota = 一直 429 credit_balance_exhausted；slowdown = 接下来 N 次 429 slow_down（带 Retry-After），之后正常；
+ * slow = 照常回答，但每个请求晚 delayMs 毫秒才回（测试来得及在识别到一半时点"停止"）
  */
-/** @type {{ mode: 'ok' | 'quota' | 'slowdown'; remaining: number; retryAfter: number }} */
-const transcribeFault = { mode: 'ok', remaining: 0, retryAfter: 0 };
+/** @type {{ mode: 'ok' | 'quota' | 'slowdown' | 'slow'; remaining: number; retryAfter: number; delayMs: number }} */
+const transcribeFault = { mode: 'ok', remaining: 0, retryAfter: 0, delayMs: 0 };
 
 /**
  * 模拟授权页的节奏（只有测试脚本经 /e2e/authorize-mode 设置）：
@@ -941,6 +952,7 @@ export function startMockServer() {
         transcribeFault.mode = /** @type {any} */ (url.searchParams.get('mode') ?? 'ok');
         transcribeFault.remaining = Number(url.searchParams.get('times') ?? 1);
         transcribeFault.retryAfter = Number(url.searchParams.get('retryAfter') ?? 0);
+        transcribeFault.delayMs = Number(url.searchParams.get('delayMs') ?? 0);
         return send(200, { ok: true });
       }
       if (p === '/openai/v1/audio/transcriptions' && req.method === 'POST') {
@@ -959,6 +971,14 @@ export function startMockServer() {
           const k = xyzToneIndex(raw);
           xyzTranscribes.push({ k, prompt: /name="prompt"\r\n\r\n([^\r]*)/.exec(body)?.[1] ?? '' });
           return send(200, { text: k === undefined ? '' : `这是第${k}段音频的内容`, languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 2 } });
+        }
+        // 从配音音频识别字幕：提示词以配音文件名（去掉扩展名）开头；从音频里认出是第几段音，回一句带编号的话
+        const prompt = /name="prompt"\r\n\r\n([^\r]*)/.exec(body)?.[1] ?? '';
+        if (prompt.startsWith('xyz-tones')) {
+          const k = xyzToneIndex(raw);
+          dubTranscribes.push({ k, prompt });
+          const answer = () => send(200, { text: k === undefined ? '' : `配音第${k}段说的话`, languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 2 } });
+          return transcribeFault.mode === 'slow' ? void setTimeout(answer, transcribeFault.delayMs) : answer();
         }
         return send(200, { text: `第 ${transcribeCounter} 句：我说到哪里了`, languages: [{ code: 'zh' }], usage: { type: 'duration', seconds: 2 } });
       }

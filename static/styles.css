@@ -2196,6 +2196,25 @@ a.db-title:hover {
 .dub-subs-xyz-list {
   flex-basis: 100%;
 }
+/* 从配音音频识别字幕（DECISIONS §91）：预计花费、进度、接着识别——排在这一排按钮的下面，占满一行 */
+.dub-subs-asr {
+  flex-basis: 100%;
+  order: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+div.dub-subs-asr {
+  padding: 6px 8px;
+  border-left: 3px solid var(--accent);
+}
+/* 识别中的那一行：比录制计时小一号（这一行字多，要能折行） */
+.dub-asr-progress {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .dub-subs-xyz-list select {
   max-width: 100%;
   min-width: 0;

@@ -2,8 +2,9 @@
 // 1. 字幕是配音的字幕：按配音实际放到的位置（配音那个 <audio> 的 currentTime）找这一句，不按视频时间——
 //    手动对齐时中文会停下等画面、会在对齐点跳过去，快速对齐时中文是变速放的，视频时间和中文位置对不上。
 // 2. 字幕的语言跟配音走：这个功能是"中文配音"，中英双语的字幕文件里只留中文那几行；小宇宙的字幕每句取它自己语言的那一行。
-// 3. 字幕从两处来：你选的字幕文件（.srt / .vtt），或小宇宙里已经生成的那一集字幕（配音多半就是那一集的音频）。
-//    这里不转写、不翻译、不联网、不花钱。
+// 3. 字幕从三处来：你选的字幕文件（.srt / .vtt）；从这段配音音频识别（用户 2026-11-24 要求，见 DECISIONS §91：
+//    core/dub-asr.ts、services/dub-asr-service.ts，发往 OpenAI 转写、花费记在"字幕 $"里）；或小宇宙里已经生成的那一集字幕。
+//    三种来源存成同一种东西（一串 SubCue），之后的整理、存储、显示完全一样。这个文件里不转写、不翻译、不联网、不花钱。
 // 画字幕层在 content/dub-subtitles.ts；配音的位置由配音脚本（content/dub.ts）经同一个隔离环境交过来。
 
 import { DEFAULT_SETTINGS, DUB, DUB_SUB_FONTS, type DubSubFont } from '../config/defaults';
@@ -309,5 +310,6 @@ export function dubSubFontPx(style: Pick<DubSubStyle, 'scale'>, playerW: number,
 
 /** 这个配音的字幕一句话的说明（列表、标题里用） */
 export function dubSubsMetaText(m: DubSubsMeta): string {
-  return `${m.name} · ${m.count} 句 · ${DUB_SUB_LANG_LABELS[m.lang]}${m.source === 'xyz' ? ' · 取自小宇宙里已生成的字幕' : ''}`;
+  const from = m.source === 'xyz' ? ' · 取自小宇宙里已生成的字幕' : m.source === 'asr' ? ' · 由 TubeMuse 从这段配音音频识别（机器识别，可能有错字）' : '';
+  return `${m.name} · ${m.count} 句 · ${DUB_SUB_LANG_LABELS[m.lang]}${from}`;
 }
