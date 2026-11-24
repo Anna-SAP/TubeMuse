@@ -1309,6 +1309,24 @@ export async function dub(t) {
   const metaText = ((await panel.getByTestId('dub-subs-meta').textContent()) ?? '').trim();
   check(metaText.includes('从这段配音音频识别') && ((await panel.getByTestId('dub-subs-asr').textContent()) ?? '').includes('重新从配音音频识别'), `识别完自动加载显示（配音放到 1:16 时是"${ov.text}"）；侧边栏写明这份字幕是机器识别的：${metaText}`);
   await panel.getByTestId('dub-asr-done').getByRole('button', { name: '知道了' }).click();
+  // 另存成 .srt（用户 2026-11-24 要求）：存的就是本机这一份，由浏览器存进下载文件夹；再用"选字幕文件"选回来，一模一样
+  const [srtDl] = await Promise.all([panel.waitForEvent('download', { timeout: 15000 }), panel.getByTestId('dub-subs-save-srt').click()]);
+  const srtBytes = readFileSync(/** @type {string} */ (await srtDl.path()));
+  const srtText = srtBytes.toString('utf8');
+  const srtBlocks = srtText.trim().split(/\n\n+/);
+  const srtNote = ((await panel.getByTestId('dub-subs-note').textContent()) ?? '').trim();
+  check(
+    srtBlocks.length === 30 && /^1\n00:00:00,\d{3} --> 00:00:02,\d{3}\n配音第0段说的话（校）$/.test(srtBlocks[0] ?? '') && /^30\n00:01:27,\d{3} --> 00:01:29,\d{3}\n配音第29段说的话（校）$/.test(srtBlocks[29] ?? ''),
+    `"另存成 .srt"：识别出的 30 句存成标准的 SRT，时间是配音文件自己的时间（第一句：${JSON.stringify((srtBlocks[0] ?? '').split('\n').slice(1).join(' | '))}）`,
+  );
+  check(srtDl.suggestedFilename() === 'xyz-tones.srt' && srtNote.includes('存成「xyz-tones.srt」'), `文件名跟配音文件走：${srtDl.suggestedFilename()}（界面：${srtNote.slice(0, 30)}…）`);
+  await panel.getByTestId('dub-subs-file').setInputFiles({ name: 'xyz-tones.srt', mimeType: 'application/x-subrip', buffer: srtBytes });
+  r = await waitStored((x) => x.subs?.source === 'file', '把存出去的 .srt 选回来');
+  const reloaded = await asrSubsDoc();
+  check(
+    r.subs.count === 30 && JSON.stringify(reloaded.cues) === JSON.stringify(full.cues) && (await panel.getByTestId('dub-subs-save-srt').count()) === 0,
+    '存出去的 .srt 用"选字幕文件"选回来：句数、时间、文字和识别出的那份一模一样（不用再识别一遍）；手动选的字幕不出"另存成 .srt"',
+  );
   asrTo = requests.length;
   await panel.getByTestId('dub-subs-remove').click();
   await waitStored((x) => x.subs === undefined, '识别检查之后去掉字幕');

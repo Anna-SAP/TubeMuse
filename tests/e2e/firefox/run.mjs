@@ -928,6 +928,12 @@ try {
     `Firefox：从配音音频识别字幕——先给预计花费，30 句都识别出来、按顺序、校对过，存成这个配音的字幕${ffAsr.error ? `（出错：${ffAsr.error}）` : ''}`,
   );
   check(ffOff.length === 30 && ffOff.every((d) => d > -0.4 && d < 0.15), `Firefox：字幕的时间按配音文件自己的时间，每句的开始对得上那段音（句首留白 ${Math.min(...ffOff).toFixed(2)}～${Math.max(...ffOff).toFixed(2)} 秒）`);
+  // 另存成 .srt：识别出的字幕由浏览器存进下载文件夹，文件名跟配音文件走
+  const ffSrtBefore = downloaded();
+  await tap('[data-testid=dub-subs-save-srt]');
+  const ffSrtName = await waitDownload(ffSrtBefore, /\.srt$/);
+  const ffSrt = readFileSync(join(downloads, ffSrtName), 'utf8').trim().split(/\n\n+/);
+  check(ffSrtName === 'xyz-tones.srt' && ffSrt.length === 30 && /^1\n00:00:00,\d{3} --> 00:00:02,\d{3}\n配音第0段说的话（校）$/.test(ffSrt[0] ?? ''), `Firefox："另存成 .srt"——${ffSrtName}，${ffSrt.length} 句`);
   await tap('[data-testid=dub-remove]');
   await tap('[data-testid=dub-remove-yes]');
   await b.waitFor(`!!document.querySelector('[data-testid=dub-pick]')`, { what: '移除后回到选文件' });

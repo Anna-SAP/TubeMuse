@@ -5,9 +5,10 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { DUB, SUBTITLES } from '../../src/config/defaults';
 import { ENDPOINTS } from '../../src/config/endpoints';
-import { asrCuesForDub, dubAsrKey, dubAsrPrompt, dubReference, estimateDubAsrUsd, insertCue, parseProof, proofAcceptable, sanitizeDubAsrDoc, settledCues, type DubAsrCue, type DubAsrProgress } from '../../src/core/dub-asr';
+import { asrCuesForDub, asrSrtFileName, dubAsrKey, dubAsrPrompt, dubReference, estimateDubAsrUsd, insertCue, parseProof, proofAcceptable, sanitizeDubAsrDoc, settledCues, type DubAsrCue, type DubAsrProgress } from '../../src/core/dub-asr';
 import { dubSubsMetaText } from '../../src/core/dub-subs';
 import { buildDubProofPrompt } from '../../src/core/prompts';
+import { parseSubtitleFile, toSrt } from '../../src/core/subtitle-track';
 import type { AuthProvider } from '../../src/services/auth';
 import type { AppContext } from '../../src/services/context';
 import { exportAll } from '../../src/services/data-service';
@@ -448,6 +449,30 @@ describe('被打断之后接着识别', () => {
     const saved = (await readDubAsrProgress(t.ctx, VID))!;
     expect(saved.doneTo).toBeGreaterThan(0);
     expect(await readDubSubtitles(t.ctx, VID)).toBeNull();
+  });
+});
+
+describe('识别出的字幕另存成 .srt', () => {
+  it('文件名跟配音文件走（去掉扩展名、网站口号和文件系统不允许的字符）；没有能用的名字时用视频 ID', () => {
+    expect(asrSrtFileName({ fileName: FILE, videoId: VID })).toBe('#838. Shopify创始人Tobi Lütke：黄仁勋、AI，以及为什么创始人不可替代 - 跨国串门儿计划.srt');
+    expect(asrSrtFileName({ fileName: 'a/b:c*?"<>|.m4a', videoId: VID })).toBe('a b c.srt');
+    expect(asrSrtFileName({ fileName: '???.m4a', videoId: VID })).toBe(`youtube-${VID}.srt`);
+    expect(asrSrtFileName({ fileName: `${'长'.repeat(300)}.m4a`, videoId: VID }).length).toBeLessThanOrEqual(84);
+  });
+
+  it('存出去的 .srt 再用"选字幕文件"选回来，和识别出的那份一模一样（句数、时间、文字）', async () => {
+    const t = await setup();
+    await runDubAsr(t.ctx, VID, t.deps);
+    const recognized = (await readDubSubtitles(t.ctx, VID))!.cues;
+    const srt = toSrt(recognized);
+    expect(srt.startsWith('1\n00:00:00,')).toBe(true);
+    expect(parseSubtitleFile(srt)).toEqual(recognized);
+    const sentBefore = t.requests.length;
+    const back = await setDubSubtitleFile(t.ctx, VID, new Blob([srt]), asrSrtFileName(t.rec));
+    expect(back!.meta).toMatchObject({ source: 'file', count: TONE.count, lang: 'zh' });
+    expect((await readDubSubtitles(t.ctx, VID))!.cues).toEqual(recognized);
+    // 选回来不联网、不花钱
+    expect(t.requests).toHaveLength(sentBefore);
   });
 });
 
