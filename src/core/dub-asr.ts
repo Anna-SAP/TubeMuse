@@ -5,6 +5,7 @@
 // 读音频、发请求在 services/dub-asr-service.ts；解码在侧边栏（ui/sidepanel/dub-asr-job.ts）。
 
 import { DUB } from '../config/defaults';
+import { safeFileTitle } from './clips';
 import { formatClockSec } from './dub';
 import { asrCostUsd, formatUsd } from './subtitles';
 import { llmCostUsd } from './spend';
@@ -123,6 +124,16 @@ export function dubAsrPrompt(reference: string, before: readonly DubAsrCue[]): s
   const prev = before.slice(-DUB.asr.promptCues).map(cueText).join(' ');
   const room = Math.max(0, max - head.length - 1);
   return [head, room ? prev.slice(-room) : ''].filter(Boolean).join('\n').slice(0, max);
+}
+
+// ── 另存成 .srt ──
+
+/**
+ * 识别出的字幕另存成 .srt 时叫什么（用户 2026-11-24 要求）：和配音文件同名（去掉扩展名和网站口号），换成 .srt——
+ * 放在配音文件旁边一眼认得出是它的字幕；名字里有文件系统不允许的字符时去掉，一个能用的字都不剩时用视频 ID
+ */
+export function asrSrtFileName(rec: { fileName: string; videoId: string }): string {
+  return `${safeFileTitle(dubReference(rec.fileName)) || `youtube-${rec.videoId}`}.srt`;
 }
 
 // ── 预计花费 ──

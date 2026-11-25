@@ -21,10 +21,12 @@ import {
   type DubSubsDoc,
   type XyzSubsChoice,
 } from '../../core/dub-subs';
-import { SubtitleFileError } from '../../core/subtitle-track';
+import { asrSrtFileName } from '../../core/dub-asr';
+import { SubtitleFileError, toSrt } from '../../core/subtitle-track';
 import { listXyzSubsForDub, readDubSubtitles, removeDubSubtitles, setDubSubtitleFile, copyXyzSubsForDub, type DubSubsSaved } from '../../services/dub-service';
 import { stores } from '../../services/repo';
 import { appCtx, useStore } from '../shared/app';
+import { downloadText } from '../shared/download';
 import { DubAsr } from './DubAsr';
 import { asrJob, useAsrJob } from './dub-asr-job';
 
@@ -203,7 +205,8 @@ export function DubSubtitles({ rec, state }: { rec: DubRecord; state: DubTabStat
   const ctx = appCtx();
   const settings = useStore(stores.settings);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [doc, setDoc] = useState<DubSubsDoc | null>();
+  /** 读进来的字幕，连同它是哪一版（存下的时刻）：换了一份字幕、新的还没读进来时，旧的那份不再算数 */
+  const [loaded, setLoaded] = useState<{ videoId: string; stamp: number; doc: DubSubsDoc | null }>();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string>();
   const [note, setNote] = useState<string>();
@@ -216,16 +219,17 @@ export function DubSubtitles({ rec, state }: { rec: DubRecord; state: DubTabStat
   // 这个配音存着的字幕（"此刻这一句"和预览用）：换了视频、换了一份字幕时重读
   useEffect(() => {
     let live = true;
-    setDoc(undefined);
     if (stamp === undefined) return;
-    void readDubSubtitles(ctx, rec.videoId).then(
-      (d) => live && setDoc(d),
-      () => live && setDoc(null),
+    const videoId = rec.videoId;
+    void readDubSubtitles(ctx, videoId).then(
+      (d) => live && setLoaded({ videoId, stamp, doc: d }),
+      () => live && setLoaded({ videoId, stamp, doc: null }),
     );
     return () => {
       live = false;
     };
   }, [rec.videoId, stamp]);
+  const doc = loaded && loaded.videoId === rec.videoId && loaded.stamp === stamp ? loaded.doc : undefined;
   useEffect(() => {
     setProblem(undefined);
     setNote(undefined);
@@ -290,6 +294,16 @@ export function DubSubtitles({ rec, state }: { rec: DubRecord; state: DubTabStat
     fileRef.current?.click();
   };
   const useXyz = (eid: string) => void run(async () => saved(await copyXyzSubsForDub(ctx, rec.videoId, eid), '已用小宇宙里这一集的字幕'));
+  /** 把识别出的字幕另存成 .srt（用户 2026-11-24 要求）：存的就是本机这一份，由浏览器存进下载文件夹，不联网 */
+  const saveSrt = () =>
+    void run(async () => {
+      // 点的这一刻从本机现读：存出去的一定是现在这一份（刚识别完、界面还没来得及换过来时也一样）
+      const now = await readDubSubtitles(ctx, rec.videoId);
+      if (!now?.cues.length) throw new Error('本机存着的这份字幕不见了（浏览器的存储可能被清理过）：重新识别或重新选一次。');
+      const name = asrSrtFileName(rec);
+      downloadText(name, toSrt(now.cues), 'application/x-subrip;charset=utf-8');
+      setNote(`已把这 ${now.cues.length} 句字幕存成「${name}」（在下载文件夹里）。时间按配音文件自己的时间；以后换了浏览器或清了数据，在这里点"选字幕文件"把它选回来就行，不用再识别一遍。`);
+    });
   const remove = () =>
     void run(async () => {
       await removeDubSubtitles(ctx, rec.videoId);
@@ -343,6 +357,17 @@ export function DubSubtitles({ rec, state }: { rec: DubRecord; state: DubTabStat
           {rec.subs ? '换一个字幕文件…' : '选字幕文件（.srt / .vtt）…'}
         </button>
         <DubAsr key={`asr:${rec.videoId}`} rec={rec} disabled={busy} />
+        {rec.subs?.source === 'asr' && (
+          <button
+            class="btn small"
+            data-testid="dub-subs-save-srt"
+            disabled={busy || recognizing}
+            title="把从配音音频识别出的这份字幕存成 .srt 文件（存进下载文件夹，不联网）"
+            onClick={saveSrt}
+          >
+            另存成 .srt
+          </button>
+        )}
         <XyzPicker key={rec.videoId} rec={rec} busy={busy || recognizing} onUse={useXyz} />
         {rec.subs && (
           <button class="btn link small" data-testid="dub-subs-remove" disabled={busy || recognizing} onClick={remove}>
