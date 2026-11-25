@@ -15,6 +15,8 @@ export const BILI_MSG = {
   op: 'tubemuse:bili:op',
   /** 页面脚本 → 后台：这些视频的发布时间（后台查本机缓存，缺的向 B 站接口查） */
   pubdates: 'tubemuse:bili:pubdates',
+  /** 页面脚本 → 后台：这个分 P 视频每一 P 的上传时间（视频页右侧的分 P 列表用） */
+  parts: 'tubemuse:bili:parts',
   /** 侧边栏 → 页面脚本：要当前页的状态 */
   getState: 'tubemuse:bili:get-state',
   /** 页面脚本 → 侧边栏：当前页的状态变了 */
@@ -67,9 +69,9 @@ export function formatBiliPubdate(at: number, now: number, timeZone: string, com
   return compact ? date.slice(2) : date;
 }
 
-/** 悬停提示：精确到分钟的发布时间与"多久以前" */
-export function biliPubdateHint(at: number, now: number, timeZone: string): string {
-  return `发布于 ${formatDateTime(at, timeZone)}（${formatRelative(at, now)}）· TubeMuse`;
+/** 悬停提示：精确到分钟的发布时间与"多久以前"（分 P 列表里的一 P 写"这一 P 上传于"：每一 P 是分开上传的） */
+export function biliPubdateHint(at: number, now: number, timeZone: string, kind: 'video' | 'part' = 'video'): string {
+  return `${kind === 'part' ? '这一 P 上传于' : '发布于'} ${formatDateTime(at, timeZone)}（${formatRelative(at, now)}）· TubeMuse`;
 }
 
 /** 本机记着的发布时间：BV 号 → { 发布时间（毫秒；0 = B 站接口里没有这个视频）, 查的时间 } */
@@ -107,19 +109,23 @@ export class BiliApiError extends Error {
   }
 }
 
+/** B 站接口回答里的 code 不是 0：-412 / -352 / -509 / -799 是被风控拦下（要退避） */
+function checkBiliCode(r: Record<string, unknown> | undefined): void {
+  if (!r || typeof r.code !== 'number') throw new BiliApiError('B 站接口的回答看不懂（不是预期的格式）', false);
+  if (r.code === 0) return;
+  const blocked = r.code === -412 || r.code === -352 || r.code === -509 || r.code === -799;
+  const msg = typeof r.message === 'string' ? cleanText(r.message, 60) : '';
+  throw new BiliApiError(blocked ? `B 站拦下了这次查询（${r.code}${msg ? ` ${msg}` : ''}）：查得太频繁时会这样` : `B 站接口出错（${r.code}${msg ? ` ${msg}` : ''}）`, blocked);
+}
+
 /**
  * 解析 x/article/cards 的回答：{ code: 0, data: { "BV…": { bvid, pubdate(秒), … } } }。
  * 只取问到的那些 BV 号的 pubdate（不合理的当没有）；问了但没出现在结果里的记为"接口里没有"。
  */
 export function parseCardsResponse(json: unknown, requested: readonly string[], now: number): { times: Record<string, number>; absent: string[] } {
   const r = json && typeof json === 'object' ? (json as Record<string, unknown>) : undefined;
-  if (!r || typeof r.code !== 'number') throw new BiliApiError('B 站接口的回答看不懂（不是预期的格式）', false);
-  if (r.code !== 0) {
-    const blocked = r.code === -412 || r.code === -352 || r.code === -509 || r.code === -799;
-    const msg = typeof r.message === 'string' ? cleanText(r.message, 60) : '';
-    throw new BiliApiError(blocked ? `B 站拦下了这次查询（${r.code}${msg ? ` ${msg}` : ''}）：查得太频繁时会这样` : `B 站接口出错（${r.code}${msg ? ` ${msg}` : ''}）`, blocked);
-  }
-  const data = r.data && typeof r.data === 'object' ? (r.data as Record<string, unknown>) : {};
+  checkBiliCode(r);
+  const data = r!.data && typeof r!.data === 'object' ? (r!.data as Record<string, unknown>) : {};
   const times: Record<string, number> = {};
   const absent: string[] = [];
   for (const id of requested) {
@@ -154,6 +160,57 @@ export function sanitizePubdateCache(raw: unknown, now: number): BiliPubdateCach
   }
   return out;
 }
+
+// ── 分 P 视频每一 P 的上传时间 ──
+
+/** cid（每一 P 的编号）：数字 */
+export const isCid = (x: unknown): x is string => typeof x === 'string' && /^\d{1,20}$/.test(x);
+
+/**
+ * 解析 x/player/pagelist?bvid=… 的回答（2026-11-25 实测）：{ code: 0, data: [{ cid, page, part, duration, ctime(秒) }, …] }。
+ * ctime 是这一 P 上传的时间（同一个视频的各 P 可以隔几年上传）；是 0 或不合理的不要（那一 P 显示"时间未知"）
+ */
+export function parsePagelistResponse(json: unknown, now: number): Record<string, number> {
+  const r = json && typeof json === 'object' ? (json as Record<string, unknown>) : undefined;
+  checkBiliCode(r);
+  const out: Record<string, number> = {};
+  for (const p of (Array.isArray(r!.data) ? r!.data : []).slice(0, BILI.maxParts)) {
+    if (!p || typeof p !== 'object') continue;
+    const { cid, ctime } = p as Record<string, unknown>;
+    const id = typeof cid === 'number' && Number.isSafeInteger(cid) && cid > 0 ? String(cid) : undefined;
+    const ms = typeof ctime === 'number' ? ctime * 1000 : NaN;
+    if (id && isPlausiblePubdate(ms, now)) out[id] = ms;
+  }
+  return out;
+}
+
+/** 本机记着的分 P 上传时间：BV 号 → { 查的时间, cid → 上传时间（毫秒） } */
+export type BiliPartsCache = Record<string, { at: number; parts: Record<string, number> }>;
+
+export function sanitizePartsCache(raw: unknown, now: number): BiliPartsCache {
+  const out: BiliPartsCache = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [bvid, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isBvid(bvid) || !v || typeof v !== 'object') continue;
+    const { at, parts } = v as Record<string, unknown>;
+    if (typeof at !== 'number' || !Number.isFinite(at) || !parts || typeof parts !== 'object') continue;
+    const clean: Record<string, number> = {};
+    for (const [cid, t] of Object.entries(parts as Record<string, unknown>).slice(0, BILI.maxParts)) if (isCid(cid) && isPlausiblePubdate(t, now)) clean[cid] = t;
+    out[bvid] = { at, parts: clean };
+  }
+  return out;
+}
+
+/** 记进本机：满了先丢最早查的 */
+export function mergePartsCache(cache: BiliPartsCache, bvid: string, parts: Record<string, number>, now: number, max: number = BILI.partsCacheMax): BiliPartsCache {
+  const next: BiliPartsCache = { ...cache, [bvid]: { at: now, parts } };
+  const ids = Object.keys(next);
+  if (ids.length <= max) return next;
+  return Object.fromEntries(ids.sort((a, b) => next[b]!.at - next[a]!.at).slice(0, max).map((id) => [id, next[id]!]));
+}
+
+/** 后台对"这个视频每一 P 的上传时间"的回答 */
+export type BiliPartsReply = { ok: true; parts: Record<string, number> } | { ok: false; error: string; off?: boolean };
 
 /** 后台对"这些视频的发布时间"的回答 */
 export type BiliPubdateReply =
@@ -351,7 +408,7 @@ export interface BiliTabState {
   showPubdate: boolean;
   /** B 站还没把服务端渲染的页面接管完（这之前往列表里加东西会让 B 站整页重画），先等着 */
   waiting: boolean;
-  /** "接下来播放"列表里找到的视频卡片 */
+  /** 右侧列表（"接下来播放"、播放列表、合集 / 分 P）里找到的条目 */
   cards: number;
   /** 其中显示了发布时间的 / 还在查的 / B 站接口里查不到的 */
   shown: number;

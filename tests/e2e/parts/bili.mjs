@@ -4,7 +4,7 @@
 // 站内跳转时卡片元素复用、只换内容，"展开"后多出一批，列表里有一张没有 BV 号的番剧卡片。
 import { join } from 'node:path';
 import { check, MOCK, shots } from '../harness.mjs';
-import { BILI_BLOCKED, BILI_LIST, BILI_LIST_ID, BILI_LIST_MORE, BILI_LIST_RECS, BILI_NEXT_VIDEO, BILI_PAGE_VIDEO, BILI_RECS, BILI_RECS_MORE, BILI_RECS_NEXT } from '../bili-pages.mjs';
+import { BILI_BLOCKED, BILI_LIST, BILI_LIST_ID, BILI_LIST_MORE, BILI_LIST_RECS, BILI_POD_PARTS, BILI_POD_PARTS_BV, BILI_POD_SEASON, BILI_NEXT_VIDEO, BILI_PAGE_VIDEO, BILI_RECS, BILI_RECS_MORE, BILI_RECS_NEXT } from '../bili-pages.mjs';
 
 /** @param {import('../harness.mjs').Harness} t */
 export async function bili(t) {
@@ -308,6 +308,51 @@ export async function bili(t) {
   await pop.locator('input').press('Escape');
   await pop.waitFor({ state: 'detached', timeout: 3000 });
 
+  console.log('\n[B站：视频页右侧的合集 / 分 P 列表也显示时间——合集里每个视频的发布时间，分 P 里每一 P 的上传时间]');
+  const partCalls = () => requests.filter((r) => r.path === '/biliapi/x/player/pagelist');
+  const readPod = () =>
+    bili.evaluate(() =>
+      [...document.querySelectorAll('.video-pod__item')].map((it) => {
+        const row = /** @type {HTMLElement} */ (it.classList.contains('simple-base-item') ? it : it.querySelector('.simple-base-item'));
+        const s = /** @type {HTMLElement | null} */ (row.querySelector('[data-tubemuse="bili-pubdate"]'));
+        const st = /** @type {HTMLElement} */ (row.querySelector('.stats'));
+        return {
+          text: s?.textContent ?? '',
+          state: s?.dataset.state,
+          hint: s?.title ?? '',
+          last: !!s && row.lastElementChild === s && s.previousElementSibling === st,
+          sameRow: !!s && Math.abs(s.getBoundingClientRect().top + s.getBoundingClientRect().height / 2 - (st.getBoundingClientRect().top + st.getBoundingClientRect().height / 2)) < 3,
+          h: Math.round(row.getBoundingClientRect().height),
+          btn: !!it.querySelector('[data-tubemuse="bili-save"]'),
+        };
+      }),
+    );
+  const podCalls0 = apiCalls().length;
+  await bili.goto(`${MOCK}/bili/zh-Hans/video/${BILI_POD_SEASON[1]?.bv}/`);
+  await bili.waitForFunction((n) => document.querySelectorAll('.video-pod__item [data-tubemuse="bili-pubdate"][data-state="shown"]').length === n, BILI_POD_SEASON.length, { timeout: 10000 });
+  const season = await readPod();
+  check(
+    /^(20)?26-08-17$/.test(season[0]?.text ?? '') && season[1]?.text === '12天前' && season[2]?.text === '5小时前' && season.every((x) => x.last && x.sameRow && x.h === 31 && !x.btn),
+    `合集：每一项写它自己的发布时间，接在时长后面、当这一行的最后一项，行高还是 31，不放"收藏"（${season.map((x) => x.text).join('、')}）`,
+  );
+  check(apiCalls().length === podCalls0 + 1 && same(idsOf(apiCalls().at(-1) ?? { query: {} }), BILI_POD_SEASON.map((r) => r.bv)) && partCalls().length === 0, '合集的 BV 号来自每一项的 data-key，一次查完；没有去查分 P');
+  await bili.goto(`${MOCK}/bili/zh-Hans/video/${BILI_POD_PARTS_BV}/?p=2&spm_id_from=333.788.videopod.episodes`);
+  await bili.waitForFunction((n) => document.querySelectorAll('.video-pod__item [data-tubemuse="bili-pubdate"]:is([data-state="shown"], [data-state="unknown"])').length === n, BILI_POD_PARTS.length, { timeout: 10000 });
+  const parts = await readPod();
+  check(
+    /^(20)?21-01-14$/.test(parts[0]?.text ?? '') && /^(20)?19-04-03$/.test(parts[1]?.text ?? '') && /^(20)?20-11-10$/.test(parts[2]?.text ?? '') && parts[3]?.text === '时间未知' && parts[3]?.state === 'unknown',
+    `分 P：每一 P 写它自己的上传时间（同一个视频的各 P 可以隔几年上传），B 站没给的写"时间未知"：${parts.map((x) => x.text).join('、')}`,
+  );
+  check(parts[1]?.hint.includes('这一 P 上传于 2019/04/03') === true && parts.every((x) => x.last && x.sameRow && x.h === 31 && !x.btn), `悬停写明是这一 P 的上传时间（${parts[1]?.hint}）；位置、行高同合集`);
+  const pc = partCalls();
+  check(
+    pc.length === 1 && pc[0]?.query.bvid === BILI_POD_PARTS_BV && Object.keys(pc[0]?.query ?? {}).length === 1 && pc[0]?.method === 'GET' && !pc[0]?.headers.cookie && !pc[0]?.headers.referer,
+    '分 P 的上传时间一个视频只查一次（x/player/pagelist，只带 BV 号，不带 Cookie、不带 Referer）',
+  );
+  await bili.goto(`${MOCK}/bili/video/${BILI_POD_PARTS_BV}/?p=3`);
+  await bili.waitForFunction((n) => document.querySelectorAll('.video-pod__item [data-tubemuse="bili-pubdate"][data-state="shown"]').length === n, BILI_POD_PARTS.length - 1, { timeout: 10000 });
+  check(partCalls().length === 1, '换一 P、重新打开这个视频：用记着的，不再查');
+
   console.log('\n[B站：B 站拦下查询（-352）→ 照实说明、停一阵，这期间不再发请求]');
   await panel.getByTestId('bili-show-pubdate').check();
   await bili.goto(pageUrl);
@@ -337,8 +382,9 @@ export async function bili(t) {
   const pageReqs = requests.slice(reqStart).filter((r) => String(r.headers.referer ?? '').startsWith(`${MOCK}/bili/`) && !r.path.endsWith('favicon.ico'));
   check(pageReqs.length === 0, `B 站页面上没有 TubeMuse 发出的请求${pageReqs.length ? `：${pageReqs.map((r) => r.path).join(', ')}` : ''}`);
   check(
-    apiCalls().every((r) => r.method === 'GET' && !r.headers.cookie && !r.headers.referer && idsOf(r).every((id) => /^BV[0-9A-Za-z]{10}$/.test(id))),
-    `向 B 站接口的 ${apiCalls().length} 次请求都只是 GET、只带 BV 号，不带 Cookie 和 Referer`,
+    apiCalls().every((r) => r.method === 'GET' && !r.headers.cookie && !r.headers.referer && idsOf(r).every((id) => /^BV[0-9A-Za-z]{10}$/.test(id))) &&
+      partCalls().every((r) => r.method === 'GET' && !r.headers.cookie && !r.headers.referer && /^BV[0-9A-Za-z]{10}$/.test(String(r.query.bvid))),
+    `向 B 站接口的 ${apiCalls().length + partCalls().length} 次请求都只是 GET、只带 BV 号，不带 Cookie 和 Referer`,
   );
   check((await bili.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '全程没有点到 B 站自己的任何东西');
   await bili.close();

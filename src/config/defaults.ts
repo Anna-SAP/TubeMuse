@@ -586,6 +586,13 @@ export const BILI = {
   retryMs: 30_000,
   /** 发布时间在这之内显示"N 小时前 / N 天前"，再早的显示日期 */
   relativeDays: 30,
+  /**
+   * 分 P 视频每一 P 的上传时间（x/player/pagelist?bvid=…，一次给出全部分 P 的 ctime；2026-11-25 实测）：
+   * 记多久（之后 UP 主可能又加了几 P）、最多记多少个视频、一个视频最多记多少 P
+   */
+  partsTtlMs: 12 * 3_600_000,
+  partsCacheMax: 100,
+  maxParts: 5000,
 } as const;
 
 /** eMails：文章汇总邮件的解析、评分与收藏（见 DECISIONS §44） */

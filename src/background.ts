@@ -21,8 +21,8 @@ import { ingestXyzListen, readAudioWindow, xyzSession, type XyzWindowReply } fro
 import { toAppError } from './services/errors';
 import { XHS_MSG } from './core/xhs';
 import { applyXhsFromPage, type XhsReply } from './services/xhs-service';
-import { BILI_MSG, type BiliPubdateReply } from './core/bili';
-import { applyBiliFromPage, lookupBiliPubdates, type BiliReply } from './services/bili-service';
+import { BILI_MSG, type BiliPartsReply, type BiliPubdateReply } from './core/bili';
+import { applyBiliFromPage, lookupBiliParts, lookupBiliPubdates, type BiliReply } from './services/bili-service';
 import { IS_FIREFOX } from './platform';
 import { DUB_MSG, DUB_PORT, type DubPortReply, type DubTabState } from './core/dub';
 import { streamDubAudio } from './services/dub-service';
@@ -156,7 +156,7 @@ let connecting: Promise<void> | undefined;
 let reminderTimer: ReturnType<typeof setTimeout> | undefined;
 type XyzWindowResponse = ({ ok: true } & XyzWindowReply) | { ok: false; message: string; hint?: string; wait?: boolean };
 
-chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | XhsReply | BiliReply | BiliPubdateReply | { lang?: string; note?: string } | XyzWindowResponse) => void) => {
+chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | XhsReply | BiliReply | BiliPubdateReply | BiliPartsReply | { lang?: string; note?: string } | XyzWindowResponse) => void) => {
   const m = msg as { type?: string; session?: unknown } | undefined;
   if (m?.type === AUTH_CONNECT_MESSAGE) {
     if (!fromExtensionPage(sender)) return false;
@@ -207,6 +207,12 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
   if (m?.type === BILI_MSG.pubdates) {
     if (!fromBiliPage(sender)) return false;
     keepAlive(() => lookupBiliPubdates(ctx, (m as { ids?: unknown }).ids)).then(sendResponse, () => sendResponse({ ok: false, times: {}, error: '查发布时间时出了意外错误' }));
+    return true;
+  }
+  // B 站：视频页右侧分 P 列表里每一 P 的上传时间（x/player/pagelist，只发 BV 号）
+  if (m?.type === BILI_MSG.parts) {
+    if (!fromBiliPage(sender)) return false;
+    keepAlive(() => lookupBiliParts(ctx, (m as { bvid?: unknown }).bvid)).then(sendResponse, () => sendResponse({ ok: false, error: '查分 P 的上传时间时出了意外错误' }));
     return true;
   }
   // 小宇宙：收听记录（累计值，可重复上报）

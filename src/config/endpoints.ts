@@ -19,7 +19,8 @@ export const ENDPOINTS = {
   xyzMedia: 'https://media.xyzcdn.net',
   /**
    * B 站的公开接口（2026-11-25 新增，用户要求，见 DECISIONS §92）：只在你勾选「B站」页的"显示发布时间"后，查"接下来播放"列表里
-   * 那些视频的发布时间（GET /x/article/cards?ids=<BV 号>,…）。只发 BV 号，不带 Cookie、不带 Referer；查过的记在本机，不再查。
+   * 那些视频的发布时间（GET /x/article/cards?ids=<BV 号>,…），以及视频页分 P 列表里每一 P 的上传时间（GET /x/player/pagelist?bvid=<BV 号>）。
+   * 只发 BV 号，不带 Cookie、不带 Referer；查过的记在本机，不再查。
    * 页面上没有这个信息，B 站页面数据里的推荐列表也没有（当天实测），所以只能问接口。
    */
   biliApi: 'https://api.bilibili.com',
