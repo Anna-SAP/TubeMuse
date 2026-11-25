@@ -110,6 +110,7 @@ try {
         { js: 'content-multicc.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
         { js: 'content-xhs-bridge.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'MAIN' },
         { js: 'content-xhs.js', matches: 'https://www.xiaohongshu.com/*,https://www.rednote.com/*', world: 'ISOLATED' },
+        { js: 'content-bili.js', matches: 'https://www.bilibili.com/*', world: 'ISOLATED' },
         { js: 'content-email.js', matches: 'https://mail.google.com/*', world: 'ISOLATED' },
         { js: 'content-xyz.js', matches: 'https://www.xiaoyuzhoufm.com/*', world: 'ISOLATED' },
         { js: 'content-dub.js', matches: 'https://www.youtube.com/*', world: 'ISOLATED' },
@@ -126,7 +127,7 @@ try {
   );
   const csp = String(manifest.content_security_policy?.extension_pages ?? '');
   const connect = /connect-src ([^;]+)/.exec(csp)?.[1]?.trim().split(/\s+/) ?? [];
-  const expected = ['https://www.googleapis.com', 'https://oauth2.googleapis.com', 'https://api.anthropic.com', 'https://api.openai.com', 'https://api.x.com', 'https://www.douban.com', 'https://media.xyzcdn.net'];
+  const expected = ['https://www.googleapis.com', 'https://oauth2.googleapis.com', 'https://api.anthropic.com', 'https://api.openai.com', 'https://api.x.com', 'https://www.douban.com', 'https://media.xyzcdn.net', 'https://api.bilibili.com'];
   check(JSON.stringify([...connect].sort()) === JSON.stringify([...expected].sort()), `CSP 生效，网络出口白名单与 Chrome 版相同：${connect.join(' ')}`);
   check(JSON.stringify([...manifest.host_permissions].sort()) === JSON.stringify(expected.map((o) => `${o}/*`).sort()), 'host_permissions 与 connect-src 一致');
   check(['toggle-subtitles', 'toggle-multi-captions', 'toggle-clip-recording'].every((c) => manifest.commands?.[c]), '三个快捷键都在');

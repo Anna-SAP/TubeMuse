@@ -17,6 +17,12 @@ export const ENDPOINTS = {
    * 用来出字幕、画快照波形、导出快照的音频片段。不带 Cookie、不带 Referer；页面上的 <audio> 是跨站的，浏览器不让扩展从播放器取声音。
    */
   xyzMedia: 'https://media.xyzcdn.net',
+  /**
+   * B 站的公开接口（2026-11-25 新增，用户要求，见 DECISIONS §92）：只在你勾选「B站」页的"显示发布时间"后，查"接下来播放"列表里
+   * 那些视频的发布时间（GET /x/article/cards?ids=<BV 号>,…）。只发 BV 号，不带 Cookie、不带 Referer；查过的记在本机，不再查。
+   * 页面上没有这个信息，B 站页面数据里的推荐列表也没有（当天实测），所以只能问接口。
+   */
+  biliApi: 'https://api.bilibili.com',
 } as const;
 
 export type Endpoints = { [K in keyof typeof ENDPOINTS]: string };
@@ -88,7 +94,9 @@ export const DOUYIN_PAGES: readonly string[] = ['https://www.douyin.com/'];
  * B 站网页版（2026-11-11 新增，见 DECISIONS §64）：片段录制脚本注入的页面，录页面主播放器里正在看的这个视频——
  * 普通视频（/video/<BV号>）、番剧影视（/bangumi/play/<ep 或 ss 号>）、课程（/cheese/play/…）、播放列表（/list/…）、活动页（/festival/…）
  * 用的都是同一个播放器（当天实测）。B 站是单页应用，换集、换分 P、自动连播都不重新加载，所以注入范围是整个站，脚本自己只认主播放器。
- * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里。
+ * 2026-11-25 起另注入「B站」页的脚本（DECISIONS §92）：视频页"接下来播放"列表的发布时间与收藏按钮。
+ * 只用于内容脚本的 matches 与核对消息来源：扩展不向这个站点发任何请求，所以不在 ENDPOINTS（connect-src / host_permissions）里
+ * （发布时间问的是另一个域名 api.bilibili.com，见 ENDPOINTS.biliApi）。
  * 直播（live.bilibili.com）、搜索（search.bilibili.com）、个人空间（space.bilibili.com）是别的域名，不在范围里。
  */
 export const BILI_PAGES: readonly string[] = ['https://www.bilibili.com/'];

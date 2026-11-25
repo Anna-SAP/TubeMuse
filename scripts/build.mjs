@@ -125,6 +125,7 @@ await esbuild.build({
     'content-multicc-bridge': join(root, 'src', 'content', 'multi-captions-bridge.ts'),
     'content-xhs': join(root, 'src', 'content', 'xhs.ts'),
     'content-xhs-bridge': join(root, 'src', 'content', 'xhs-bridge.ts'),
+    'content-bili': join(root, 'src', 'content', 'bili.ts'),
     'content-email': join(root, 'src', 'content', 'email.ts'),
     'content-xyz': join(root, 'src', 'content', 'xyz.ts'),
     'content-dub': join(root, 'src', 'content', 'dub.ts'),
@@ -219,6 +220,8 @@ const manifest = {
   // 优酷同理（换集、放完自动播下一集都不重新加载），匹配整个 v.youku.com，脚本自己只认播放页 /v_show/id_<视频ID>.html（DECISIONS §89）
   // 多语字幕：页面内助手（world: MAIN）只读字幕轨列表、开关播放器自己的字幕；另一个脚本复用播放器的字幕请求取你选的语言，叠加显示
   // 小红书（DECISIONS §40）：页面内助手（world: MAIN）只读页面数据里的发布时间；另一个脚本在笔记卡片上显示时间、放收藏按钮。都不发网络请求
+  // B 站（DECISIONS §92）：视频页"接下来播放"列表每条视频的播放量那一行后面写上发布时间（由后台向 B 站公开接口查，脚本自己不发请求），
+  // 封面左上角放"收藏"按钮和弹窗；侧边栏「B站」页要当前视频时，读页面自己声明的标题、UP 主、发布时间。不点击 B 站的任何按钮
   // eMails（DECISIONS §44）：只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"，不发网络请求，不写页面
   // 小宇宙（DECISIONS §72）：只认单集页；读这一集的信息、看 <audio> 的播放状态，向后台要音频段、送切好的句子，在页面上叠一层只读字幕。不发网络请求
   // 中文配音（DECISIONS §74）：你开启后，把后台从扩展 IndexedDB 交来的本地 .m4a 交给一个不放进页面的 <audio>，跟着视频播放、暂停、拖动；
@@ -233,6 +236,7 @@ const manifest = {
     { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-multicc.js'], run_at: 'document_idle' },
     { matches: XHS_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xhs-bridge.js'], run_at: 'document_idle', world: 'MAIN' },
     { matches: XHS_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xhs.js'], run_at: 'document_idle' },
+    { matches: BILI_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-bili.js'], run_at: 'document_idle' },
     { matches: EMAIL_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-email.js'], run_at: 'document_idle' },
     { matches: XYZ_PAGES.map((/** @type {string} */ p) => match(`${p}*`)), js: ['content-xyz.js'], run_at: 'document_idle' },
     { matches: [...TRACKED_SITES].map((o) => match(`${o}/*`)), js: ['content-dub.js'], run_at: 'document_idle' },
@@ -385,6 +389,35 @@ for (const bad of [
 ]) {
   if (bad.test(xhsBridge)) fail(`小红书的页面内助手里出现了不允许的操作（${bad}）：它只能读页面数据里的发布时间。`);
 }
+
+// B 站（2026-11-25 新增，DECISIONS §92）：页面脚本可以在"接下来播放"列表里加发布时间、放收藏按钮，但不得发任何网络请求
+// （发布时间由后台向 B 站公开接口查）、不得用 HTML 字符串写页面、不得读写 Cookie / 页面的本地存储、不得点击或模拟点击 B 站的按钮
+// （不会替你收藏、点赞、投币、关注）、不得直接写扩展存储（收藏经后台校验后写入）、不得读页面数据（__INITIAL_STATE__）、不得动态执行代码
+const biliScript = readFileSync(join(outdir, 'content-bili.js'), 'utf8');
+for (const bad of [
+  /\bfetch\(/,
+  /XMLHttpRequest/,
+  /\bWebSocket\b/,
+  /sendBeacon/,
+  /\bEventSource\b/,
+  /innerHTML/,
+  /outerHTML/,
+  /insertAdjacentHTML/,
+  /document\.cookie/,
+  /localStorage|sessionStorage|indexedDB/,
+  /\.click\(\)/,
+  /dispatchEvent\(/,
+  /chrome\.storage\.local\.(set|remove|clear)\(/,
+  /__INITIAL_STATE__/,
+  /\beval\(|new Function\(/,
+  /window\.open\(/,
+  /\.download\s*=/,
+  /getUserMedia|getDisplayMedia|captureStream/,
+]) {
+  if (bad.test(biliScript)) fail(`B 站脚本里出现了不允许的操作（${bad}）：它只能在推荐列表里显示发布时间、放收藏按钮。`);
+}
+// B 站的公开接口是新增的网络出口（DECISIONS §92）：只允许 api.bilibili.com，B 站网站本身和别的 B 站域名都不进 connect-src / host_permissions
+if (origins.some((o) => /bilibili\.com/i.test(o) && o !== 'https://api.bilibili.com')) fail('B 站只有 api.bilibili.com 可以出现在网络出口里：网站本身只注入脚本，扩展不向它发请求。');
 
 // eMails（2026-11-04 新增，DECISIONS §44）：注入 Gmail 的脚本只读打开的这封邮件：不得发网络请求、不得写页面（一个元素都不加）、
 // 不得点击或模拟事件（不会替你归档、删除、标记）、不得碰 Cookie / 本地存储 / 扩展存储、不得读收件人与发件人地址、不得自己观察页面

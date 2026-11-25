@@ -1747,6 +1747,23 @@ a.db-title:hover {
   font-weight: 600;
 }
 
+/* ── B站 ── */
+.bili-heading {
+  margin: 14px 0 2px;
+  font-size: 14px;
+}
+.bili-current .xhs-title {
+  display: block;
+  margin-top: 2px;
+}
+.bili-up {
+  color: inherit;
+  text-decoration: none;
+}
+a.bili-up:hover {
+  color: var(--accent);
+}
+
 /* ── eMails ── */
 .email-mail {
   margin: 4px 0 8px;

@@ -75,5 +75,187 @@ export function biliMediaSeconds(/** @type {string} */ path) {
 
 /** @param {string} path /bili/ 开头的路径；认不出的返回 undefined（mock 回 404） */
 export function biliPage(path) {
-  return path === '/bili/' ? homePage() : undefined;
+  return path === '/bili/' ? homePage() : biliVideoPage(path);
+}
+
+// ───────── 视频页的"接下来播放"列表（发布时间与收藏，DECISIONS §92）─────────
+// 结构照 2026-11-25 实测的真实页面：
+// - 服务端渲染：#app 带 data-server-rendered="true"，Vue 接管时去掉它（这里 1.2 秒后去掉；之前往里加东西，真实页面会整页重画）；
+// - 右侧 .right-container > .rcmd-tab > .recommend-list-v1 > .next-play（"接下来播放"那一条）+ .rec-list（其余）+ .rec-footer（"展开"）；
+// - 每条 .video-page-card-small > .card-box > .pic-box（封面链接、.duration、右上角 .watch-later-video、悬停预览的空容器）
+//   + .info（a > p.title、.upname > a[href=//space…/<UID>/] > span.name、.playinfo（播放数、弹幕数，inline-flex））；
+// - 站内跳到别的视频：网址、标题、meta（og:url、author、video:release_date、video:duration）都换，列表里的卡片元素原样复用、只换内容；
+// - "展开"之后多出一批卡片；列表里偶尔有番剧这种没有 BV 号的卡片。
+// 推荐列表的发布时间在页面上和页面数据里都没有：TubeMuse 向 mock 的 /biliapi/x/article/cards 查（见 biliCardsReply）。
+
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+
+/**
+ * 推荐列表里的视频。age：发布了多久（mock 接口按"现在 − age"回答）；at：固定的发布时间；两者都没有 = 接口里查不到。
+ * @typedef {{ bv: string; title: string; up: string; mid: string; duration: string; view: string; dm: string; age?: number; at?: number }} BiliRec
+ */
+
+/** @type {BiliRec[]} 打开的这个视频页的列表（第一条是"接下来播放"） */
+export const BILI_RECS = [
+  { bv: 'BV1Ud436mEjX', title: '科幻小说《三体》三部全集', up: '考拉有声书', mid: '3493282166344163', duration: '77:32:35', view: '6638', dm: '1', age: 3 * HOUR + 5 * 60_000 },
+  { bv: 'BV1rny8zjEVu', title: '6小时ai《三体2、3》合集', up: '青年摸鱼高手', mid: '28336952', duration: '5:51:05', view: '5629', dm: '43', age: 10 * DAY + HOUR },
+  { bv: 'BV1Yeuj64E5f', title: '假如三体人不吃压力……', up: '铭明mk', mid: '289080082', duration: '01:54', view: '90.4万', dm: '872', at: Date.UTC(2022, 6, 27, 12, 0) },
+  {
+    bv: 'BV11s41187QY',
+    title: '【文曰小强】84分钟速读《三体》大合集，这个标题很长很长，要折成两行才放得下',
+    up: '文曰小强',
+    mid: '20165629',
+    duration: '1:24:50',
+    view: '2169.2万',
+    dm: '17万',
+    at: Date.UTC(2017, 1, 3, 12, 5),
+  },
+  // 接口里查不到（删了、不公开）
+  { bv: 'BV1Gone00000', title: '已经删掉的视频', up: '某人', mid: '1', duration: '03:00', view: '12', dm: '0' },
+];
+/** 站内跳到的那个视频页的列表：第一条是刚才查过的（不该再查），其余是新的 */
+export const BILI_RECS_NEXT = [
+  BILI_RECS[1],
+  { bv: 'BV1Je4y1P7hM', title: '程心：我 保 留 了 五 公 斤 生 态 球', up: '成长小豆芽mo', mid: '1802011210', duration: '01:38', view: '42.6万', dm: '59', at: Date.UTC(2023, 1, 10, 9, 13) },
+  { bv: 'BV1oSg56hErX', title: '假如三体人非得作死挑衅罗辑……', up: '秋名FD3s', mid: '90949884', duration: '00:36', view: '12.2万', dm: '45', age: 40 * 60_000 },
+  { bv: 'BV1ZWeE6MEfw', title: '三体人眼中的罗辑', up: '马野好饿', mid: '12345', duration: '00:42', view: '60.4万', dm: '86', at: Date.UTC(2024, 4, 1, 2, 0) },
+  { bv: 'BV1T24y1p7Nm', title: '那颗星星，是他送的', up: '想看就看一起看', mid: '67890', duration: '01:28', view: '40.1万', dm: '206', age: 2 * DAY + 3 * HOUR },
+];
+/** 点"展开"后多出来的 */
+export const BILI_RECS_MORE = [
+  { bv: 'BV1dJ4m177LG', title: '《三体》中的叶文洁为什么要背叛人类？', up: '我不是小楚南', mid: '24680', duration: '15:24', view: '34.9万', dm: '661', at: Date.UTC(2021, 9, 9, 12, 0) },
+  { bv: 'BV1gpHvehEp3', title: '三体：智子来了', up: '某UP', mid: '13579', duration: '08:08', view: '1.2万', dm: '33', age: 25 * DAY },
+];
+/** 打开的这个视频与跳到的那个视频（各自的 meta） */
+export const BILI_PAGE_VIDEO = { bv: 'BV1cv2yYDE4U', title: '一口气看完《三体》全集3部，时长3小时，耗时3个月制作', up: '翁翁讲故事', mid: '519033438', at: Date.UTC(2024, 9, 11, 4, 0), seconds: 11661 };
+export const BILI_NEXT_VIDEO = { bv: BILI_RECS[2]?.bv ?? '', title: '假如三体人不吃压力……', up: '铭明mk', mid: '289080082', at: Date.UTC(2022, 6, 27, 4, 0), seconds: 114 };
+/** 这一批 ID 一查就被 B 站风控拦下（code -352） */
+export const BILI_BLOCKED = 'BV1B1ocked00';
+
+const ALL_RECS = [...BILI_RECS, ...BILI_RECS_NEXT, ...BILI_RECS_MORE].filter((r) => !!r);
+
+/**
+ * mock 的 B 站接口 /biliapi/x/article/cards?ids=…：认得的视频回 pubdate（秒），认不得的不出现在结果里（和真实接口一样）。
+ * 问到 BILI_BLOCKED 时回风控的 -352。
+ * @param {string} ids @param {number} now
+ */
+export function biliCardsReply(ids, now) {
+  const list = ids.split(',').filter(Boolean);
+  if (list.includes(BILI_BLOCKED)) return { code: -352, message: '-352', ttl: 1 };
+  /** @type {Record<string, unknown>} */
+  const data = {};
+  for (const id of list) {
+    const rec = ALL_RECS.find((r) => r?.bv === id);
+    const at = rec?.at ?? (rec?.age !== undefined ? now - rec.age : undefined);
+    if (rec && at !== undefined) data[id] = { bvid: id, aid: 1, title: rec.title, pubdate: Math.floor(at / 1000), ctime: Math.floor(at / 1000), owner: { mid: Number(rec.mid), name: rec.up } };
+  }
+  return { code: 0, message: 'OK', ttl: 1, data };
+}
+
+const esc = (/** @type {string} */ s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+const ICON = '<svg width="18" height="18" viewBox="0 0 18 18"><path d="M3 3h12v12H3z" fill="currentColor"></path></svg>';
+
+/** 一条推荐（番剧卡片没有 BV 号） @param {BiliRec | undefined} r @param {number} i */
+function recCard(r, i) {
+  if (!r) return '';
+  const href = `/bili/zh-Hans/video/${r.bv}/?spm_id_from=333.788.recommend_more_video.${i}&amp;trackid=web_related_0.router-related-1.${i}`;
+  return (
+    `<div class="video-page-card-small"><div class="card-box">` +
+    `<div class="pic-box"><div class="pic"><div class="framepreview-box"><a href="${href}" class="video-awesome-img"><div class="b-img"><img class="b-img__inner" alt="${esc(r.title)}"></div></a></div>` +
+    `<span class="mask-video"></span><span class="duration">${r.duration}</span></div><div class="watch-later-video van-watchlater black"><span class="wl-tips" style="display: none;"></span></div><div class="v-recommend-inline-player"></div></div>` +
+    `<div class="info"><a href="${href}"><p title="${esc(r.title)}" class="title">${esc(r.title)}</p></a> ` +
+    `<div class="upname"><a href="//space.bilibili.com/zh-Hans/${r.mid}/" target="_blank">${ICON} <span class="name">${esc(r.up)}</span></a></div> ` +
+    `<div class="playinfo">${ICON}\n        ${r.view}\n\n        ${ICON}\n        ${r.dm}\n      </div></div>` +
+    `</div></div>`
+  );
+}
+
+const BANGUMI_CARD =
+  `<div class="video-page-card-small" data-kind="bangumi"><div class="card-box"><div class="pic-box"><div class="pic"><a href="/bili/bangumi/play/ep733317"><div class="b-img"><img alt="番剧"></div></a><span class="duration">24:00</span></div></div>` +
+  `<div class="info"><a href="/bili/bangumi/play/ep733317"><p title="凡人修仙传" class="title">凡人修仙传</p></a> <div class="playinfo">${ICON} 2.1亿</div></div></div></div>`;
+
+const VIDEO_CSS = `
+body { margin: 0; font: 13px/15px system-ui, "Noto Sans CJK SC", sans-serif; color: #18191c; }
+#app { display: flex; gap: 24px; padding: 16px; }
+.left-container { width: 420px; flex: none; }
+.right-container { width: 350px; flex: none; }
+.video-page-card-small { margin-bottom: 12px; }
+.card-box { display: flex; height: 80px; }
+.pic-box { position: relative; width: 141px; height: 80px; flex: none; border-radius: 6px; background: #c9ccd0; margin-right: 10px; }
+.pic, .framepreview-box, .video-awesome-img, .b-img { display: block; width: 100%; height: 100%; }
+.duration { position: absolute; right: 4px; bottom: 4px; color: #fff; font-size: 13px; }
+.watch-later-video { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; background: rgba(0,0,0,.5); border-radius: 4px; display: none; }
+.video-page-card-small:hover .watch-later-video { display: block; }
+.info { width: 199px; height: 80px; font-size: 13px; line-height: 15px; }
+.info .title { margin: 0 0 2px; max-height: 38px; line-height: 19px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.upname { height: 20px; line-height: 20px; color: #9499a0; }
+.upname a { color: inherit; text-decoration: none; display: inline-flex; align-items: center; gap: 2px; }
+.playinfo { display: inline-flex; align-items: center; gap: 2px; height: 18px; color: #9499a0; }
+.playinfo svg, .upname svg { width: 14px; height: 14px; }
+.rec-footer { cursor: pointer; text-align: center; padding: 8px; }
+`;
+
+/** @param {typeof BILI_PAGE_VIDEO} v */
+function videoMeta(v) {
+  return (
+    `<meta data-vue-meta="true" name="author" content="${esc(v.up)}">` +
+    `<meta data-vue-meta="true" property="og:url" content="__ORIGIN__/bili/video/${v.bv}/">` +
+    `<meta data-vue-meta="true" property="video:duration" content="${v.seconds}">` +
+    `<meta data-vue-meta="true" property="video:release_date" content="${new Date(v.at).toISOString()}">`
+  );
+}
+
+const VIDEO_SCRIPT = (/** @type {typeof BILI_NEXT_VIDEO} */ next) =>
+  // 点到 B 站自己的元素（冒泡到 document 的点击）：记一次，并拦下跳转。TubeMuse 的按钮和弹窗不让点击往外传，不会记进来
+  `window.__nativeClicks = 0; document.addEventListener('click', (e) => { if (e.target.closest('#app')) { window.__nativeClicks++; e.preventDefault(); } });` +
+  `document.querySelectorAll('meta[content^="__ORIGIN__"]').forEach((m) => m.setAttribute('content', m.getAttribute('content').replace('__ORIGIN__', location.origin)));` +
+  // Vue 接管服务端渲染的页面：去掉 data-server-rendered。之前有没有 TubeMuse 的东西插进来（真实页面上那样会整页重画）
+  `window.__oursBeforeHydration = -1;` +
+  `window.__hydrate = () => { window.__oursBeforeHydration = document.querySelectorAll('[data-tubemuse]').length; document.getElementById('app').removeAttribute('data-server-rendered'); };` +
+  `setTimeout(window.__hydrate, 1200);` +
+  // 站内跳到别的视频：网址、标题、meta、h1 都换；卡片元素原样复用、只换内容（和真实页面一样）
+  `const NEXT = ${JSON.stringify(BILI_RECS_NEXT)};` +
+  `const setCard = (card, r, i) => { const href = '/bili/zh-Hans/video/' + r.bv + '/?spm_id_from=333.788.recommend_more_video.' + i;` +
+  ` card.querySelectorAll('a[href*="/video/"]').forEach((a) => a.setAttribute('href', href));` +
+  ` const t = card.querySelector('.title'); t.textContent = r.title; t.setAttribute('title', r.title);` +
+  ` card.querySelector('.upname a').setAttribute('href', '//space.bilibili.com/zh-Hans/' + r.mid + '/'); card.querySelector('.upname .name').textContent = r.up;` +
+  ` card.querySelector('.duration').textContent = r.duration;` +
+  ` const p = card.querySelector('.playinfo'); const texts = [...p.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim()); texts[0].textContent = ' ' + r.view + ' '; if (texts[1]) texts[1].textContent = ' ' + r.dm + ' '; };` +
+  `window.__goto = () => {` +
+  ` history.pushState(null, '', '/bili/zh-Hans/video/${next.bv}/?spm_id_from=333.788.recommend_more_video.2'); document.title = ${JSON.stringify(next.title + '_哔哩哔哩_bilibili')};` +
+  ` const h1 = document.querySelector('h1.video-title'); h1.textContent = ${JSON.stringify(next.title)}; h1.setAttribute('title', ${JSON.stringify(next.title)});` +
+  ` document.querySelector('.up-detail-top .up-name').setAttribute('href', '//space.bilibili.com/zh-Hans/${next.mid}/?spm_id_from=333.788.upinfo.detail.click');` +
+  ` document.querySelector('.up-detail-top .up-name').textContent = ${JSON.stringify(next.up)};` +
+  // meta 比网址晚一点换（真实页面上也是先换网址）
+  ` setTimeout(() => { const m = (s, v) => document.querySelector(s).setAttribute('content', v); m('meta[name="author"]', ${JSON.stringify(next.up)}); m('meta[property="og:url"]', location.origin + '/bili/video/${next.bv}/');` +
+  `  m('meta[property="video:duration"]', '${next.seconds}'); m('meta[property="video:release_date"]', '${new Date(next.at).toISOString()}'); }, 300);` +
+  ` const cards = [...document.querySelectorAll('.video-page-card-small:not([data-kind])')]; cards.forEach((c, i) => { if (NEXT[i]) setCard(c, NEXT[i], i); else c.remove(); }); };` +
+  // "展开"：多出一批卡片
+  `window.__expand = () => { document.querySelector('.rec-list').insertAdjacentHTML('beforeend', ${JSON.stringify(BILI_RECS_MORE.map((r, i) => recCard(r, 20 + i)).join(''))}); document.querySelector('.rec-footer').style.display = 'none'; };` +
+  // 这一批一查就被风控拦下：把第二条换成 BILI_BLOCKED
+  `window.__blocked = () => setCard(document.querySelectorAll('.video-page-card-small:not([data-kind])')[1], { bv: '${BILI_BLOCKED}', title: '被拦下的那一批', up: '某人', mid: '2', duration: '01:00', view: '1', dm: '0' }, 1);`;
+
+/** 视频页 /bili/video/<BV号>/（前面可以带 /zh-Hans/）：服务端渲染、1.2 秒后由"Vue"接管 */
+function videoPage() {
+  const v = BILI_PAGE_VIDEO;
+  const recs = BILI_RECS;
+  return (
+    `<!doctype html><html><head><meta charset="utf-8"><title>${esc(v.title)}_哔哩哔哩_bilibili</title>${videoMeta(v)}<style>${VIDEO_CSS}</style></head>` +
+    `<body><div id="app" data-server-rendered="true" class="app-v1">` +
+    `<div class="left-container"><div class="video-info-title"><h1 data-title="${esc(v.title)}" title="${esc(v.title)}" class="video-title">${esc(v.title)}</h1></div>` +
+    `<div class="up-detail-top"><a href="//space.bilibili.com/zh-Hans/${v.mid}/?spm_id_from=333.788.upinfo.detail.click" target="_blank" class="up-name">${esc(v.up)}</a></div>` +
+    `<div id="bilibili-player"></div></div>` +
+    `<div class="right-container"><div class="rcmd-tab"><div class="recommend-list-v1">` +
+    `<div class="next-play"><div class="rec-title"><div class="title-txt">接下来播放</div></div>${recCard(recs[0], -1)}</div>` +
+    `<div class="rec-list">${recs.slice(1).map((r, i) => recCard(r, i)).join('')}${BANGUMI_CARD}</div>` +
+    `<div class="rec-footer">展开</div>` +
+    `</div></div></div>` +
+    `</div><script>${VIDEO_SCRIPT(BILI_NEXT_VIDEO)}</script></body></html>`
+  );
+}
+
+/** @param {string} path /bili/ 开头的路径；认不出的返回 undefined（mock 回 404） */
+export function biliVideoPage(path) {
+  return new RegExp(`^/bili/(?:zh-Hans/)?video/${BILI_PAGE_VIDEO.bv}/?$`).test(path) ? videoPage() : undefined;
 }

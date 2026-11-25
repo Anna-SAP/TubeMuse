@@ -715,7 +715,7 @@ function App() {
       </Section>
 
       <Section title="17. 数据" id="data">
-        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签、eMails 收藏的文章与评分、小宇宙的字幕、收藏、收听记录与快照清单、中文配音的视频与文件对应关系），但不含 API Key、X Token 与授权令牌，也不含中文配音的音频文件本身（那是你自己选的本地文件，只存在这个浏览器里；除此之外从不保存任何音频或视频）。清空时一并删除这些配音音频。</p>
+        <p class="muted small">所有数据只保存在这个浏览器里。导出文件包含全部本地数据（含观看记录、每日总结、周报、X 热点与花费记录、新博主推荐、豆瓣订阅与读到的评论、自动字幕与字幕花费、录过的片段清单、小红书收藏与标签、B 站收藏的视频与标签和查过的发布时间、eMails 收藏的文章与评分、小宇宙的字幕、收藏、收听记录与快照清单、中文配音的视频与文件对应关系），但不含 API Key、X Token 与授权令牌，也不含中文配音的音频文件本身（那是你自己选的本地文件，只存在这个浏览器里；除此之外从不保存任何音频或视频）。清空时一并删除这些配音音频。</p>
         <div class="row">
           <button
             class="btn"
@@ -885,6 +885,25 @@ function App() {
         <StorySites />
       </Section>
 
+      <Section title="21. B 站" id="bili">
+        <p class="muted small">
+          在 B 站网页版（www.bilibili.com）的视频页上：右侧"接下来播放"列表里每条视频的播放量后面显示发布时间（在侧边栏「B站」页勾选"显示发布时间"）；每条视频封面左上角的"收藏"按钮、侧边栏「B站」页的"收藏这个视频"把视频收进 TubeMuse 并打标签，在「B站」页查看和管理。
+          B 站页面上没有发布时间，勾选后 TubeMuse 向 B 站的公开接口（{new URL(ENDPOINTS.biliApi).host}）查：只发这些视频的 BV 号，不带 Cookie，查过的记在本机不再查；不勾就不查。页面上的脚本本身不发任何请求，不会在 B 站上收藏、点赞、投币或关注；收藏只存在本机。
+        </p>
+        <label class="inline">
+          <input type="checkbox" data-testid="bili-enabled" checked={settings.bili.enabled} onChange={(e) => updateSection('bili', { enabled: e.currentTarget.checked })} />
+          启用 B 站功能（关掉后页面上不再出现 TubeMuse 的发布时间与按钮，也不再查发布时间，已有收藏保留）
+        </label>
+        <label class="inline">
+          <input type="checkbox" data-testid="bili-show-pubdate-opt" checked={settings.bili.showPubdate} onChange={(e) => updateSection('bili', { showPubdate: e.currentTarget.checked })} />
+          显示发布时间（会向 {new URL(ENDPOINTS.biliApi).host} 查）
+        </label>
+        <label class="inline">
+          <input type="checkbox" data-testid="bili-show-save" checked={settings.bili.showSave} onChange={(e) => updateSection('bili', { showSave: e.currentTarget.checked })} />
+          "接下来播放"列表里显示"收藏"按钮
+        </label>
+      </Section>
+
       <Section title="网络出口" id="egress">
         <p class="muted small">本扩展只会连接以下地址（由内容安全策略强制限制）：</p>
         <ul class="small">
@@ -918,6 +937,9 @@ function App() {
           <li>
             <code>https://image.xyzcdn.net</code>（小宇宙的单集 / 节目封面，只作图片加载，画进快照卡片）
           </li>
+          <li>
+            <code>{ENDPOINTS.biliApi}</code>（B 站的公开接口：只在你勾选「B站」页的"显示发布时间"后，查"接下来播放"列表里那些视频的发布时间；只发 BV 号，不带 Cookie、不带 Referer，查过的记在本机）
+          </li>
         </ul>
         <p class="muted small">
           Google 登录 / 授权窗口（accounts.google.com）由浏览器自己打开，授权结果回跳到 {new URL(redirectUrl).hostname.split('.').slice(1).join('.')} 由浏览器直接截获；
@@ -937,6 +959,9 @@ function App() {
           注入小宇宙网页版（www.xiaoyuzhoufm.com）的脚本只在单集页上工作：读这一集的标题、节目名、封面、音频地址、时长、发布时间和节目简介（简介只用来让大模型校对人名和术语），看页面上 &lt;audio&gt; 的播放状态（收听记录、字幕对时），不读评论和别的单集。你开启字幕后，它向扩展后台要这一集音频的一段一段，在本机解码、切句，交给后台转写和校对 / 翻译，并在播放器上方叠一层只读字幕；做快照时在进度条上方标出片段起止，你点"试听"或点一句字幕时把播放位置跳过去。它本身不发任何网络请求，不点击小宇宙的任何按钮，不改动小宇宙自己的元素。
         </p>
         <p class="muted small">
+          注入 B 站网页版（www.bilibili.com）的另一个脚本不发任何网络请求：它在视频页右侧"接下来播放"列表里，只读每条视频的链接（BV 号）、标题、UP 主名和时长，在播放量那一行后面写上发布时间（发布时间由扩展后台向 {new URL(ENDPOINTS.biliApi).host} 查，勾选"显示发布时间"后才查），在封面左上角放"收藏"按钮和弹窗（只用文字写入，不改动、不隐藏 B 站自己的元素，不点击 B 站的任何按钮）；侧边栏「B站」页要当前视频时，读页面自己声明的标题、UP 主、发布时间和时长。评论、弹幕、简介不读。收藏经扩展后台校验后存在本机。
+        </p>
+        <p class="muted small">
           注入 Gmail（mail.google.com）的脚本只在侧边栏 eMails 页开着时回答"当前打开的邮件里有哪些文章"：只读打开的这一封的主题、发件人名字和正文，不读发件人地址、收件人和邮件列表；不发任何网络请求，不往 Gmail 页面写任何东西，不点击任何按钮，不碰 Cookie 与本地存储。
         </p>
         <p class="muted small">
@@ -946,7 +971,7 @@ function App() {
           联网调研由你选的大模型服务方（{new URL(ENDPOINTS.anthropic).host} / {new URL(ENDPOINTS.openai).host}）自带的搜索完成，扩展自己不连接任何新的地址。
         </p>
         <p class="muted small">
-          注入 youtube.com、小红书网页版、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版、B 站网页版（www.bilibili.com）与优酷网页版（v.youku.com）的片段录制脚本只在你开始录制后才录：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕，只限 YouTube），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、不点击页面上的任何东西、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字；按时间段截取时会把这个视频跳到起点并播放。在 X 和 Instagram 的首页信息流上，为了知道录哪个，它会一直看页面上各个视频在不在播、有没有声音，并且只读正在播放、开着声音的那个视频所在那一条帖子的链接、作者名和正文（用来显示、起文件名、记下回到帖子的链接），别的帖子不读。在抖音精选页打开的视频上，它另读这一条视频的作者昵称和描述（用来显示和起文件名；页面标题在划到下一条时不更新，不能用），别的视频不读。在 B 站上它只认页面的主播放器，读的只有播放器状态、页面标题和网址：UP 主、简介、评论、弹幕和推荐列表都不读。在优酷上它只认播放页的播放器，读的是播放器状态、页面标题和网址，另看播放器的广告层里有没有广告在放（用来在广告时自动暂停，不读广告内容）：简介、评论和弹幕都不读。
+          注入 youtube.com、小红书网页版、X 网页版、酷播（www.kubb.tv）、Instagram 网页版、抖音网页版、B 站网页版（www.bilibili.com）与优酷网页版（v.youku.com）的片段录制脚本只在你开始录制后才录：把这个视频的画面画到一块不放进页面的画布上（开启字幕烧录时叠加当时显示的字幕，只限 YouTube），声音取自这个视频的音轨，在本机编码；保存时由浏览器存进下载文件夹。它不改动页面、不点击页面上的任何东西、本身不发任何网络请求，读取的页面信息只有播放器状态、页面标题（用来起文件名）和开启烧录时显示的字幕文字；按时间段截取时会把这个视频跳到起点并播放。在 X 和 Instagram 的首页信息流上，为了知道录哪个，它会一直看页面上各个视频在不在播、有没有声音，并且只读正在播放、开着声音的那个视频所在那一条帖子的链接、作者名和正文（用来显示、起文件名、记下回到帖子的链接），别的帖子不读。在抖音精选页打开的视频上，它另读这一条视频的作者昵称和描述（用来显示和起文件名；页面标题在划到下一条时不更新，不能用），别的视频不读。在 B 站上它只认页面的主播放器，读的只有播放器状态、页面标题和网址：UP 主、简介、评论、弹幕和推荐列表都不读（推荐列表由下面另一个脚本读）。在优酷上它只认播放页的播放器，读的是播放器状态、页面标题和网址，另看播放器的广告层里有没有广告在放（用来在广告时自动暂停，不读广告内容）：简介、评论和弹幕都不读。
         </p>
       </Section>
     </div>

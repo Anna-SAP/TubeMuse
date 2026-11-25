@@ -12,6 +12,7 @@ import type { ClipRecord } from '../core/clips';
 import type { MuseVideoInfo } from '../core/muse';
 import { sanitizeCcLangs } from '../core/multi-captions';
 import { emptyXhsState, sanitizeXhsState, type XhsState } from '../core/xhs';
+import { emptyBiliState, sanitizeBiliState, sanitizePubdateCache, type BiliPubdateCache, type BiliState } from '../core/bili';
 import { emptyEmailState, sanitizeEmailState, type EmailScores, type EmailState, type EmailVerdicts } from '../core/email';
 import { emptyXyzSaved, sanitizeXyzSaved, type XyzListen, type XyzSaved, type XyzSnapshotRecord, type XyzTranscript } from '../core/xyz';
 import type { Mp3Scan } from '../core/podcast-audio';
@@ -125,6 +126,7 @@ export function mergeSettings(stored: unknown): Settings {
     },
     clips: { ...d.clips, ...(s.clips as object) },
     xhs: { ...d.xhs, ...(s.xhs as object) },
+    bili: { ...d.bili, ...(s.bili as object) },
     email: { ...d.email, ...(s.email as object) },
     muse: { ...d.muse, ...(s.muse as object) },
     xyz: { ...d.xyz, ...(s.xyz as object) },
@@ -214,6 +216,10 @@ export const stores = {
   museVideos: new Store<Record<string, MuseVideoInfo>>('museVideos', () => ({})),
   /** 小红书：收进 TubeMuse 的笔记与博主，各自的标签（只存在本机，与小红书账号里的收藏、关注无关） */
   xhs: new Store<XhsState>('xhs', emptyXhsState, (v) => sanitizeXhsState(v, Date.now())),
+  /** B 站：收进 TubeMuse 的视频与各自的标签（只存在本机，与 B 站账号里的收藏无关；DECISIONS §92） */
+  bili: new Store<BiliState>('bili', emptyBiliState, (v) => sanitizeBiliState(v, Date.now())),
+  /** B 站："接下来播放"列表里查过的发布时间（BV 号 → 发布时间；公开信息，发布时间不会变，查过的不再查；DECISIONS §92） */
+  biliPubdates: new Store<BiliPubdateCache>('biliPubdates', () => ({}), (v) => sanitizePubdateCache(v, Date.now())),
   /** eMails：收藏的文章与各自的标签（只存在本机，与邮箱、Medium 账号无关） */
   emailSaved: new Store<EmailState>('emailSaved', emptyEmailState, sanitizeEmailState),
   /** eMails：大模型给每篇文章打的分（按文章缓存：同一篇隔天再出现时不再花钱） */

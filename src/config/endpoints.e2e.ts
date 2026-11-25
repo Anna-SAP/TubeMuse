@@ -12,6 +12,7 @@ export const ENDPOINTS: Endpoints = {
   openai: `${MOCK}/openai/v1`,
   douban: `${MOCK}/douban`,
   xyzMedia: `${MOCK}/xyzmedia`,
+  biliApi: `${MOCK}/biliapi`,
 };
 
 export type { Endpoints };
