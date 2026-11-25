@@ -21,10 +21,12 @@ import {
   emptyBiliState,
   formatBiliPubdate,
   isBvid,
+  isCid,
   parseBiliDuration,
   sanitizeBiliState,
   splitTags,
   suggestBiliTags,
+  type BiliPartsReply,
   type BiliPubdateReply,
   type BiliState,
   type BiliTabState,
@@ -49,6 +51,10 @@ const absent = new Set<string>();
 const asking = new Set<string>();
 /** 上一次没查成的原因与时间（过 BILI.retryMs 再试） */
 let lookupError: { message: string; at: number; ids: Set<string> } | undefined;
+/** 分 P 视频每一 P 的上传时间：BV 号 → cid → 毫秒（查成了的视频才有，查到了但没有某一 P 的就是"时间未知"） */
+const partTimes = new Map<string, Map<string, number>>();
+const partAsking = new Set<string>();
+let partError: { message: string; at: number; bvid: string } | undefined;
 
 function alive(): boolean {
   try {
@@ -73,6 +79,8 @@ const hydrating = (): boolean => !!document.querySelector('[data-server-rendered
  */
 interface CardInfo {
   video: BiliVideoInput;
+  /** 分 P 列表里的一 P：时间是这一 P 的上传时间（video 是它所属的这个视频） */
+  part?: { cid: string };
   /** 这一条的根元素（找我们加过的东西） */
   root: Element;
   timeParent: Element;
@@ -141,12 +149,41 @@ function readListItem(wrap: HTMLElement): CardInfo | undefined {
 }
 
 /**
- * 页面上能放时间和按钮的每一条：视频页的"接下来播放"（.video-page-card-small）、播放列表页右侧的列表（.action-list-item-wrap）
- * 和它下面的推荐（.recommend-video-card：和"接下来播放"的卡片同一种结构，2026-11-25 实测）
+ * 视频页右侧的合集 / 分 P 列表（.video-pod__item，2026-11-25 实测）。每一项是一行（高 31 像素，flex：标题占满、后面是时长 .stats）：
+ * - 合集：.pod-item.video-pod__item[data-key=<BV号>] > .single-p > .simple-base-item > .title[title] + .stats。每一项是一个视频，写它的发布时间；
+ * - 分 P：.simple-base-item.video-pod__item[data-key=<cid>] > .title[title] + .stats。各 P 都是这个视频（网址里的 BV 号），
+ *   写这一 P 的上传时间（x/player/pagelist 的 ctime：同一个视频的各 P 可以隔几年上传）。
+ * 时间接在时长后面、当这一行的最后一项，行高不变（标题自己会省略）。这两种行没有封面，不放"收藏"（当前视频在侧边栏收藏）。
+ * 合集里某一项自己又有分 P（.multi-p）的、带封面的样式，没核实过，不认
  */
-const LIST_ITEMS = '.video-page-card-small, .recommend-video-card, .action-list-item-wrap';
+function readPodItem(item: HTMLElement): CardInfo | undefined {
+  const key = item.dataset.key ?? '';
+  const row = item.classList.contains('simple-base-item') ? item : item.querySelector<HTMLElement>(':scope > .single-p > .simple-base-item');
+  if (!row) return undefined;
+  const titleEl = row.querySelector(':scope > .title');
+  const title = titleEl?.getAttribute('title')?.trim() || text(titleEl);
+  const duration = parseBiliDuration(text(row.querySelector('.stat-item.duration')));
+  const base = { root: item, timeParent: row, line: row.querySelector(':scope > .stats'), inside: false, picBox: null };
+  if (isBvid(key)) {
+    const prefix = sitePrefix();
+    const link = prefix ? biliVideoFromUrl(`${prefix}video/${key}/`) : undefined;
+    if (!link) return undefined;
+    const at = times.get(key);
+    return { ...base, video: { ...link, title, ...(duration !== undefined ? { duration } : {}), ...(at !== undefined ? { publishedAt: at } : {}) } };
+  }
+  const page = biliVideoFromUrl(location.href);
+  if (!isCid(key) || !page) return undefined;
+  return { ...base, video: { ...page, title }, part: { cid: key } };
+}
+
+/**
+ * 页面上能放时间和按钮的每一条：视频页的"接下来播放"（.video-page-card-small）、播放列表页右侧的列表（.action-list-item-wrap）
+ * 和它下面的推荐（.recommend-video-card：和"接下来播放"的卡片同一种结构，2026-11-25 实测）、视频页的合集 / 分 P 列表（.video-pod__item）
+ */
+const LIST_ITEMS = '.video-page-card-small, .recommend-video-card, .action-list-item-wrap, .video-pod__item';
 
 function readItem(el: HTMLElement): CardInfo | undefined {
+  if (el.classList.contains('video-pod__item')) return readPodItem(el);
   return el.classList.contains('action-list-item-wrap') ? readListItem(el) : readCard(el);
 }
 
@@ -160,6 +197,17 @@ function timeState(bvid: string): TimeState {
   if (lookupError?.ids.has(bvid) && !asking.has(bvid)) return 'failed';
   return 'pending';
 }
+
+function partState(bvid: string, cid: string): TimeState {
+  const parts = partTimes.get(bvid);
+  if (parts) return parts.has(cid) ? 'shown' : 'unknown';
+  if (partError?.bvid === bvid && !partAsking.has(bvid)) return 'failed';
+  return 'pending';
+}
+
+/** 这一条要显示的时间：视频的发布时间，或分 P 里这一 P 的上传时间 */
+const timeOf = (c: CardInfo): number | undefined => (c.part ? partTimes.get(c.video.bvid)?.get(c.part.cid) : times.get(c.video.bvid));
+const stateOf = (c: CardInfo): TimeState => (c.part ? partState(c.video.bvid, c.part.cid) : timeState(c.video.bvid));
 
 /** 播放量那一行后面的发布时间：卡片插在 .playinfo 后面、播放列表插在"N万播放"的末尾（都是同一行），高度不变 */
 function ensureTime(c: CardInfo, state: TimeState): void {
@@ -177,22 +225,28 @@ function ensureTime(c: CardInfo, state: TimeState): void {
     else c.timeParent.append(el);
   }
   const now = Date.now();
-  const at = times.get(c.video.bvid);
+  const at = timeOf(c);
+  const cid = c.part?.cid ?? '';
   // 这一行放不下时：先把字缩小一号（data-compact="1"），还放不下再去掉年份的前两位（"2"）
-  const level = el.dataset.bvid === c.video.bvid ? (el.dataset.compact ?? '') : '';
+  const same = el.dataset.bvid === c.video.bvid && (el.dataset.cid ?? '') === cid;
+  const level = same ? (el.dataset.compact ?? '') : '';
   const label = at !== undefined ? formatBiliPubdate(at, now, timeZone, level === '2') : state === 'unknown' ? '时间未知' : state === 'failed' ? '时间?' : '…';
   const hint =
     at !== undefined
-      ? biliPubdateHint(at, now, timeZone)
+      ? biliPubdateHint(at, now, timeZone, c.part ? 'part' : 'video')
       : state === 'unknown'
-        ? 'B 站的接口里查不到这个视频的发布时间（可能已删除或不公开）'
+        ? c.part
+          ? 'B 站没有给出这一 P 的上传时间'
+          : 'B 站的接口里查不到这个视频的发布时间（可能已删除或不公开）'
         : state === 'failed'
-          ? `没查到发布时间：${lookupError?.message ?? ''}`
-          : '正在查发布时间…';
+          ? `没查到${c.part ? '上传' : '发布'}时间：${(c.part ? partError?.message : lookupError?.message) ?? ''}`
+          : `正在查${c.part ? '上传' : '发布'}时间…`;
   // 站内跳转后 B 站复用了这张卡片、换成了别的视频：从头来
-  const fresh = el.dataset.bvid !== c.video.bvid;
+  const fresh = !same;
   if (fresh) {
     el.dataset.bvid = c.video.bvid;
+    if (cid) el.dataset.cid = cid;
+    else delete el.dataset.cid;
     delete el.dataset.compact;
   }
   if (fresh || el.textContent !== label) {
@@ -240,6 +294,30 @@ async function lookup(ids: string[]): Promise<void> {
   } else {
     const failed = ids.filter((id) => !times.has(id) && !absent.has(id));
     lookupError = { message: reply?.error ?? '后台没有应答', at: Date.now(), ids: new Set([...(lookupError?.ids ?? []), ...failed]) };
+    setTimeout(schedule, BILI.retryMs + 50);
+  }
+  schedule();
+}
+
+/** 问后台要这个分 P 视频每一 P 的上传时间（后台记着的直接给，缺的才向 B 站查） */
+async function lookupParts(bvid: string): Promise<void> {
+  partAsking.add(bvid);
+  let reply: BiliPartsReply | undefined;
+  try {
+    reply = (await chrome.runtime.sendMessage({ type: BILI_MSG.parts, bvid })) as BiliPartsReply | undefined;
+  } catch {
+    reply = { ok: false, error: 'TubeMuse 刚更新或重新加载过：刷新这个页面后再看' };
+  }
+  partAsking.delete(bvid);
+  if (reply?.ok) {
+    const parts = new Map<string, number>();
+    for (const [cid, t] of Object.entries(reply.parts ?? {})) if (typeof t === 'number' && Number.isFinite(t)) parts.set(cid, t);
+    partTimes.set(bvid, parts);
+    if (partError?.bvid === bvid) partError = undefined;
+  } else if (reply && reply.off) {
+    return;
+  } else {
+    partError = { message: reply?.error ?? '后台没有应答', at: Date.now(), bvid };
     setTimeout(schedule, BILI.retryMs + 50);
   }
   schedule();
@@ -421,6 +499,8 @@ function scan(): void {
   const want: string[] = [];
   const now = Date.now();
   const retry = !lookupError || now - lookupError.at >= BILI.retryMs;
+  const partRetry = !partError || now - partError.at >= BILI.retryMs;
+  const wantParts = new Set<string>();
   for (const card of document.querySelectorAll<HTMLElement>(LIST_ITEMS)) {
     const c = readItem(card);
     if (!c) {
@@ -429,18 +509,22 @@ function scan(): void {
       continue;
     }
     counts.cards++;
-    const state = timeState(c.video.bvid);
+    const state = stateOf(c);
     if (settings.showPubdate) {
       if (state === 'shown') counts.shown++;
       else if (state === 'unknown') counts.unknown++;
       else counts.pending++;
-      if ((state === 'pending' || (state === 'failed' && retry)) && !asking.has(c.video.bvid)) want.push(c.video.bvid);
+      if (c.part) {
+        if ((state === 'pending' || (state === 'failed' && partRetry)) && !partAsking.has(c.video.bvid)) wantParts.add(c.video.bvid);
+      } else if ((state === 'pending' || (state === 'failed' && retry)) && !asking.has(c.video.bvid)) want.push(c.video.bvid);
       ensureTime(c, state);
     } else c.root.querySelector(`[${ATTR}="bili-pubdate"]`)?.remove();
     if (settings.showSave) ensureButton(c);
     else c.picBox?.querySelector(`:scope > [${ATTR}="bili-save"]`)?.remove();
   }
   settleThenLookup([...new Set(want)].slice(0, BILI.maxIdsPerAsk), now);
+  // 分 P 列表：一个视频问一次（列表一次全出来，不用等它稳定）
+  for (const bvid of wantParts) void lookupParts(bvid);
   report(counts, false);
 }
 
@@ -476,7 +560,7 @@ function status(counts: Pick<BiliTabState, 'cards' | 'shown' | 'pending' | 'unkn
     showPubdate: settings.showPubdate,
     waiting,
     ...counts,
-    ...(lookupError && settings.showPubdate ? { error: lookupError.message } : {}),
+    ...((lookupError ?? partError) && settings.showPubdate ? { error: (lookupError ?? partError)!.message } : {}),
     ...(current ? { current } : {}),
   };
 }

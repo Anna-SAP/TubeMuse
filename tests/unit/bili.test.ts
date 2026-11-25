@@ -12,19 +12,23 @@ import {
   filterBili,
   formatBiliPubdate,
   isBvid,
+  isCid,
+  mergePartsCache,
   mergePubdateCache,
   parseBiliDuration,
   parseBiliOp,
   parseCardsResponse,
+  parsePagelistResponse,
   pubdatesFromCache,
   sanitizeBiliState,
   sanitizeBvids,
+  sanitizePartsCache,
   sanitizePubdateCache,
   suggestBiliTags,
   type BiliOp,
   type BiliState,
 } from '../../src/core/bili';
-import { applyBili, applyBiliFromPage, lookupBiliPubdates, resetBiliPubdateState } from '../../src/services/bili-service';
+import { applyBili, applyBiliFromPage, lookupBiliParts, lookupBiliPubdates, resetBiliPubdateState } from '../../src/services/bili-service';
 import type { AppContext } from '../../src/services/context';
 import { stores } from '../../src/services/repo';
 import { memoryKV, memoryLocker } from '../../src/services/storage';
@@ -94,8 +98,9 @@ describe('B站：发布时间的显示', () => {
     expect(formatBiliPubdate(NOW + 60_000, NOW, tz)).toBe('1分钟前');
   });
 
-  it('悬停提示：精确到分钟的时间与"多久以前"', () => {
+  it('悬停提示：精确到分钟的时间与"多久以前"；分 P 列表里的一 P 写"这一 P 上传于"', () => {
     expect(biliPubdateHint(Date.parse('2024-10-11T04:00:00Z'), NOW, 'Asia/Shanghai')).toBe('发布于 2024/10/11 12:00（2 年前）· TubeMuse');
+    expect(biliPubdateHint(Date.parse('2019-04-03T03:31:45Z'), NOW, 'Asia/Shanghai', 'part')).toBe('这一 P 上传于 2019/04/03 11:31（7 年前）· TubeMuse');
   });
 });
 
@@ -151,6 +156,80 @@ describe('B站：发布时间的接口回答与本机缓存', () => {
     expect(sanitizeBvids([BV1, BV1, 'x', 3, BV2])).toEqual([BV1, BV2]);
     expect(sanitizeBvids('BV1Ud436mEjX')).toEqual([]);
     expect(sanitizeBvids(Array.from({ length: 200 }, (_, i) => `BV1${String(i).padStart(9, '0')}`))).toHaveLength(BILI.maxIdsPerAsk);
+  });
+});
+
+describe('B站：分 P 视频每一 P 的上传时间（x/player/pagelist）', () => {
+  // 2026-11-25 实测 BV1Kb411W75N（716 P）的前三 P：同一个视频的各 P 隔了几年上传
+  const pagelist = {
+    code: 0,
+    message: '0',
+    data: [
+      { cid: 282152270, page: 1, part: '尚硅谷Java基础学习导读', duration: 429, ctime: 1610592446 },
+      { cid: 84319446, page: 2, part: '001.尚硅谷_编程入门-资料文件结构1', duration: 1025, ctime: 1554262305 },
+      { cid: 254424617, page: 3, part: '002.尚硅谷_编程入门-资料文件结构2', duration: 382, ctime: 1604994533 },
+      { cid: 999, page: 4, part: '没有上传时间', duration: 10, ctime: 0 },
+      { cid: '1000', page: 5, part: 'cid 不是数字', ctime: 1604994533 },
+    ],
+  };
+
+  it('只取 cid 与合理的上传时间（秒 → 毫秒）；ctime 是 0 的、cid 不是数字的不要；被拦照样报', () => {
+    expect(parsePagelistResponse(pagelist, NOW)).toEqual({ '282152270': 1610592446_000, '84319446': 1554262305_000, '254424617': 1604994533_000 });
+    expect(() => parsePagelistResponse({ code: -352, message: '-352' }, NOW)).toThrow(/拦下/);
+    expect(parsePagelistResponse({ code: 0, data: null }, NOW)).toEqual({});
+    expect(isCid('84319446')).toBe(true);
+    expect(isCid('BV1Kb411W75N')).toBe(false);
+  });
+
+  it('本机缓存：读出来时丢坏数据；满了先丢最早查的', () => {
+    expect(sanitizePartsCache({ [BV1]: { at: NOW, parts: { '1': 1554262305_000, x: 1, '2': 5 } }, nope: { at: NOW, parts: {} }, [BV2]: { at: 'x', parts: {} } }, NOW)).toEqual({ [BV1]: { at: NOW, parts: { '1': 1554262305_000 } } });
+    const c = mergePartsCache({ [BV1]: { at: NOW - 2, parts: {} }, [BV2]: { at: NOW - 1, parts: {} } }, BV3, { '9': 1554262305_000 }, NOW, 2);
+    expect(Object.keys(c).sort()).toEqual([BV2, BV3].sort());
+  });
+
+  it('服务层：一个视频一次请求（只发 BV 号、不带 Cookie），记在本机，过期前不再查；没勾选、BV 号不对都不查', async () => {
+    resetBiliPubdateState();
+    const calls: string[] = [];
+    const inits: (RequestInit | undefined)[] = [];
+    let now = NOW;
+    const http = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(String(input));
+      inits.push(init);
+      return new Response(JSON.stringify(pagelist), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const ctx = { kv: memoryKV(), locker: memoryLocker(), http, now: () => now, endpoints: ENDPOINTS, timeZone: 'Asia/Shanghai' } as unknown as AppContext;
+    expect(await lookupBiliParts(ctx, BV1)).toEqual({ ok: true, parts: parsePagelistResponse(pagelist, NOW) });
+    expect(calls).toEqual([`${ENDPOINTS.biliApi}/x/player/pagelist?bvid=${BV1}`]);
+    expect(inits[0]).toMatchObject({ credentials: 'omit', referrerPolicy: 'no-referrer' });
+    await lookupBiliParts(ctx, BV1);
+    expect(calls).toHaveLength(1);
+    now += BILI.partsTtlMs + 1;
+    await lookupBiliParts(ctx, BV1);
+    expect(calls).toHaveLength(2);
+    expect(await lookupBiliParts(ctx, 'javascript:alert(1)')).toMatchObject({ ok: false });
+    await stores.settings.write(ctx.kv, { ...DEFAULT_SETTINGS, bili: { ...DEFAULT_SETTINGS.bili, showPubdate: false } } as never);
+    expect(await lookupBiliParts(ctx, BV2)).toMatchObject({ ok: false, off: true });
+    expect(calls).toHaveLength(2);
+    resetBiliPubdateState();
+  });
+
+  it('服务层：被拦了照实说明、退避；记着的（哪怕过期了）照样给', async () => {
+    resetBiliPubdateState();
+    let now = NOW;
+    let calls = 0;
+    const http = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ code: -352, message: '-352' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const ctx = { kv: memoryKV(), locker: memoryLocker(), http, now: () => now, endpoints: ENDPOINTS, timeZone: 'Asia/Shanghai' } as unknown as AppContext;
+    const r = await lookupBiliParts(ctx, BV1);
+    expect(r.ok === false && r.error).toMatch(/拦下.*分钟后再查/);
+    expect(await lookupBiliParts(ctx, BV1)).toMatchObject({ ok: false });
+    expect(calls).toBe(1);
+    await stores.biliParts.write(ctx.kv, { [BV2]: { at: NOW - BILI.partsTtlMs - 1, parts: { '1': 1554262305_000 } } });
+    expect(await lookupBiliParts(ctx, BV2)).toEqual({ ok: true, parts: { '1': 1554262305_000 } });
+    expect(calls).toBe(1);
+    resetBiliPubdateState();
   });
 });
 

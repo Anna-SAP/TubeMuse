@@ -153,10 +153,38 @@ export const BILI_LIST_RECS = [
   { bv: 'BV1Bh411G7Da', title: '凤冰：韩道友要求只要不是太过分，都是可以的！', up: '爱睡觉的_Koala', mid: '43887712', duration: '02:20', view: '40.6万', dm: '151', at: Date.UTC(2023, 5, 6, 12, 0) },
 ];
 
+/**
+ * 视频页右侧的合集列表（.video-pod，2026-11-25 实测）：每一项是一个视频，data-key 是 BV 号；这个页面的视频是其中的第二项
+ * @type {BiliRec[]}
+ */
+export const BILI_POD_SEASON = [
+  { bv: 'BV1Sea000001', title: '重读人界1：五里沟二愣子出世', up: '', mid: '', duration: '14:55', view: '', dm: '', at: Date.UTC(2026, 7, 17, 12, 0) },
+  { bv: 'BV1Sea000002', title: '重读人界2：七玄门测试', up: '', mid: '', duration: '13:02', view: '', dm: '', age: 12 * DAY + HOUR },
+  { bv: 'BV1Sea000003', title: '重读人界3：墨大夫的阴谋，这个标题很长很长很长很长很长', up: '', mid: '', duration: '1:02:03', view: '', dm: '', age: 5 * HOUR + 60_000 },
+];
+/** 分 P 视频（视频页右侧的分 P 列表，data-key 是每一 P 的 cid）：各 P 的上传时间（ctime）由 mock 的 x/player/pagelist 给 */
+export const BILI_POD_PARTS_BV = 'BV1Pod000001';
+export const BILI_POD_PARTS = [
+  { cid: 282152270, part: '尚硅谷Java基础学习导读', duration: '07:09', at: Date.UTC(2021, 0, 14, 12, 0) },
+  { cid: 84319446, part: '001.尚硅谷_编程入门-资料文件结构1', duration: '17:05', at: Date.UTC(2019, 3, 3, 12, 0) },
+  { cid: 254424617, part: '002.尚硅谷_编程入门-资料文件结构2', duration: '06:22', at: Date.UTC(2020, 10, 10, 12, 0) },
+  // B 站没给上传时间（ctime 是 0）
+  { cid: 84321034, part: '003.尚硅谷_编程入门-入门概述', duration: '11:32', at: 0 },
+];
+
+/**
+ * mock 的 B 站接口 /biliapi/x/player/pagelist?bvid=…：分 P 视频每一 P 的 cid 与上传时间（秒）。认不出的视频回空列表
+ * @param {string} bvid
+ */
+export function biliPagelistReply(bvid) {
+  if (bvid !== BILI_POD_PARTS_BV) return { code: 0, message: '0', ttl: 1, data: [] };
+  return { code: 0, message: '0', ttl: 1, data: BILI_POD_PARTS.map((p, i) => ({ cid: p.cid, page: i + 1, part: p.part, duration: 60, ctime: Math.floor(p.at / 1000) })) };
+}
+
 /** 这一批 ID 一查就被 B 站风控拦下（code -352） */
 export const BILI_BLOCKED = 'BV1B1ocked00';
 
-const ALL_RECS = [...BILI_RECS, ...BILI_RECS_NEXT, ...BILI_RECS_MORE, ...BILI_LIST, ...BILI_LIST_MORE, ...BILI_LIST_RECS].filter((r) => !!r);
+const ALL_RECS = [...BILI_RECS, ...BILI_RECS_NEXT, ...BILI_RECS_MORE, ...BILI_LIST, ...BILI_LIST_MORE, ...BILI_LIST_RECS, ...BILI_POD_SEASON].filter((r) => !!r);
 
 /**
  * mock 的 B 站接口 /biliapi/x/article/cards?ids=…：认得的视频回 pubdate（秒），认不得的不出现在结果里（和真实接口一样）。
@@ -343,8 +371,50 @@ function listPage() {
   );
 }
 
+const POD_CSS = `
+body { margin: 0; font: 14px/16px system-ui, "Noto Sans CJK SC", sans-serif; color: #18191c; }
+#app { display: flex; gap: 24px; padding: 16px; }
+.left-container { width: 420px; flex: none; }
+.video-pod { width: 338px; flex: none; background: #f6f7f8; border-radius: 6px; padding: 8px 0; }
+.simple-base-item { display: flex; flex-direction: row; align-items: center; justify-content: space-between; height: 31px; line-height: 12px; padding: 0 12px; box-sizing: border-box; }
+.simple-base-item .title { display: flex; flex: 1 1 0%; min-width: 0; font-size: 15px; }
+.title-txt { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.simple-base-item .stats { display: block; flex: 0 0 auto; margin-left: 10px; font-size: 14px; color: #9499a0; }
+.stat-item { display: block; font-size: 14px; line-height: 14px; }
+`;
+
+/** 合集 / 分 P 列表的一行：.simple-base-item > .title[title]（.playing-gif、.title-txt）+ .stats > .stat-item.duration @param {string} cls @param {string} key @param {string} title @param {string} duration */
+function podRow(cls, key, title, duration) {
+  return (
+    `<div class="simple-base-item ${cls}"${key ? ` data-key="${key}"` : ''}><div title="${esc(title)}" class="title"><div class="playing-gif" style="display:none"></div><div class="title-txt">${esc(title)}</div></div>` +
+    `<div class="stats"><div class="stat-item duration">${duration}</div></div></div>`
+  );
+}
+
+/** 视频页（只有合集 / 分 P 列表）：/bili/video/<合集里的视频>/ 或 /bili/video/<分 P 视频>/?p=… @param {'season' | 'parts'} kind */
+function podPage(kind) {
+  const bv = kind === 'season' ? (BILI_POD_SEASON[1]?.bv ?? '') : BILI_POD_PARTS_BV;
+  const title = kind === 'season' ? (BILI_POD_SEASON[1]?.title ?? '') : '尚硅谷Java入门视频教程';
+  const items =
+    kind === 'season'
+      ? BILI_POD_SEASON.map((r) => `<div class="pod-item video-pod__item simple" data-key="${r.bv}"><div class="single-p">${podRow(r.bv === bv ? 'active normal' : 'normal', '', r.title, r.duration)}</div></div>`).join('')
+      : BILI_POD_PARTS.map((p, i) => podRow(`video-pod__item ${i === 1 ? 'active ' : ''}normal`, String(p.cid), p.part, p.duration)).join('');
+  return (
+    `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}_哔哩哔哩_bilibili</title>` +
+    `<meta data-vue-meta="true" name="author" content="某UP"><meta data-vue-meta="true" property="og:url" content="__ORIGIN__/bili/video/${bv}/">` +
+    `<style>${POD_CSS}</style></head><body><div id="app"><div class="left-container"><h1 class="video-title" title="${esc(title)}">${esc(title)}</h1><div id="bilibili-player"></div></div>` +
+    `<div class="right-container"><div class="video-pod"><div class="video-pod__header">${kind === 'season' ? `重读《凡人》人界篇 （2/${BILI_POD_SEASON.length}）` : `视频选集 （2/${BILI_POD_PARTS.length}）`}</div>` +
+    `<div class="video-pod__body"><div class="video-pod__list section">${items}</div></div></div></div></div><script>` +
+    `window.__nativeClicks = 0; document.addEventListener('click', (e) => { if (e.target.closest('#app')) { window.__nativeClicks++; e.preventDefault(); } });` +
+    `document.querySelectorAll('meta[content^="__ORIGIN__"]').forEach((m) => m.setAttribute('content', m.getAttribute('content').replace('__ORIGIN__', location.origin)));` +
+    `</script></body></html>`
+  );
+}
+
 /** @param {string} path /bili/ 开头的路径；认不出的返回 undefined（mock 回 404） */
 export function biliVideoPage(path) {
+  if (new RegExp(`^/bili/(?:zh-Hans/)?video/${BILI_POD_SEASON[1]?.bv}/?$`).test(path)) return podPage('season');
+  if (new RegExp(`^/bili/(?:zh-Hans/)?video/${BILI_POD_PARTS_BV}/?$`).test(path)) return podPage('parts');
   if (new RegExp(`^/bili/(?:zh-Hans/|en/)?list/${BILI_LIST_ID}/?$`).test(path)) return listPage();
   return new RegExp(`^/bili/(?:zh-Hans/)?video/${BILI_PAGE_VIDEO.bv}/?$`).test(path) ? videoPage() : undefined;
 }

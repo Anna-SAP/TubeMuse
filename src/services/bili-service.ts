@@ -1,4 +1,4 @@
-// B 站（DECISIONS §92）：收藏与标签的写入（加锁读改写），以及"接下来播放"列表里视频的发布时间。
+// B 站（DECISIONS §92）：收藏与标签的写入（加锁读改写），以及"接下来播放"等列表里视频的发布时间、分 P 视频每一 P 的上传时间。
 // 发布时间只在你勾选「B站」页的"显示发布时间"后查：先看本机记着的，缺的向 B 站公开接口 x/article/cards 查——
 // 只发 BV 号，不带 Cookie、不带 Referer、不跟随跳转；同一时间只有一个请求，两次之间至少隔 BILI.minIntervalMs；
 // 被 B 站拦了或网络出错后退避 BILI.backoffMs，这期间不发请求、照实说明。
@@ -7,12 +7,16 @@ import { BILI, HTTP_TIMEOUT_MS } from '../config/defaults';
 import {
   BiliApiError,
   applyBiliOp,
+  isBvid,
+  mergePartsCache,
   mergePubdateCache,
   parseBiliOp,
   parseCardsResponse,
+  parsePagelistResponse,
   pubdatesFromCache,
   sanitizeBvids,
   type BiliOp,
+  type BiliPartsReply,
   type BiliPubdateReply,
 } from '../core/bili';
 import type { AppContext } from './context';
@@ -54,14 +58,14 @@ export function resetBiliPubdateState(): void {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** 一次请求：GET <api>/x/article/cards?ids=BV…,BV… */
-async function fetchCards(ctx: AppContext, ids: readonly string[]): Promise<{ times: Record<string, number>; absent: string[] }> {
+/** 一次 GET <api><路径>：两次之间至少隔 BILI.minIntervalMs；被拦、出错、回的不是 JSON 都变成 BiliApiError */
+async function getJson(ctx: AppContext, pathAndQuery: string): Promise<unknown> {
   const wait = lastRequestAt + BILI.minIntervalMs - ctx.now();
   if (wait > 0) await sleep(Math.min(wait, BILI.minIntervalMs));
   lastRequestAt = ctx.now();
   let res: Response;
   try {
-    res = await ctx.http(`${ctx.endpoints.biliApi}/x/article/cards?ids=${ids.join(',')}`, {
+    res = await ctx.http(`${ctx.endpoints.biliApi}${pathAndQuery}`, {
       credentials: 'omit',
       referrerPolicy: 'no-referrer',
       redirect: 'manual',
@@ -82,7 +86,25 @@ async function fetchCards(ctx: AppContext, ids: readonly string[]): Promise<{ ti
     // 被风控时 B 站有时回一张"出错啦"网页而不是 JSON：一样退避
     throw new BiliApiError('B 站接口回了一张网页而不是数据（通常是被风控拦下了）', true);
   }
-  return parseCardsResponse(json, ids, ctx.now());
+  return json;
+}
+
+/** 一次请求：GET <api>/x/article/cards?ids=BV…,BV… */
+async function fetchCards(ctx: AppContext, ids: readonly string[]): Promise<{ times: Record<string, number>; absent: string[] }> {
+  return parseCardsResponse(await getJson(ctx, `/x/article/cards?ids=${ids.join(',')}`), ids, ctx.now());
+}
+
+/** 退避中：人话原因（"……N 分钟后再查"）；没在退避时 undefined */
+function backoffMessage(ctx: AppContext): string | undefined {
+  if (!backoff || backoff.until <= ctx.now()) return undefined;
+  return `${backoff.reason}。${Math.max(1, Math.ceil((backoff.until - ctx.now()) / 60_000))} 分钟后再查`;
+}
+
+/** 请求失败：被拦的开始退避（已经在退避的不延长），返回给页面看的人话 */
+function failure(ctx: AppContext, e: unknown, what: string): string {
+  const err = e instanceof BiliApiError ? e : new BiliApiError(`${what}时出了意外错误`, true);
+  if (err.blocked && !(backoff && backoff.until > ctx.now())) backoff = { until: ctx.now() + BILI.backoffMs, reason: err.message };
+  return err.blocked ? `${err.message}。${Math.round(BILI.backoffMs / 60_000)} 分钟后再查` : err.message;
 }
 
 /**
@@ -96,10 +118,8 @@ export async function lookupBiliPubdates(ctx: AppContext, rawIds: unknown): Prom
   const cache = await stores.biliPubdates.read(ctx.kv);
   const { known, absent, missing } = pubdatesFromCache(cache, ids, ctx.now());
   if (!missing.length) return { ok: true, times: known, absent };
-  if (backoff && backoff.until > ctx.now()) {
-    const min = Math.max(1, Math.ceil((backoff.until - ctx.now()) / 60_000));
-    return { ok: false, times: known, absent, error: `${backoff.reason}。${min} 分钟后再查` };
-  }
+  const waiting = backoffMessage(ctx);
+  if (waiting) return { ok: false, times: known, absent, error: waiting };
   const run = queue.then(async (): Promise<BiliPubdateReply> => {
     const times: Record<string, number> = { ...known };
     const gone: string[] = [...absent];
@@ -118,9 +138,39 @@ export async function lookupBiliPubdates(ctx: AppContext, rawIds: unknown): Prom
       }
       return { ok: true, times, absent: gone };
     } catch (e) {
-      const err = e instanceof BiliApiError ? e : new BiliApiError('查发布时间时出了意外错误', true);
-      if (err.blocked && !(backoff && backoff.until > ctx.now())) backoff = { until: ctx.now() + BILI.backoffMs, reason: err.message };
-      return { ok: false, times, absent: gone, error: err.blocked ? `${err.message}。${Math.round(BILI.backoffMs / 60_000)} 分钟后再查` : err.message };
+      return { ok: false, times, absent: gone, error: failure(ctx, e, '查发布时间') };
+    }
+  });
+  queue = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * 页面脚本问"这个分 P 视频每一 P 的上传时间"（视频页右侧的分 P 列表）。一次 GET x/player/pagelist?bvid=…，
+ * 只发 BV 号、不带 Cookie；记在本机 BILI.partsTtlMs（之后 UP 主可能又加了几 P，再查一次）。没开"显示发布时间"、退避中时不查。
+ */
+export async function lookupBiliParts(ctx: AppContext, rawBvid: unknown): Promise<BiliPartsReply> {
+  const settings = await stores.settings.read(ctx.kv);
+  if (!settings.bili.enabled || !settings.bili.showPubdate) return { ok: false, error: '"显示发布时间"没有勾选', off: true };
+  if (!isBvid(rawBvid)) return { ok: false, error: '认不出这个视频的 BV 号' };
+  const bvid = rawBvid;
+  const cached = (await stores.biliParts.read(ctx.kv))[bvid];
+  if (cached && ctx.now() - cached.at < BILI.partsTtlMs) return { ok: true, parts: cached.parts };
+  const waiting = backoffMessage(ctx);
+  if (waiting) return cached ? { ok: true, parts: cached.parts } : { ok: false, error: waiting };
+  const run = queue.then(async (): Promise<BiliPartsReply> => {
+    // 排队时别的标签页可能已经查过了
+    const again = (await stores.biliParts.read(ctx.kv))[bvid];
+    if (again && ctx.now() - again.at < BILI.partsTtlMs) return { ok: true, parts: again.parts };
+    try {
+      if (backoff && backoff.until > ctx.now()) throw new BiliApiError(backoff.reason, true);
+      const parts = parsePagelistResponse(await getJson(ctx, `/x/player/pagelist?bvid=${bvid}`), ctx.now());
+      await stores.biliParts.update(ctx.kv, ctx.locker, (c) => mergePartsCache(c, bvid, parts, ctx.now()));
+      return { ok: true, parts };
+    } catch (e) {
+      const error = failure(ctx, e, '查分 P 的上传时间');
+      // 记着的虽然过期了，照样先用（各 P 的上传时间不会变，只是可能少了新加的几 P）
+      return again ? { ok: true, parts: again.parts } : { ok: false, error };
     }
   });
   queue = run.catch(() => undefined);
