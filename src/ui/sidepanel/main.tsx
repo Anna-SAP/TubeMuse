@@ -15,6 +15,7 @@ import { DoubanView } from './DoubanView';
 import { SubtitlesView } from './SubtitlesView';
 import { ClipsView } from './ClipsView';
 import { XhsView } from './XhsView';
+import { BiliView } from './BiliView';
 import { EmailView } from './EmailView';
 import { XyzView } from './XyzView';
 import { DubPrompt, DubView } from './DubView';
@@ -28,7 +29,7 @@ import { normalizeZoom } from '../../core/zoom';
 import { cssZoomOf } from '../shared/css-zoom';
 import { applyZoom, useZoom, ZoomControl } from './zoom';
 
-type Tab = 'find' | 'discover' | 'story' | 'douban' | 'xhs' | 'xyz' | 'email' | 'subtitles' | 'dub' | 'clips' | 'records' | 'profile' | 'changes';
+type Tab = 'find' | 'discover' | 'story' | 'douban' | 'xhs' | 'bili' | 'xyz' | 'email' | 'subtitles' | 'dub' | 'clips' | 'records' | 'profile' | 'changes';
 
 function SetupBanner() {
   const ctx = appCtx();
@@ -252,6 +253,7 @@ function App({ initialZoom }: { initialZoom: number }) {
               ['story', '故事'],
               ['douban', '豆瓣'],
               ['xhs', '小红书'],
+              ['bili', 'B站'],
               ['xyz', '小宇宙'],
               ['email', 'eMails'],
               ['subtitles', '字幕'],
@@ -294,6 +296,7 @@ function App({ initialZoom }: { initialZoom: number }) {
         </div>
         {tab === 'douban' && <DoubanView />}
         {tab === 'xhs' && <XhsView />}
+        {tab === 'bili' && <BiliView />}
         {tab === 'xyz' && <XyzView />}
         {tab === 'email' && <EmailView />}
         {tab === 'subtitles' && <SubtitlesView />}

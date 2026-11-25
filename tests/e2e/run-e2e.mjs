@@ -13,6 +13,7 @@ import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fail, failureCount, launch, redLines, setup, shots } from './harness.mjs';
+import { bili } from './parts/bili.mjs';
 import { clips } from './parts/clips.mjs';
 import { core } from './parts/core.mjs';
 import { dub } from './parts/dub.mjs';
@@ -25,7 +26,7 @@ import { subtitles } from './parts/subtitles.mjs';
 import { xyz } from './parts/xyz.mjs';
 
 /** @type {Record<string, (t: import('./harness.mjs').Harness) => Promise<void>>} */
-const PARTS = { core, subtitles, clips, emails, muse, settings, xyz, dub, 'dub-full': dubFull, story };
+const PARTS = { core, subtitles, clips, emails, muse, settings, xyz, dub, 'dub-full': dubFull, story, bili };
 /** @type {Record<string, string[]>} */
 const SHARDS = JSON.parse(readFileSync(new URL('./shards.json', import.meta.url), 'utf8'));
 

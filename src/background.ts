@@ -21,6 +21,8 @@ import { ingestXyzListen, readAudioWindow, xyzSession, type XyzWindowReply } fro
 import { toAppError } from './services/errors';
 import { XHS_MSG } from './core/xhs';
 import { applyXhsFromPage, type XhsReply } from './services/xhs-service';
+import { BILI_MSG, type BiliPubdateReply } from './core/bili';
+import { applyBiliFromPage, lookupBiliPubdates, type BiliReply } from './services/bili-service';
 import { IS_FIREFOX } from './platform';
 import { DUB_MSG, DUB_PORT, type DubPortReply, type DubTabState } from './core/dub';
 import { streamDubAudio } from './services/dub-service';
@@ -154,7 +156,7 @@ let connecting: Promise<void> | undefined;
 let reminderTimer: ReturnType<typeof setTimeout> | undefined;
 type XyzWindowResponse = ({ ok: true } & XyzWindowReply) | { ok: false; message: string; hint?: string; wait?: boolean };
 
-chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | XhsReply | { lang?: string; note?: string } | XyzWindowResponse) => void) => {
+chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: AuthConnectReply | XhsReply | BiliReply | BiliPubdateReply | { lang?: string; note?: string } | XyzWindowResponse) => void) => {
   const m = msg as { type?: string; session?: unknown } | undefined;
   if (m?.type === AUTH_CONNECT_MESSAGE) {
     if (!fromExtensionPage(sender)) return false;
@@ -193,6 +195,18 @@ chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse: (r: Au
   if (m?.type === XHS_MSG.op) {
     if (!fromXhsPage(sender)) return false;
     applyXhsFromPage(ctx, (m as { op?: unknown }).op).then(sendResponse, () => sendResponse({ ok: false, error: '没有保存：本机存储出错，稍后再试' }));
+    return true;
+  }
+  // B 站（DECISIONS §92）：页面上点了收藏 / 移出 / 加减标签。页面内容不可信，校验后写入本机；不向 B 站发任何请求
+  if (m?.type === BILI_MSG.op) {
+    if (!fromBiliPage(sender)) return false;
+    applyBiliFromPage(ctx, (m as { op?: unknown }).op).then(sendResponse, () => sendResponse({ ok: false, error: '没有保存：本机存储出错，稍后再试' }));
+    return true;
+  }
+  // B 站："接下来播放"列表里视频的发布时间。只在勾选了"显示发布时间"时查：本机记着的直接给，缺的向 B 站公开接口查（只发 BV 号）
+  if (m?.type === BILI_MSG.pubdates) {
+    if (!fromBiliPage(sender)) return false;
+    keepAlive(() => lookupBiliPubdates(ctx, (m as { ids?: unknown }).ids)).then(sendResponse, () => sendResponse({ ok: false, times: {}, error: '查发布时间时出了意外错误' }));
     return true;
   }
   // 小宇宙：收听记录（累计值，可重复上报）

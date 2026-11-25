@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { biliMediaSeconds, biliPage } from './bili-pages.mjs';
+import { biliCardsReply, biliMediaSeconds, biliPage } from './bili-pages.mjs';
 import { douyinMediaSeconds, douyinPage } from './douyin-pages.mjs';
 import { igMediaSeconds, igPage } from './ig-pages.mjs';
 import { kubbMediaSeconds, kubbPage } from './kubb-pages.mjs';
@@ -753,6 +753,8 @@ export function startMockServer() {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
         return res.end(html);
       }
+      // B 站的公开接口（DECISIONS §92）：x/article/cards?ids=…，只回发布时间那几项
+      if (p === '/biliapi/x/article/cards') return send(200, biliCardsReply(url.searchParams.get('ids') ?? '', Date.now()));
       // 仿 B 站网页版（首页是 /bili/ 本身，播放页由页面里的站内跳转进入）
       if (p.startsWith('/bili/')) {
         const html = biliPage(p);
