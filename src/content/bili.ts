@@ -1,5 +1,7 @@
 // B 站网页版的页面脚本（2026-11-25 新增，见 DECISIONS §92）。
-// 1. 发布时间：视频页右侧"接下来播放"列表（.video-page-card-small）每条视频的播放量那一行后面，写上发布时间
+// 1. 发布时间：视频页右侧"接下来播放"列表（.video-page-card-small）每条视频的播放量那一行后面，写上发布时间；
+//    播放列表页（/list/…，例如"UP主的全部视频"、稍后再看、收藏夹的"播放全部"）右侧的列表（.action-list-item-wrap）同样，
+//    写在"N万播放"那一行后面（2026-11-25 用户在 Firefox 上的播放列表页发现没有显示，见 DECISIONS §92）
 //    （30 天内"N 天前"，再早的写日期）。B 站页面上没有这个信息：由扩展后台向 B 站公开接口查（只在你勾选"显示发布时间"后），
 //    这个脚本自己不发任何网络请求。列表刷新、站内跳转（B 站复用同一批卡片元素、只换内容）、点"展开"加载出的新条目都跟着更新。
 // 2. 收藏与标签：每条视频的封面左上角一个"收藏"按钮（悬停时出现，收藏后常驻），点开后收进 TubeMuse、打标签。
@@ -11,12 +13,14 @@
 // 所以等 #app 上的 data-server-rendered 消失（Vue 接管时会去掉它，2026-11-25 实测）再动手。
 
 import { BILI, DEFAULT_SETTINGS } from '../config/defaults';
+import { BILI_PAGES } from '../config/endpoints';
 import {
   BILI_MSG,
   biliPubdateHint,
   biliVideoFromUrl,
   emptyBiliState,
   formatBiliPubdate,
+  isBvid,
   parseBiliDuration,
   sanitizeBiliState,
   splitTags,
@@ -61,10 +65,20 @@ const hydrating = (): boolean => !!document.querySelector('[data-server-rendered
 
 // ── 推荐列表里的一条 ──
 
+/**
+ * 列表里的一条视频：视频页"接下来播放"的卡片、播放列表页下面的推荐卡片、播放列表页右侧列表的一项。
+ * 发布时间和播放量在同一行：line 后面（"接下来播放"的 .playinfo 是 inline-flex，后面接着写），或 line 里面的末尾
+ * （播放列表页推荐卡片的 .playinfo 是占满一行的 flex，播放列表那一项的 .views 所在的 .info 是固定高度、上下撑开的竖排：
+ * 写在外面都会另起一行）
+ */
 interface CardInfo {
   video: BiliVideoInput;
-  info: Element;
-  playinfo: Element | null;
+  /** 这一条的根元素（找我们加过的东西） */
+  root: Element;
+  timeParent: Element;
+  /** 时间要和它在同一行 */
+  line: Element | null;
+  inside: boolean;
   picBox: Element | null;
 }
 
@@ -82,7 +96,8 @@ function readCard(card: HTMLElement): CardInfo | undefined {
   if (!link) return undefined;
   const titleEl = info.querySelector('.title');
   const title = titleEl?.getAttribute('title')?.trim() || text(titleEl);
-  const up = info.querySelector<HTMLAnchorElement>('.upname a[href]');
+  // 视频页是 .upname > a，播放列表页下面的推荐是 a.upname 本身
+  const up = info.querySelector<HTMLAnchorElement>('a.upname[href], .upname a[href]');
   const upName = text(info.querySelector('.upname .name') ?? up);
   const upMid = up ? SPACE_MID.exec(up.href)?.[1] : undefined;
   const duration = parseBiliDuration(text(card.querySelector('.duration')));
@@ -95,7 +110,44 @@ function readCard(card: HTMLElement): CardInfo | undefined {
     ...(duration !== undefined ? { duration } : {}),
     ...(at !== undefined ? { publishedAt: at } : {}),
   };
-  return { video, info, playinfo: info.querySelector(':scope > .playinfo'), picBox: card.querySelector('.pic-box') };
+  const playinfo = info.querySelector(':scope > .playinfo');
+  // 播放量那一行占满整行（display: flex，播放列表页下面的推荐就是，2026-11-25 实测）时写在它里面，否则接在它后面
+  const inside = !!playinfo && getComputedStyle(playinfo).display === 'flex';
+  return { video, root: card, timeParent: inside && playinfo ? playinfo : info, line: playinfo, inside, picBox: card.querySelector('.pic-box') };
+}
+
+/** 当前页面所在的 B 站站点前缀（e2e 里是本机 mock 的 /bili/） */
+const sitePrefix = (): string | undefined => BILI_PAGES.find((p) => location.href.startsWith(p));
+
+/**
+ * 播放列表页右侧列表的一项（2026-11-25 实测 /list/<ID>?bvid=…）：.action-list-item-wrap[data-key=<BV号>] > … > .main >
+ * .cover（封面，position: relative）+ .info（.title[title]、.views"1.6万播放"）。没有链接：BV 号只在 data-key 上；
+ * 每一项都是同一个 UP 主（或收藏夹），所以没有 UP 主名。分 P 的视频那一项 data-key 不是 BV 号的不认
+ */
+function readListItem(wrap: HTMLElement): CardInfo | undefined {
+  const bvid = wrap.dataset.key;
+  const prefix = sitePrefix();
+  const info = wrap.querySelector('.info');
+  const views = info?.querySelector('.views');
+  if (!isBvid(bvid) || !prefix || !info || !views) return undefined;
+  const link = biliVideoFromUrl(`${prefix}video/${bvid}/`);
+  if (!link) return undefined;
+  const titleEl = info.querySelector('.title');
+  const title = titleEl?.getAttribute('title')?.trim() || text(titleEl);
+  const duration = parseBiliDuration(text(wrap.querySelector('.duration')));
+  const at = times.get(bvid);
+  const video: BiliVideoInput = { ...link, title, ...(duration !== undefined ? { duration } : {}), ...(at !== undefined ? { publishedAt: at } : {}) };
+  return { video, root: wrap, timeParent: views, line: views, inside: true, picBox: wrap.querySelector('.cover') };
+}
+
+/**
+ * 页面上能放时间和按钮的每一条：视频页的"接下来播放"（.video-page-card-small）、播放列表页右侧的列表（.action-list-item-wrap）
+ * 和它下面的推荐（.recommend-video-card：和"接下来播放"的卡片同一种结构，2026-11-25 实测）
+ */
+const LIST_ITEMS = '.video-page-card-small, .recommend-video-card, .action-list-item-wrap';
+
+function readItem(el: HTMLElement): CardInfo | undefined {
+  return el.classList.contains('action-list-item-wrap') ? readListItem(el) : readCard(el);
 }
 
 // ── 发布时间 ──
@@ -109,14 +161,20 @@ function timeState(bvid: string): TimeState {
   return 'pending';
 }
 
-/** 播放量那一行后面的发布时间：插在 .playinfo 后面（同一行），卡片高度不变 */
+/** 播放量那一行后面的发布时间：卡片插在 .playinfo 后面、播放列表插在"N万播放"的末尾（都是同一行），高度不变 */
 function ensureTime(c: CardInfo, state: TimeState): void {
-  let el = c.info.querySelector<HTMLElement>(`:scope > [${ATTR}="bili-pubdate"]`);
+  let el = c.root.querySelector<HTMLElement>(`[${ATTR}="bili-pubdate"]`);
+  // 位置不对了（B 站换了排版、这一行从 inline-flex 变成整行）：拿掉重放
+  if (el && el.parentElement !== c.timeParent) {
+    el.remove();
+    el = null;
+  }
   if (!el) {
     el = document.createElement('span');
     el.setAttribute(ATTR, 'bili-pubdate');
-    if (c.playinfo) c.playinfo.after(el);
-    else c.info.append(el);
+    if (c.inside) el.dataset.inline = '1';
+    if (c.line && !c.inside) c.line.after(el);
+    else c.timeParent.append(el);
   }
   const now = Date.now();
   const at = times.get(c.video.bvid);
@@ -140,7 +198,13 @@ function ensureTime(c: CardInfo, state: TimeState): void {
   if (fresh || el.textContent !== label) {
     el.textContent = label;
     // 这一行放不下、折到下一行了（只在换了视频或文字变了时量）：先缩小一号字，还不行再换短写法
-    const wrapped = () => !!c.playinfo && el.getBoundingClientRect().top > c.playinfo.getBoundingClientRect().top + 4;
+    // 折到下一行了，或（写在一行里面时）超出了这一行的右边
+    const wrapped = () => {
+      if (!c.line) return false;
+      const r = el.getBoundingClientRect();
+      const l = c.line.getBoundingClientRect();
+      return r.top > l.top + 4 || (c.inside && r.right > l.right + 1);
+    };
     if (at !== undefined && level !== '2' && wrapped()) {
       el.dataset.compact = '1';
       if (wrapped()) {
@@ -284,8 +348,11 @@ const GLOBAL_CSS = `
 [${ATTR}="bili-pubdate"] { display: inline-block; vertical-align: top; margin-left: 8px; font-size: 12px; line-height: 18px; color: var(--text3, #9499a0); white-space: nowrap; font-variant-numeric: tabular-nums; cursor: default; }
 [${ATTR}="bili-pubdate"]:not([data-state="shown"]) { opacity: .6; }
 [${ATTR}="bili-pubdate"][data-compact] { margin-left: 5px; font-size: 11px; letter-spacing: -.2px; }
-.video-page-card-small .pic-box > [${ATTR}="bili-save"] { position: absolute; z-index: 20; left: 6px; top: 6px; opacity: 0; transition: opacity .15s; }
-.video-page-card-small:hover .pic-box > [${ATTR}="bili-save"], .video-page-card-small .pic-box > [${ATTR}="bili-save"][data-saved], .video-page-card-small .pic-box > [${ATTR}="bili-save"]:focus-within { opacity: 1; }
+:is(.video-page-card-small, .recommend-video-card) .pic-box > [${ATTR}="bili-save"], .action-list-item-wrap .cover > [${ATTR}="bili-save"] { position: absolute; z-index: 20; left: 6px; top: 6px; opacity: 0; transition: opacity .15s; }
+.action-list-item-wrap .cover > [${ATTR}="bili-save"] { left: 4px; top: 4px; }
+:is(.video-page-card-small, .recommend-video-card):hover .pic-box > [${ATTR}="bili-save"], :is(.video-page-card-small, .recommend-video-card) .pic-box > [${ATTR}="bili-save"][data-saved], :is(.video-page-card-small, .recommend-video-card) .pic-box > [${ATTR}="bili-save"]:focus-within,
+.action-list-item-wrap:hover .cover > [${ATTR}="bili-save"], .action-list-item-wrap .cover > [${ATTR}="bili-save"][data-saved], .action-list-item-wrap .cover > [${ATTR}="bili-save"]:focus-within { opacity: 1; }
+[${ATTR}="bili-pubdate"][data-inline] { vertical-align: baseline; line-height: 1; flex: none; }
 `;
 
 function ensureGlobalStyle(): void {
@@ -315,7 +382,9 @@ function currentVideo(): BiliVideoInput | undefined {
   const fresh = !!og && biliVideoFromUrl(og)?.bvid === page.bvid;
   const h1 = document.querySelector('h1.video-title');
   const title = (fresh ? h1?.getAttribute('title')?.trim() || text(h1) : '') || document.title.replace(/_哔哩哔哩_bilibili$/, '').trim();
-  const video: BiliVideoInput = { ...page, title };
+  // 查到过的发布时间按 BV 号记着，和 meta 换没换无关（播放列表页没有 video:release_date，这个视频就在右侧列表里）
+  const looked = times.get(page.bvid);
+  const video: BiliVideoInput = { ...page, title, ...(looked !== undefined ? { publishedAt: looked } : {}) };
   if (!fresh) return video;
   const upName = meta('meta[name="author"]');
   if (upName) video.upName = upName;
@@ -352,8 +421,8 @@ function scan(): void {
   const want: string[] = [];
   const now = Date.now();
   const retry = !lookupError || now - lookupError.at >= BILI.retryMs;
-  for (const card of document.querySelectorAll<HTMLElement>('.video-page-card-small')) {
-    const c = readCard(card);
+  for (const card of document.querySelectorAll<HTMLElement>(LIST_ITEMS)) {
+    const c = readItem(card);
     if (!c) {
       // 这张卡片换成了没有 BV 号的东西（番剧、广告）：把我们加的拿掉
       for (const el of card.querySelectorAll(`[${ATTR}^="bili"]`)) el.remove();
@@ -367,7 +436,7 @@ function scan(): void {
       else counts.pending++;
       if ((state === 'pending' || (state === 'failed' && retry)) && !asking.has(c.video.bvid)) want.push(c.video.bvid);
       ensureTime(c, state);
-    } else c.info.querySelector(`:scope > [${ATTR}="bili-pubdate"]`)?.remove();
+    } else c.root.querySelector(`[${ATTR}="bili-pubdate"]`)?.remove();
     if (settings.showSave) ensureButton(c);
     else c.picBox?.querySelector(`:scope > [${ATTR}="bili-save"]`)?.remove();
   }

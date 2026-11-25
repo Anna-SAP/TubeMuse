@@ -50,14 +50,14 @@ function TabStatus({ s }: { s: BiliTabState }) {
   if (!s.cards) {
     return (
       <p class="muted small" data-testid="bili-tab-status">
-        当前页没有"接下来播放"列表（视频页右侧才有）。
+        当前页右侧没有视频列表（视频页的"接下来播放"、播放列表页右侧的列表才有）。
       </p>
     );
   }
   if (!s.showPubdate) {
     return (
       <p class="muted small" data-testid="bili-tab-status">
-        当前页"接下来播放"列表里有 {s.cards} 条视频。
+        当前页右侧列表里有 {s.cards} 条视频。
       </p>
     );
   }
@@ -66,7 +66,7 @@ function TabStatus({ s }: { s: BiliTabState }) {
   if (s.unknown) parts.push(`${s.unknown} 条 B 站接口里查不到（可能已删除或不公开）`);
   return (
     <div class="muted small xhs-status" data-testid="bili-tab-status">
-      当前页"接下来播放"：{parts.join(' · ')}
+      当前页右侧列表：{parts.join(' · ')}
       {s.error && (
         <div class="xhs-warn" data-testid="bili-error">
           {s.error}
@@ -184,7 +184,7 @@ export function BiliView() {
           <b>显示发布时间</b>
         </label>
         <p class="muted small">
-          默认勾着：视频页右侧"接下来播放"列表里每条视频的播放量后面一直显示发布时间：30 天内写"N 天前"，更早的写日期，鼠标停上去看精确到分钟的时间。列表刷新、换视频、点"展开"加载出的新条目都跟着显示。
+          默认勾着：视频页右侧"接下来播放"列表、播放列表页（UP 主的全部视频、稍后再看、收藏夹的"播放全部"）右侧的列表里，每条视频的播放量后面一直显示发布时间：30 天内写"N 天前"，更早的写日期，鼠标停上去看精确到分钟的时间。列表刷新、换视频、点"展开"或往下滚加载出的新条目都跟着显示。
         </p>
         <p class="muted small">
           B 站页面上没有这个信息，TubeMuse 向 B 站的公开接口（<code>api.bilibili.com</code>）查：只发这些视频的 BV 号，不带 Cookie（不暴露你的账号）；查过的记在本机，不再查。查得太频繁时 B 站会拦，TubeMuse 就停 5 分钟、在这里说明。取消勾选就不再查。

@@ -512,8 +512,12 @@ export function parseDouyinUrl(url: string): { id: string; url: string } | undef
 
 // ── B 站：页面主播放器里的视频 ──
 
-/** 海外网络下 B 站把网址改写成带语言的：/zh-Hans/video/…（2026-11-11 实测）。只认"两个字母-地区或文字"这种带连字符的写法 */
-const BILI_LOCALE = /^[a-z]{2}-[A-Za-z]{2,4}(?:\/|$)/;
+/**
+ * 海外网络下 B 站把网址改写成带语言的：/zh-Hans/video/…（2026-11-11 实测）；浏览器语言是英文时是 /en/video/…、/en/list/…
+ * （2026-11-25 在英文的 Firefox 上实测，DECISIONS §92）。"两个字母-地区或文字"这种带连字符的写法一律去掉；只有两个字母的一段
+ * 可能是真的路径（/tv/ 是电视剧频道），只在后面紧跟着视频页、播放列表、番剧、课程、活动页这几种路径时才当语言去掉
+ */
+const BILI_LOCALE = /^(?:[a-z]{2}-[A-Za-z]{2,4}|[a-z]{2}(?=\/(?:video|list|bangumi|cheese|festival|medialist)\/[^/]))(?:\/|$)/;
 /** 普通视频：/video/<BV号>（BV 加 10 位字母数字），老链接是 /video/av<数字> */
 const BILI_VIDEO_PATH = /^video\/(BV[0-9A-Za-z]{10}|av\d{1,12})$/;
 const BILI_BVID = /^BV[0-9A-Za-z]{10}$/;

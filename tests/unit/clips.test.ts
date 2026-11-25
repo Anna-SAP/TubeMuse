@@ -1266,6 +1266,11 @@ describe('B 站（www.bilibili.com）', () => {
     expect(parseBiliUrl('https://www.bilibili.com/zh-Hans')).toEqual({ id: 'home', url: 'https://www.bilibili.com/', kind: 'page' });
     // 只有两个字母的一段是真的路径（/tv/ 是电视剧频道），不当语言去掉
     expect(parseBiliUrl('https://www.bilibili.com/tv/')?.id).toBe('tv');
+    // 浏览器语言是英文时是 /en/…（2026-11-25 在英文的 Firefox 上实测）：后面跟着视频页、播放列表、番剧这些路径时当语言去掉
+    expect(parseBiliUrl(`https://www.bilibili.com/en/video/${BV}/`)).toEqual({ id: BV, url: `https://www.bilibili.com/video/${BV}/`, kind: 'video' });
+    expect(parseBiliUrl(`https://www.bilibili.com/en/list/43764108?sort_field=pubtime&oid=1&bvid=${BV}`)).toEqual({ id: BV, url: `https://www.bilibili.com/video/${BV}/`, kind: 'video' });
+    expect(parseBiliUrl('https://www.bilibili.com/en/bangumi/play/ep733317')).toEqual(parseBiliUrl('https://www.bilibili.com/bangumi/play/ep733317'));
+    expect(parseBiliUrl('https://www.bilibili.com/tv/video')).toEqual({ id: 'tv-video', url: 'https://www.bilibili.com/tv/video', kind: 'page' });
   });
   it('课程：ID 前面加 cheese-（和番剧的 ep 号是两套）', () => {
     expect(parseBiliUrl('https://www.bilibili.com/cheese/play/ss61')).toEqual({ id: 'cheese-ss61', url: 'https://www.bilibili.com/cheese/play/ss61', kind: 'cheese' });
