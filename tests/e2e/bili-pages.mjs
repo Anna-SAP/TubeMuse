@@ -130,10 +130,33 @@ export const BILI_RECS_MORE = [
 /** 打开的这个视频与跳到的那个视频（各自的 meta） */
 export const BILI_PAGE_VIDEO = { bv: 'BV1cv2yYDE4U', title: '一口气看完《三体》全集3部，时长3小时，耗时3个月制作', up: '翁翁讲故事', mid: '519033438', at: Date.UTC(2024, 9, 11, 4, 0), seconds: 11661 };
 export const BILI_NEXT_VIDEO = { bv: BILI_RECS[2]?.bv ?? '', title: '假如三体人不吃压力……', up: '铭明mk', mid: '289080082', at: Date.UTC(2022, 6, 27, 4, 0), seconds: 114 };
+/**
+ * 播放列表页（/list/<ID>?bvid=…，例如"UP主的全部视频"）右侧列表里的视频（2026-11-25 实测：每一项只有标题和"N万播放"，没有 UP 主）。
+ * 第一项是正在放的这个
+ * @type {BiliRec[]}
+ */
+export const BILI_LIST = [
+  { bv: 'BV1xtxF65Efz', title: '重读人界138：韩立获得珍贵庚精 边界大战参与赌斗', up: '', mid: '', duration: '', view: '1.9万播放', dm: '', age: 25 * DAY + HOUR },
+  { bv: 'BV1MfWL6HELv', title: '重读人界141：韩立的温床血罗罩，躲里面看戏、出来就杀人', up: '', mid: '', duration: '', view: '1.2万播放', dm: '', age: 14 * DAY + HOUR },
+  { bv: 'BV1jbWu6mEs7', title: '重读人界140', up: '', mid: '', duration: '', view: '1.6万播放', dm: '', age: 15 * DAY + HOUR },
+  { bv: 'BV1Sxxf6SE7U', title: '重读人界139：房宗主毒谋，韩老魔破局？', up: '', mid: '', duration: '', view: '1.6万播放', dm: '', at: Date.UTC(2025, 0, 2, 12, 0) },
+];
+/** 往下滚加载出的下一批 */
+export const BILI_LIST_MORE = [
+  { bv: 'BV1AaxX6pEzc', title: '重读人界137', up: '', mid: '', duration: '', view: '1.4万播放', dm: '', age: 20 * DAY + HOUR },
+  { bv: 'BV112so6eE7G', title: '重读人界136', up: '', mid: '', duration: '', view: '9876播放', dm: '', at: Date.UTC(2024, 11, 24, 12, 0) },
+];
+export const BILI_LIST_ID = '43764108';
+/** 播放列表页右侧、列表下面的推荐（.recommend-video-card：和"接下来播放"的卡片同一种结构，UP 主链接是 a.upname 本身） */
+export const BILI_LIST_RECS = [
+  { bv: 'BV1sr4c6EESK', title: '“这建模还是太权威了，终于明白宋玉人气有多高了！”', up: '爱睡觉的_Koala', mid: '43887712', duration: '02:03', view: '61.8万', dm: '286', age: 6 * DAY + HOUR },
+  { bv: 'BV1Bh411G7Da', title: '凤冰：韩道友要求只要不是太过分，都是可以的！', up: '爱睡觉的_Koala', mid: '43887712', duration: '02:20', view: '40.6万', dm: '151', at: Date.UTC(2023, 5, 6, 12, 0) },
+];
+
 /** 这一批 ID 一查就被 B 站风控拦下（code -352） */
 export const BILI_BLOCKED = 'BV1B1ocked00';
 
-const ALL_RECS = [...BILI_RECS, ...BILI_RECS_NEXT, ...BILI_RECS_MORE].filter((r) => !!r);
+const ALL_RECS = [...BILI_RECS, ...BILI_RECS_NEXT, ...BILI_RECS_MORE, ...BILI_LIST, ...BILI_LIST_MORE, ...BILI_LIST_RECS].filter((r) => !!r);
 
 /**
  * mock 的 B 站接口 /biliapi/x/article/cards?ids=…：认得的视频回 pubdate（秒），认不得的不出现在结果里（和真实接口一样）。
@@ -255,7 +278,73 @@ function videoPage() {
   );
 }
 
+/** 播放列表右侧列表的一项：.action-list-item-wrap[data-key=<BV号>] > … > .main > .cover + .info（.title[title]、.views）；没有链接 @param {BiliRec} r @param {number} i */
+function listItem(r, i) {
+  return (
+    `<div data-key="${r.bv}" data-index="${i}_${1000 + i}" class="action-list-item-wrap"><div class="action-list-item"><div class="singlep-list-item-inner"><div class="main">` +
+    `<div class="cover"><!----> <!----></div> <div class="info"><div title="${esc(r.title)}" class="title"><div class="playing-gif b-img sleepy" style="display:none;"></div>\n        ${esc(r.title)}\n      </div> <div class="views">${r.view}</div></div>` +
+    `</div></div></div></div>`
+  );
+}
+
+/** 播放列表页下面的推荐：.recommend-video-card.video-card > .card-box > .pic-box + .info（a > p.title、a.upname > span.name、.playinfo） @param {BiliRec} r @param {number} i */
+function listRecCard(r, i) {
+  const href = `/bili/zh-Hans/video/${r.bv}?spm_id_from=333.1245.recommend_more_video.${i}`;
+  return (
+    `<div class="recommend-video-card video-card"><div class="card-box"><div class="pic-box"><a href="${href}" target="_blank" class="rcmd-cover"><div class="rcmd-cover-img b-img"><img alt=""></div></a> <span class="duration">${r.duration}</span> <div class="watch-later-video van-watchlater black"></div><div class="v-recommend-inline-player"></div></div> ` +
+    `<div class="info"><a href="${href}" target="_blank"><p title="${esc(r.title)}" class="title">${esc(r.title)}</p></a> <a href="//space.bilibili.com/zh-Hans/${r.mid}?spm_id_from=333.1245" target="_blank" class="upname">${ICON} <span class="name">${esc(r.up)}</span></a> <!----> ` +
+    `<div class="playinfo">${ICON}\n        ${r.view}\n        ${ICON}\n        ${r.dm}\n      </div></div></div></div>`
+  );
+}
+
+/** 分 P 视频那一项：data-key 不是 BV 号（实测见到的是数字），不显示时间、不放按钮 */
+const LIST_MULTIP = `<div data-key="26234588020" data-index="9_9" class="action-list-item-wrap"><div class="action-list-item"><div class="multip-list-item"><div class="main"><div class="cover"></div> <div class="info"><div title="分P视频" class="title">分P视频</div> <div class="views">3万播放</div></div></div></div></div></div>`;
+
+const LIST_CSS = `
+body { margin: 0; font: 14px/16px system-ui, "Noto Sans CJK SC", sans-serif; color: #18191c; }
+.playlist-container { display: flex; gap: 24px; padding: 16px; }
+.playlist-container--left { width: 420px; flex: none; }
+.playlist-container--right { width: 360px; flex: none; }
+.action-list { height: 420px; overflow: auto; }
+.action-list-item-wrap { padding: 6px 10px; cursor: pointer; }
+.main { display: flex; }
+.cover { position: relative; overflow: hidden; width: 106px; height: 60px; flex: none; margin-right: 10px; border-radius: 4px; background: #c9ccd0; }
+.info { display: flex; flex-direction: column; justify-content: space-between; height: 60px; width: 202px; }
+.info .title { font-size: 14px; line-height: 19px; max-height: 38px; overflow: hidden; }
+.views { display: block; font-size: 14px; line-height: 16px; color: #9499a0; }
+.recommend-video-card { margin-top: 12px; }
+.recommend-video-card .card-box { display: flex; height: 80px; }
+.recommend-video-card .pic-box { position: relative; width: 141px; height: 80px; flex: none; margin-right: 10px; background: #c9ccd0; }
+.recommend-video-card .info { width: 199px; height: 80px; font-size: 13px; line-height: 15px; }
+.recommend-video-card .title { margin: 0 0 2px; max-height: 38px; line-height: 19px; overflow: hidden; }
+/* 实测：这里的 UP 主那一行和播放量那一行都是占满一行的 flex（"接下来播放"的 .playinfo 是 inline-flex） */
+.recommend-video-card .upname { display: flex; align-items: center; height: 20px; color: #9499a0; text-decoration: none; }
+.recommend-video-card .playinfo { display: flex; align-items: center; gap: 2px; height: 18px; color: #9499a0; }
+.recommend-video-card svg { width: 14px; height: 14px; }
+.duration { position: absolute; right: 4px; bottom: 4px; color: #fff; }
+`;
+
+/** 播放列表页 /bili/list/<ID>?bvid=…（前面可以带 /en/、/zh-Hans/）：不是服务端渲染的；点一项在页面里换视频，往下滚加载下一批 */
+function listPage() {
+  const cur = BILI_LIST[0];
+  return (
+    `<!doctype html><html><head><meta charset="utf-8"><title>${esc(cur?.title ?? '')}-赛博天国-赛博天国-哔哩哔哩视频</title>` +
+    `<meta data-vue-meta="true" name="author" content="赛博天国"><meta data-vue-meta="true" property="og:url" content="__ORIGIN__/bili/list/${BILI_LIST_ID}?oid=1&amp;bvid=${cur?.bv}">` +
+    `<style>${LIST_CSS}</style></head><body><div id="app" class="app-v1"><div class="playlist-container">` +
+    `<div class="playlist-container--left"><h1 class="video-title" title="${esc(cur?.title ?? '')}">${esc(cur?.title ?? '')}</h1><div id="bilibili-player"></div></div>` +
+    `<div class="playlist-container--right"><div class="action-list-container"><div class="action-list-header">赛博天国 1/272 UP主的全部视频</div>` +
+    `<div class="action-list"><div class="action-list-inner"><div class="action-list-content">${BILI_LIST.map(listItem).join('')}${LIST_MULTIP}</div></div></div></div>` +
+    `<div class="recommend-list-container">${BILI_LIST_RECS.map(listRecCard).join('')}</div></div>` +
+    `</div></div><script>` +
+    `window.__nativeClicks = 0; document.addEventListener('click', (e) => { if (e.target.closest('#app')) { window.__nativeClicks++; e.preventDefault(); } });` +
+    `document.querySelectorAll('meta[content^="__ORIGIN__"]').forEach((m) => m.setAttribute('content', m.getAttribute('content').replace('__ORIGIN__', location.origin)));` +
+    `window.__loadMore = () => document.querySelector('.action-list-content').insertAdjacentHTML('beforeend', ${JSON.stringify(BILI_LIST_MORE.map((r, i) => listItem(r, 10 + i)).join(''))});` +
+    `</script></body></html>`
+  );
+}
+
 /** @param {string} path /bili/ 开头的路径；认不出的返回 undefined（mock 回 404） */
 export function biliVideoPage(path) {
+  if (new RegExp(`^/bili/(?:zh-Hans/|en/)?list/${BILI_LIST_ID}/?$`).test(path)) return listPage();
   return new RegExp(`^/bili/(?:zh-Hans/)?video/${BILI_PAGE_VIDEO.bv}/?$`).test(path) ? videoPage() : undefined;
 }

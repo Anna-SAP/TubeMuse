@@ -55,6 +55,9 @@ describe('B站：视频链接', () => {
     expect(biliVideoFromUrl(PAGE)).toEqual({ bvid: BV3, url: `https://www.bilibili.com/video/${BV3}/` });
     expect(biliVideoFromUrl(`https://www.bilibili.com/video/${BV1}/?p=3&spm_id_from=333.788.videopod.episodes`)).toEqual({ bvid: BV1, url: `https://www.bilibili.com/video/${BV1}/?p=3` });
     expect(biliVideoFromUrl(`https://www.bilibili.com/list/watchlater?bvid=${BV2}&oid=1`)?.bvid).toBe(BV2);
+    // 浏览器语言是英文时 B 站的网址带 /en/（2026-11-25 在英文的 Firefox 上实测）：视频页、播放列表页都要认得
+    expect(biliVideoFromUrl(`https://www.bilibili.com/en/video/${BV1}/`)).toEqual({ bvid: BV1, url: `https://www.bilibili.com/video/${BV1}/` });
+    expect(biliVideoFromUrl(`https://www.bilibili.com/en/list/43764108?sort_field=pubtime&oid=1&bvid=${BV2}`)).toEqual({ bvid: BV2, url: `https://www.bilibili.com/video/${BV2}/` });
   });
 
   it('番剧、av 号、直播、空间、别的网站都不认', () => {

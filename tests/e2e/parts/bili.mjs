@@ -4,7 +4,7 @@
 // 站内跳转时卡片元素复用、只换内容，"展开"后多出一批，列表里有一张没有 BV 号的番剧卡片。
 import { join } from 'node:path';
 import { check, MOCK, shots } from '../harness.mjs';
-import { BILI_BLOCKED, BILI_NEXT_VIDEO, BILI_PAGE_VIDEO, BILI_RECS, BILI_RECS_MORE, BILI_RECS_NEXT } from '../bili-pages.mjs';
+import { BILI_BLOCKED, BILI_LIST, BILI_LIST_ID, BILI_LIST_MORE, BILI_LIST_RECS, BILI_NEXT_VIDEO, BILI_PAGE_VIDEO, BILI_RECS, BILI_RECS_MORE, BILI_RECS_NEXT } from '../bili-pages.mjs';
 
 /** @param {import('../harness.mjs').Harness} t */
 export async function bili(t) {
@@ -217,6 +217,96 @@ export async function bili(t) {
   await setBili({ enabled: true });
   await bili.locator('[data-tubemuse="bili-save"]').first().waitFor({ state: 'attached', timeout: 5000 });
   check(apiCalls().length === callsBeforeOff, '取消勾选、关掉再打开：页面上的东西跟着消失、恢复，没有再向 B 站查');
+
+  console.log('\n[B站：播放列表页（/list/…，你在 Firefox 上发现没有显示的那种）→ 右侧列表每一项的"N万播放"后面显示发布时间、能收藏；英文的 /en/… 网址也认得]');
+  await panel.getByTestId('bili-show-pubdate').check();
+  const listCalls0 = apiCalls().length;
+  const listUrl = `${MOCK}/bili/en/list/${BILI_LIST_ID}?sort_field=pubtime&spm_id_from=333.1387.0.0&oid=1&bvid=${BILI_LIST[0]?.bv}`;
+  await bili.goto(listUrl);
+  const listShown = (/** @type {number} */ n) =>
+    bili.waitForFunction((k) => document.querySelectorAll('.action-list-item-wrap [data-tubemuse="bili-pubdate"][data-state="shown"]').length === k, n, { timeout: 10000 });
+  await listShown(BILI_LIST.length);
+  const readList = () =>
+    bili.evaluate(() =>
+      [...document.querySelectorAll('.action-list-item-wrap')].map((w) => {
+        const s = /** @type {HTMLElement | null} */ (w.querySelector('[data-tubemuse="bili-pubdate"]'));
+        const v = /** @type {HTMLElement} */ (w.querySelector('.views'));
+        return {
+          key: /** @type {HTMLElement} */ (w).dataset.key,
+          text: s?.textContent ?? '',
+          inViews: s?.parentElement === v,
+          sameLine: !!s && Math.abs(s.getBoundingClientRect().top - v.getBoundingClientRect().top) < 4,
+          views: Math.round(v.getBoundingClientRect().height),
+          info: Math.round(/** @type {HTMLElement} */ (w.querySelector('.info')).getBoundingClientRect().height),
+          btn: !!w.querySelector('.cover > [data-tubemuse="bili-save"]'),
+        };
+      }),
+    );
+  const l1 = await readList();
+  check(
+    l1[0]?.text === '25天前' && l1[1]?.text === '14天前' && l1[2]?.text === '15天前' && /^(20)?25-01-02$/.test(l1[3]?.text ?? ''),
+    `播放列表每一项都显示发布时间：${l1.slice(0, 4).map((x) => x.text).join('、')}`,
+  );
+  check(
+    l1.slice(0, BILI_LIST.length).every((x) => x.inViews && x.sameLine && x.views === 16 && x.info === 60 && x.btn),
+    `时间写在"N万播放"那一行的末尾（同一行），这一行和整项的高度不变；每一项的封面上都有"收藏"（${JSON.stringify(l1.slice(0, BILI_LIST.length).map((x) => [x.inViews, x.sameLine, x.views, x.info, x.btn]))}）`,
+  );
+  check(l1[BILI_LIST.length]?.text === '' && l1[BILI_LIST.length]?.btn === false, '分 P 视频那一项（data-key 不是 BV 号）不显示时间、不放按钮');
+  await bili.waitForFunction((n) => document.querySelectorAll('.recommend-video-card [data-tubemuse="bili-pubdate"][data-state="shown"]').length === n, BILI_LIST_RECS.length, { timeout: 10000 });
+  const lr = await bili.evaluate(() =>
+    [...document.querySelectorAll('.recommend-video-card')].map((c) => {
+      const s = /** @type {HTMLElement} */ (c.querySelector('[data-tubemuse="bili-pubdate"]'));
+      const p = /** @type {HTMLElement} */ (c.querySelector('.playinfo'));
+      const r = s.getBoundingClientRect();
+      const pr = p.getBoundingClientRect();
+      return { text: s.textContent, inPlay: s.parentElement === p, sameLine: Math.abs(r.top - pr.top) < 4 && r.right <= pr.right + 1, playH: Math.round(pr.height), btn: !!c.querySelector('.pic-box > [data-tubemuse="bili-save"]') };
+    }),
+  );
+  check(
+    lr[0]?.text === '6天前' && /^(20)?23-06-06$/.test(lr[1]?.text ?? '') && lr.every((x) => x.inPlay && x.sameLine && x.playH === 18 && x.btn),
+    `播放列表下面的推荐（.recommend-video-card，播放量那一行占满整行）：时间写在这一行里面的末尾、不另起一行，有"收藏"：${JSON.stringify(lr)}`,
+  );
+  const listCalls = apiCalls().slice(listCalls0);
+  check(
+    listCalls.length === 1 && same(idsOf(listCalls[0] ?? { query: {} }), [...BILI_LIST, ...BILI_LIST_RECS].map((r) => r.bv)),
+    '一次查完这一页的视频（播放列表的 BV 号来自每一项的 data-key，推荐来自链接）',
+  );
+  await panel.getByTestId('bili-tab-status').filter({ hasText: `${BILI_LIST.length + BILI_LIST_RECS.length} 条显示了发布时间` }).waitFor({ timeout: 5000 });
+  await panel.getByTestId('bili-current-title').filter({ hasText: BILI_LIST[0]?.title ?? '?' }).waitFor({ timeout: 5000 });
+  check(
+    ((await panel.getByTestId('bili-current').textContent()) ?? '').includes('发布 '),
+    '侧边栏认得英文网址 /en/list/…?bvid= 里的当前视频；这种页面没有发布时间的 meta，用的是列表里查到的那一个',
+  );
+  await bili.evaluate(() => /** @type {any} */ (window).__loadMore());
+  await listShown(BILI_LIST.length + BILI_LIST_MORE.length);
+  const l2 = await readList();
+  const moreCalls = apiCalls().slice(listCalls0 + 1);
+  check(
+    moreCalls.length === 1 && same(idsOf(moreCalls[0] ?? { query: {} }), BILI_LIST_MORE.map((r) => r.bv)) && l2.some((x) => x.text === '20天前') && l2.some((x) => /^(20)?24-12-24$/.test(x.text)),
+    '往下滚加载出的下一批也显示，只查新出现的',
+  );
+  const listItem = (/** @type {number} */ i) => bili.locator('.action-list-item-wrap').nth(i);
+  await bili.mouse.move(5, 5);
+  await listItem(1).hover();
+  await bili.waitForTimeout(300);
+  const cover = await listItem(1).locator('.cover').boundingBox();
+  const listBtn = await listItem(1).locator('[data-tubemuse="bili-save"] button').boundingBox();
+  check(
+    (await listItem(1).locator('[data-tubemuse="bili-save"]').evaluate((h) => getComputedStyle(h).opacity)) === '1' && !!cover && !!listBtn && listBtn.x - cover.x < 10 && listBtn.y - cover.y < 10,
+    '鼠标移到一项上，封面左上角出现"收藏"',
+  );
+  await listItem(1).locator('[data-tubemuse="bili-save"] button').click();
+  await pop.locator('input').fill('人界');
+  await pop.locator('input').press('Enter');
+  await listItem(1).locator('[data-tubemuse="bili-save"] button').filter({ hasText: '已收藏 · 1' }).waitFor({ timeout: 5000 });
+  const lv = (await stored()).videos[BILI_LIST[1]?.bv ?? ''];
+  check(
+    lv?.url === `${MOCK}/bili/video/${BILI_LIST[1]?.bv}/` && lv.title === BILI_LIST[1]?.title && typeof lv.publishedAt === 'number' && JSON.stringify(lv.tags) === '["人界"]',
+    '收藏播放列表里的一项：链接是这个视频的视频页（列表编号不进去）、标题、查到的发布时间、标签',
+  );
+  check(bili.url() === listUrl && (await bili.evaluate(() => /** @type {any} */ (window).__nativeClicks)) === 0, '点"收藏"没有切到那个视频，也没有点到 B 站自己的任何东西');
+  await pop.locator('input').press('Escape');
+  await pop.waitFor({ state: 'detached', timeout: 3000 });
 
   console.log('\n[B站：B 站拦下查询（-352）→ 照实说明、停一阵，这期间不再发请求]');
   await panel.getByTestId('bili-show-pubdate').check();
