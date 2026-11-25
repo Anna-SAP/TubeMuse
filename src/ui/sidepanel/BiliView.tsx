@@ -184,10 +184,10 @@ export function BiliView() {
           <b>显示发布时间</b>
         </label>
         <p class="muted small">
-          勾上后，视频页右侧"接下来播放"列表里每条视频的播放量后面一直显示发布时间：30 天内写"N 天前"，更早的写日期，鼠标停上去看精确到分钟的时间。列表刷新、换视频、点"展开"加载出的新条目都跟着显示。
+          默认勾着：视频页右侧"接下来播放"列表里每条视频的播放量后面一直显示发布时间：30 天内写"N 天前"，更早的写日期，鼠标停上去看精确到分钟的时间。列表刷新、换视频、点"展开"加载出的新条目都跟着显示。
         </p>
         <p class="muted small">
-          B 站页面上没有这个信息，TubeMuse 向 B 站的公开接口（<code>api.bilibili.com</code>）查：只发这些视频的 BV 号，不带 Cookie（不暴露你的账号）；查过的记在本机，不再查。查得太频繁时 B 站会拦，TubeMuse 就停 5 分钟、在这里说明。
+          B 站页面上没有这个信息，TubeMuse 向 B 站的公开接口（<code>api.bilibili.com</code>）查：只发这些视频的 BV 号，不带 Cookie（不暴露你的账号）；查过的记在本机，不再查。查得太频繁时 B 站会拦，TubeMuse 就停 5 分钟、在这里说明。取消勾选就不再查。
         </p>
         {tab ? <TabStatus s={tab} /> : <p class="muted small" data-testid="bili-tab-status">当前标签页不是 B 站页面（如果是，刷新一下那个页面）。</p>}
       </section>
