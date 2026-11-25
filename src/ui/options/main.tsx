@@ -888,7 +888,7 @@ function App() {
       <Section title="21. B 站" id="bili">
         <p class="muted small">
           在 B 站网页版（www.bilibili.com）的视频页上：右侧"接下来播放"列表里每条视频的播放量后面显示发布时间（在侧边栏「B站」页勾选"显示发布时间"）；每条视频封面左上角的"收藏"按钮、侧边栏「B站」页的"收藏这个视频"把视频收进 TubeMuse 并打标签，在「B站」页查看和管理。
-          B 站页面上没有发布时间，勾选后 TubeMuse 向 B 站的公开接口（{new URL(ENDPOINTS.biliApi).host}）查：只发这些视频的 BV 号，不带 Cookie，查过的记在本机不再查；不勾就不查。页面上的脚本本身不发任何请求，不会在 B 站上收藏、点赞、投币或关注；收藏只存在本机。
+          B 站页面上没有发布时间，"显示发布时间"勾着时（默认勾着）TubeMuse 向 B 站的公开接口（{new URL(ENDPOINTS.biliApi).host}）查：只发这些视频的 BV 号，不带 Cookie，查过的记在本机不再查；取消勾选就不查。页面上的脚本本身不发任何请求，不会在 B 站上收藏、点赞、投币或关注；收藏只存在本机。
         </p>
         <label class="inline">
           <input type="checkbox" data-testid="bili-enabled" checked={settings.bili.enabled} onChange={(e) => updateSection('bili', { enabled: e.currentTarget.checked })} />
@@ -896,7 +896,7 @@ function App() {
         </label>
         <label class="inline">
           <input type="checkbox" data-testid="bili-show-pubdate-opt" checked={settings.bili.showPubdate} onChange={(e) => updateSection('bili', { showPubdate: e.currentTarget.checked })} />
-          显示发布时间（会向 {new URL(ENDPOINTS.biliApi).host} 查）
+          显示发布时间（默认勾着；会向 {new URL(ENDPOINTS.biliApi).host} 查）
         </label>
         <label class="inline">
           <input type="checkbox" data-testid="bili-show-save" checked={settings.bili.showSave} onChange={(e) => updateSection('bili', { showSave: e.currentTarget.checked })} />

@@ -15,14 +15,14 @@ export async function bili(t) {
   const same = (/** @type {string[]} */ a, /** @type {string[]} */ b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
 
   // ───────────────────────── B站 ─────────────────────────
-  console.log('\n[B站：设置页有这一节；默认不显示发布时间（不向 B 站查），收藏按钮默认开]');
+  console.log('\n[B站：设置页有这一节；"显示发布时间"、收藏按钮默认都开着]');
   const section = (await options.locator('#bili').textContent()) ?? '';
   check(
     section.includes('21. B 站') &&
       (await options.getByTestId('bili-enabled').isChecked()) &&
-      !(await options.getByTestId('bili-show-pubdate-opt').isChecked()) &&
+      (await options.getByTestId('bili-show-pubdate-opt').isChecked()) &&
       (await options.getByTestId('bili-show-save').isChecked()),
-    '设置页"21. B 站"：启用、收藏按钮默认开，"显示发布时间"默认不勾（e2e 构建里接口指向本机 mock）',
+    '设置页"21. B 站"：启用、"显示发布时间"、收藏按钮默认都勾着（e2e 构建里接口指向本机 mock）',
   );
   check(((await options.locator('#egress').textContent()) ?? '').includes(`${MOCK}/biliapi`), '"网络出口"列出 B 站的公开接口');
 
@@ -31,12 +31,12 @@ export async function bili(t) {
   await panel.getByTestId('bili-view').waitFor({ timeout: 5000 });
   check(
     ((await panel.getByTestId('bili-empty').textContent()) ?? '').includes('还没有收藏') &&
-      !(await panel.getByTestId('bili-show-pubdate').isChecked()) &&
+      (await panel.getByTestId('bili-show-pubdate').isChecked()) &&
       ((await panel.getByTestId('bili-tab-status').textContent()) ?? '').includes('不是 B 站页面'),
-    '侧边栏「B站」页：还没有收藏时说明怎么开始，"显示发布时间"没勾，当前标签页不是 B 站页面',
+    '侧边栏「B站」页：还没有收藏时说明怎么开始，"显示发布时间"默认勾着，当前标签页不是 B 站页面',
   );
 
-  console.log('\n[B站：打开视频页 → 等 B 站接管完页面才动手；每条视频封面上有"收藏"，没勾选时不查发布时间]');
+  console.log('\n[B站：打开视频页 → 等 B 站接管完页面才动手 → 不用做任何设置，每条视频的播放量后面就显示发布时间，封面上有"收藏"]');
   const reqStart = requests.length;
   const pageUrl = `${MOCK}/bili/zh-Hans/video/${BILI_PAGE_VIDEO.bv}/?spm_id_from=333.1007.tianma.1-1-1.click`;
   const [bili] = await Promise.all([context.waitForEvent('page'), panel.evaluate((url) => /** @type {any} */ (globalThis).chrome.tabs.create({ url, active: true }), pageUrl)]);
@@ -48,21 +48,6 @@ export async function bili(t) {
   const videoCards = BILI_RECS.length;
   await bili.waitForFunction((n) => document.querySelectorAll('[data-tubemuse="bili-save"]').length === n, videoCards, { timeout: 5000 });
   check((await bili.locator('.video-page-card-small[data-kind="bangumi"] [data-tubemuse]').count()) === 0, `${videoCards} 条视频的封面上都有"收藏"；没有 BV 号的番剧卡片不加`);
-  await bili.waitForTimeout(1200);
-  check((await bili.locator('[data-tubemuse="bili-pubdate"]').count()) === 0 && apiCalls().length === 0, '没勾选"显示发布时间"：不显示，也不向 B 站查');
-  await panel.getByTestId('bili-tab-status').filter({ hasText: `有 ${videoCards} 条视频` }).waitFor({ timeout: 5000 });
-  await panel.getByTestId('bili-current').waitFor({ timeout: 5000 });
-  const current = (await panel.getByTestId('bili-current').textContent()) ?? '';
-  const currentIso = await panel.getByTestId('bili-current').getByTestId('bili-item-time').getAttribute('datetime');
-  check(
-    current.includes(BILI_PAGE_VIDEO.title) && current.includes(`UP ${BILI_PAGE_VIDEO.up}`) && current.includes('时长 3:14:21') && currentIso === new Date(BILI_PAGE_VIDEO.at).toISOString(),
-    `侧边栏"当前视频"：标题、UP 主、发布时间、时长读自页面自己声明的 meta（${current.slice(0, 60)}…）`,
-  );
-  const heights = () => bili.evaluate(() => [...document.querySelectorAll('.video-page-card-small .card-box')].map((e) => Math.round(e.getBoundingClientRect().height)));
-  const heightsBefore = await heights();
-
-  console.log('\n[B站：勾选"显示发布时间" → 每条视频的播放量后面显示发布时间]');
-  await panel.getByTestId('bili-show-pubdate').check();
   const shownCount = (/** @type {number} */ n) => bili.waitForFunction((k) => document.querySelectorAll('[data-tubemuse="bili-pubdate"][data-state="shown"]').length === k, n, { timeout: 10000 });
   await shownCount(videoCards - 1);
   await bili.locator('[data-tubemuse="bili-pubdate"][data-state="unknown"]').waitFor({ timeout: 5000 });
@@ -89,7 +74,6 @@ export async function bili(t) {
   check(t1[2]?.hint.includes('发布于 2022/07/27') === true && t1[2].hint.includes('年前'), `悬停看精确到分钟的时间和多久以前：${t1[2]?.hint}`);
   check(t1[4]?.text === '时间未知' && t1[4].state === 'unknown', 'B 站接口里查不到的视频写"时间未知"');
   check(t1.every((x) => x.afterPlay && x.sameLine && x.matches), '时间插在播放量、弹幕数那一行后面，和它们在同一行（截图里红箭头指的那一块）');
-  check(JSON.stringify(await heights()) === JSON.stringify(heightsBefore), '每条视频的高度一像素都没变');
   const calls1 = apiCalls();
   check(
     calls1.length === 1 &&
@@ -101,7 +85,27 @@ export async function bili(t) {
   );
   await panel.getByTestId('bili-tab-status').filter({ hasText: `${videoCards - 1} 条显示了发布时间` }).waitFor({ timeout: 5000 });
   check(((await panel.getByTestId('bili-tab-status').textContent()) ?? '').includes('1 条 B 站接口里查不到'), `侧边栏说明当前页的情况：${(await panel.getByTestId('bili-tab-status').textContent()) ?? ''}`);
+  await panel.getByTestId('bili-current').waitFor({ timeout: 5000 });
+  const current = (await panel.getByTestId('bili-current').textContent()) ?? '';
+  const currentIso = await panel.getByTestId('bili-current').getByTestId('bili-item-time').getAttribute('datetime');
+  check(
+    current.includes(BILI_PAGE_VIDEO.title) && current.includes(`UP ${BILI_PAGE_VIDEO.up}`) && current.includes('时长 3:14:21') && currentIso === new Date(BILI_PAGE_VIDEO.at).toISOString(),
+    `侧边栏"当前视频"：标题、UP 主、发布时间、时长读自页面自己声明的 meta（${current.slice(0, 60)}…）`,
+  );
   await bili.screenshot({ path: join(shots, '60-bili-pubdate.png') });
+
+  console.log('\n[B站：取消勾选"显示发布时间" → 不显示、不再查；再勾上 → 直接用记着的，不再查]');
+  const heights = () => bili.evaluate(() => [...document.querySelectorAll('.video-page-card-small .card-box')].map((e) => Math.round(e.getBoundingClientRect().height)));
+  const heightsWith = await heights();
+  await panel.getByTestId('bili-show-pubdate').uncheck();
+  await bili.waitForFunction(() => document.querySelectorAll('[data-tubemuse="bili-pubdate"]').length === 0, null, { timeout: 5000 });
+  await panel.getByTestId('bili-tab-status').filter({ hasText: `有 ${videoCards} 条视频` }).waitFor({ timeout: 5000 });
+  await bili.waitForTimeout(1200);
+  check(apiCalls().length === 1 && (await bili.locator('[data-tubemuse="bili-save"]').count()) === videoCards, '取消勾选：发布时间消失（收藏按钮还在），也不再向 B 站查');
+  check(JSON.stringify(heightsWith) === JSON.stringify(await heights()), '显示发布时间时，每条视频的高度和不显示时一像素都不差');
+  await panel.getByTestId('bili-show-pubdate').check();
+  await shownCount(videoCards - 1);
+  check(apiCalls().length === 1, '再勾上：马上显示，用的是刚才查到的，没有再查');
 
   console.log('\n[B站：站内跳到别的视频（卡片复用、只换内容）→ 发布时间跟着换；查过的不再查]');
   await bili.evaluate(() => /** @type {any} */ (window).__goto());
